@@ -1,0 +1,5 @@
+google-genai>=2.0
+soundcard>=0.4
+numpy>=1.26
+python-dotenv>=1.0
+pytest>=8
