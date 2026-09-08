@@ -126,6 +126,37 @@ def test_select_closes_on_second_toggle_without_pick():
         app.destroy()
 
 
+def test_select_popup_expands_for_long_text_and_is_transient():
+    app = App()
+    try:
+        long_val = "Çok Uzun Aygıt Adı (HDMI High Definition Audio Device Extra Long Text)"
+        app.in_box["values"] = [long_val]
+        app.in_box._toggle()
+        app.update()
+        pop = app.in_box._pop
+        assert pop is not None
+        assert pop.attributes("-topmost")
+        assert pop.winfo_width() > app.in_box.winfo_width()
+        app.event_generate("<FocusOut>")
+        app.update()
+        assert app.in_box._pop is None
+    finally:
+        app.destroy()
+
+
+def test_select_popup_closes_on_window_move():
+    app = App()
+    try:
+        app.in_box._toggle()
+        app.update()
+        assert app.in_box._pop is not None
+        app.geometry("+450+350")
+        app.update()
+        assert app.in_box._pop is None
+    finally:
+        app.destroy()
+
+
 def test_running_paints_status_dot_green():
     app = App()
     try:

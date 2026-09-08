@@ -13,7 +13,7 @@ from languages import AUTO_SRC, LANGS, source_code, source_names
 from loop import SystemAudioLoop
 from meta import APP_AUTHOR, APP_TITLE, __version__
 
-from .theme import C, apply_icon, dark_titlebar, pick_fonts, prepare_app_id
+from .theme import C, ICON_PNG, apply_icon, dark_titlebar, pick_fonts, prepare_app_id
 from .widgets import Select
 
 
@@ -536,47 +536,117 @@ class App(tk.Tk):
         pop.configure(bg=C.bg)
         pop.resizable(False, False)
         pop.transient(self)
+        apply_icon(pop)
+        dark_titlebar(pop)
         pop.protocol("WM_DELETE_WINDOW", self._close_about)
-        pop.bind("<Escape>", lambda _e: self._close_about())
+        for key in ("<Escape>", "<Return>", "<KP_Enter>", "<space>"):
+            pop.bind(key, lambda _e: self._close_about())
 
-        body = tk.Frame(pop, bg=C.bg)
-        body.pack(fill=tk.BOTH, expand=True, padx=24, pady=20)
-        tk.Label(
-            body, text="Hakkında", font=self.font_ui, fg=C.muted, bg=C.bg, anchor="w"
-        ).pack(anchor="w")
+        card = tk.Frame(
+            pop,
+            bg=C.panel,
+            highlightthickness=1,
+            highlightbackground=C.line,
+            bd=0,
+        )
+        card.pack(fill=tk.BOTH, expand=True, padx=16, pady=16)
+
+        if ICON_PNG.is_file():
+            try:
+                raw = tk.PhotoImage(file=str(ICON_PNG))
+                logo_img = raw.subsample(16, 16)
+                logo = tk.Label(card, image=logo_img, bg=C.panel)
+                logo.image = logo_img
+                logo.pack(pady=(18, 10))
+            except Exception:
+                pass
+
         self.about_name = tk.Label(
-            body, text=APP_TITLE, font=self.font_brand, fg=C.text, bg=C.bg, anchor="w"
+            card,
+            text=APP_TITLE,
+            font=(self.font_brand[0], 15, "bold"),
+            fg=C.text,
+            bg=C.panel,
         )
-        self.about_name.pack(anchor="w", pady=(12, 0))
+        self.about_name.pack()
+
+        v_frame = tk.Frame(card, bg=C.bg, highlightthickness=1, highlightbackground=C.line)
+        v_frame.pack(pady=(4, 10))
         self.about_version = tk.Label(
-            body, text=f"v{__version__}", font=self.font_ui, fg=C.dim, bg=C.bg, anchor="w"
+            v_frame,
+            text=f"v{__version__}",
+            font=(self.font_ui[0], 8),
+            fg=C.muted,
+            bg=C.bg,
+            padx=8,
+            pady=1,
         )
-        self.about_version.pack(anchor="w", pady=(4, 0))
-        tk.Label(
-            body,
+        self.about_version.pack()
+
+        desc = tk.Label(
+            card,
             text="Canlı sistem-sesi çevirisi",
             font=self.font_ui,
             fg=C.muted,
-            bg=C.bg,
-            anchor="w",
-        ).pack(anchor="w", pady=(12, 0))
-        self.about_author = tk.Label(
-            body, text=APP_AUTHOR, font=self.font_ui, fg=C.text, bg=C.bg, anchor="w"
+            bg=C.panel,
         )
-        self.about_author.pack(anchor="w", pady=(4, 0))
+        desc.pack(pady=(0, 16))
+
+        div = tk.Frame(card, bg=C.line, height=1)
+        div.pack(fill=tk.X, padx=20, pady=(0, 14))
+
+        dev_row = tk.Frame(card, bg=C.panel)
+        dev_row.pack(pady=(0, 18))
+        tk.Label(
+            dev_row,
+            text="Geliştirici:",
+            font=self.font_ui,
+            fg=C.dim,
+            bg=C.panel,
+        ).pack(side=tk.LEFT, padx=(0, 5))
+        self.about_author = tk.Label(
+            dev_row,
+            text=APP_AUTHOR,
+            font=self.font_ui,
+            fg=C.text,
+            bg=C.panel,
+        )
+        self.about_author.pack(side=tk.LEFT)
+
+        btn_wrap = tk.Frame(card, bg=C.line, bd=0, highlightthickness=0)
+        btn_wrap.pack(pady=(0, 18))
+        btn = tk.Button(
+            btn_wrap,
+            text="Tamam",
+            font=self.font_ui,
+            bg=C.panel,
+            fg=C.text,
+            activebackground=C.hover,
+            activeforeground=C.text,
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+            padx=28,
+            pady=5,
+            cursor="hand2",
+            takefocus=0,
+            command=self._close_about,
+        )
+        btn.pack(padx=1, pady=1)
+        btn.bind("<Enter>", lambda _e: btn.configure(bg=C.hover))
+        btn.bind("<Leave>", lambda _e: btn.configure(bg=C.panel))
 
         pop.update_idletasks()
-        w, h = pop.winfo_reqwidth(), pop.winfo_reqheight()
+        w = max(300, pop.winfo_reqwidth())
+        h = pop.winfo_reqheight()
         x = self.winfo_rootx() + (self.winfo_width() - w) // 2
         y = self.winfo_rooty() + (self.winfo_height() - h) // 2
-        pop.geometry(f"+{max(x, 0)}+{max(y, 0)}")
-        dark_titlebar(pop)
+        pop.geometry(f"{w}x{h}+{max(x, 0)}+{max(y, 0)}")
         try:
             pop.grab_set()
         except tk.TclError:
             pass
         pop.focus_set()
-
     def _close_about(self) -> None:
         if self._about is None:
             return

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tkinter as tk
+import tkinter.font as tkfont
 
 from .theme import C
 
@@ -18,6 +19,8 @@ class Select(tk.Frame):
         self._values = list(values)
         self._state = "readonly"
         self._font = font
+        self._top_bindings: list[tuple[tk.Misc, str, str]] = []
+        self._last_top_geom: tuple[int, int, int, int] | None = None
         self._pop: tk.Toplevel | None = None
         self._inner = tk.Frame(self, bg=C.panel, bd=0, highlightthickness=0)
         self._inner.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
@@ -147,7 +150,12 @@ class Select(tk.Frame):
 
         x = self.winfo_rootx()
         y = self.winfo_rooty() + self.winfo_height() - 1
-        w = self.winfo_width()
+        font_obj = tkfont.Font(self, font=self._font)
+        text_w = max((font_obj.measure(str(v)) for v in self._values), default=0) + 24
+        w = max(self.winfo_width(), text_w)
+        screen_w = self.winfo_screenwidth()
+        if x + w > screen_w:
+            x = max(0, screen_w - w)
         h = row_h * visible + 2
         pop.geometry(f"{w}x{h}+{x}+{y}")
         pop.bind("<Escape>", lambda _e: self._close())
@@ -160,7 +168,23 @@ class Select(tk.Frame):
             return
         self.bind_all("<Button-1>", self._on_global_click, add="+")
         self.bind_all("<Escape>", self._on_escape, add="+")
+        top = self.winfo_toplevel()
+        self._last_top_geom = (top.winfo_x(), top.winfo_y(), top.winfo_width(), top.winfo_height())
+        for seq in ("<FocusOut>", "<Unmap>", "<Configure>"):
+            bid = top.bind(seq, self._on_top_event, add="+")
+            self._top_bindings.append((top, seq, bid))
 
+    def _on_top_event(self, e) -> None:
+        if self._pop is None:
+            return
+        top = self.winfo_toplevel()
+        if e.widget == top:
+            if e.type == tk.EventType.Configure:
+                geom = (top.winfo_x(), top.winfo_y(), top.winfo_width(), top.winfo_height())
+                if geom != self._last_top_geom:
+                    self._close()
+            else:
+                self._close()
     def _on_escape(self, _e=None):
         self._close()
         return "break"
@@ -201,6 +225,12 @@ class Select(tk.Frame):
             self.unbind_all("<Escape>")
         except tk.TclError:
             pass
+        for top, seq, bid in self._top_bindings:
+            try:
+                top.unbind(seq, bid)
+            except tk.TclError:
+                pass
+        self._top_bindings.clear()
         pop = self._pop
         self._pop = None
         if Select._open is self:
