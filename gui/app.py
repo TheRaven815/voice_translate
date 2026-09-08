@@ -533,7 +533,7 @@ class App(tk.Tk):
         pop = tk.Toplevel(self)
         self._about = pop
         pop.title("Hakkında")
-        pop.configure(bg=C.bg)
+        pop.configure(bg=C.panel)
         pop.resizable(False, False)
         pop.transient(self)
         apply_icon(pop)
@@ -542,79 +542,72 @@ class App(tk.Tk):
         for key in ("<Escape>", "<Return>", "<KP_Enter>", "<space>"):
             pop.bind(key, lambda _e: self._close_about())
 
-        card = tk.Frame(
-            pop,
-            bg=C.panel,
-            highlightthickness=1,
-            highlightbackground=C.line,
-            bd=0,
-        )
-        card.pack(fill=tk.BOTH, expand=True, padx=16, pady=16)
+        main = tk.Frame(pop, bg=C.panel, padx=20, pady=16)
+        main.pack(fill=tk.BOTH, expand=True)
+
+        header = tk.Frame(main, bg=C.panel)
+        header.pack(fill=tk.X)
 
         if ICON_PNG.is_file():
             try:
                 raw = tk.PhotoImage(file=str(ICON_PNG))
-                logo_img = raw.subsample(16, 16)
-                logo = tk.Label(card, image=logo_img, bg=C.panel)
+                logo_img = raw.subsample(21, 21)
+                logo = tk.Label(header, image=logo_img, bg=C.panel)
                 logo.image = logo_img
-                logo.pack(pady=(18, 10))
+                logo.pack(side=tk.LEFT, padx=(0, 14), anchor="n")
             except Exception:
                 pass
 
+        info = tk.Frame(header, bg=C.panel)
+        info.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        title_row = tk.Frame(info, bg=C.panel)
+        title_row.pack(anchor="w")
+
         self.about_name = tk.Label(
-            card,
+            title_row,
             text=APP_TITLE,
-            font=(self.font_brand[0], 15, "bold"),
+            font=(self.font_brand[0], 12, "bold"),
             fg=C.text,
             bg=C.panel,
         )
-        self.about_name.pack()
+        self.about_name.pack(side=tk.LEFT)
 
-        v_frame = tk.Frame(card, bg=C.bg, highlightthickness=1, highlightbackground=C.line)
-        v_frame.pack(pady=(4, 10))
         self.about_version = tk.Label(
-            v_frame,
+            title_row,
             text=f"v{__version__}",
-            font=(self.font_ui[0], 8),
-            fg=C.muted,
-            bg=C.bg,
-            padx=8,
-            pady=1,
+            font=self.font_ui,
+            fg=C.dim,
+            bg=C.panel,
         )
-        self.about_version.pack()
+        self.about_version.pack(side=tk.LEFT, padx=(6, 0))
 
         desc = tk.Label(
-            card,
+            info,
             text="Canlı sistem-sesi çevirisi",
             font=self.font_ui,
             fg=C.muted,
             bg=C.panel,
         )
-        desc.pack(pady=(0, 16))
+        desc.pack(anchor="w", pady=(3, 0))
 
-        div = tk.Frame(card, bg=C.line, height=1)
-        div.pack(fill=tk.X, padx=20, pady=(0, 14))
+        div = tk.Frame(main, bg=C.line, height=1)
+        div.pack(fill=tk.X, pady=(14, 12))
 
-        dev_row = tk.Frame(card, bg=C.panel)
-        dev_row.pack(pady=(0, 18))
-        tk.Label(
-            dev_row,
-            text="Geliştirici:",
-            font=self.font_ui,
-            fg=C.dim,
-            bg=C.panel,
-        ).pack(side=tk.LEFT, padx=(0, 5))
+        bottom = tk.Frame(main, bg=C.panel)
+        bottom.pack(fill=tk.X)
+
         self.about_author = tk.Label(
-            dev_row,
+            bottom,
             text=APP_AUTHOR,
             font=self.font_ui,
-            fg=C.text,
+            fg=C.dim,
             bg=C.panel,
         )
         self.about_author.pack(side=tk.LEFT)
 
-        btn_wrap = tk.Frame(card, bg=C.line, bd=0, highlightthickness=0)
-        btn_wrap.pack(pady=(0, 18))
+        btn_wrap = tk.Frame(bottom, bg=C.line, bd=0, highlightthickness=0)
+        btn_wrap.pack(side=tk.RIGHT)
         btn = tk.Button(
             btn_wrap,
             text="Tamam",
@@ -626,8 +619,8 @@ class App(tk.Tk):
             relief="flat",
             bd=0,
             highlightthickness=0,
-            padx=28,
-            pady=5,
+            padx=16,
+            pady=3,
             cursor="hand2",
             takefocus=0,
             command=self._close_about,
@@ -637,7 +630,7 @@ class App(tk.Tk):
         btn.bind("<Leave>", lambda _e: btn.configure(bg=C.panel))
 
         pop.update_idletasks()
-        w = max(300, pop.winfo_reqwidth())
+        w = max(290, pop.winfo_reqwidth())
         h = pop.winfo_reqheight()
         x = self.winfo_rootx() + (self.winfo_width() - w) // 2
         y = self.winfo_rooty() + (self.winfo_height() - h) // 2
