@@ -4,7 +4,7 @@ import tkinter as tk
 
 from devices import NONE_OUTPUT
 from gui.app import App
-from gui.theme import ICON_ICO, ICON_PNG
+from gui.theme import C, ICON_ICO, ICON_PNG
 from languages import AUTO_SRC, source_code
 from meta import APP_AUTHOR, APP_TITLE, __version__
 
@@ -108,5 +108,31 @@ def test_save_key_clears_selection_and_focus(tmp_path, monkeypatch):
         assert not app.key_entry.selection_present()
         assert app.focus_get() is not app.key_entry
         assert "kaydedildi" in app.log.get("1.0", "end")
+    finally:
+        app.destroy()
+
+
+def test_select_closes_on_second_toggle_without_pick():
+    app = App()
+    try:
+        box = app.src_box
+        box._toggle()
+        app.update()
+        assert box._pop is not None
+        box._toggle()
+        app.update()
+        assert box._pop is None
+    finally:
+        app.destroy()
+
+
+def test_running_paints_status_dot_green():
+    app = App()
+    try:
+        assert app._dot.itemcget(app._dot_id, "fill") == C.dim
+        app._set_running(True)
+        assert app._dot.itemcget(app._dot_id, "fill") == C.live
+        app._set_running(False)
+        assert app._dot.itemcget(app._dot_id, "fill") == C.dim
     finally:
         app.destroy()

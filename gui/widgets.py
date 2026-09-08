@@ -10,6 +10,8 @@ from .theme import C
 class Select(tk.Frame):
     """Tek satırlık seçici; ttk.Combobox'un native çerçevesini taşımıyor."""
 
+    _open: Select | None = None
+
     def __init__(self, master, *, textvariable, values=(), font=None, **_):
         super().__init__(master, bg=C.line, highlightthickness=0, bd=0)
         self.var = textvariable
@@ -83,6 +85,8 @@ class Select(tk.Frame):
         if self._pop is not None:
             self._close()
             return
+        if Select._open is not None:
+            Select._open._close()
         if not self._values:
             return
         self.update_idletasks()
@@ -148,19 +152,59 @@ class Select(tk.Frame):
         pop.geometry(f"{w}x{h}+{x}+{y}")
         pop.bind("<Escape>", lambda _e: self._close())
         self._pop = pop
-        pop.focus_set()
-        pop.grab_set()
-        pop.after(80, lambda: pop.bind("<FocusOut>", lambda _e: self._close()))
+        Select._open = self
+        pop.after_idle(self._arm_dismiss)
+
+    def _arm_dismiss(self) -> None:
+        if self._pop is None:
+            return
+        self.bind_all("<Button-1>", self._on_global_click, add="+")
+        self.bind_all("<Escape>", self._on_escape, add="+")
+
+    def _on_escape(self, _e=None):
+        self._close()
+        return "break"
+
+    def _on_global_click(self, e):
+        if self._pop is None:
+            return
+        w = e.widget
+        if isinstance(w, str):
+            try:
+                w = self.nametowidget(w)
+            except tk.TclError:
+                self._close()
+                return
+        if self._inside(w, self._pop) or self._inside(w, self):
+            return
+        self._close()
+
+    def _inside(self, widget, ancestor) -> bool:
+        w = widget
+        while w:
+            if w == ancestor:
+                return True
+            try:
+                parent = w.nametowidget(w.winfo_parent())
+            except (tk.TclError, KeyError, AttributeError):
+                break
+            if parent is w:
+                break
+            w = parent
+        return False
 
     def _close(self):
         if self._pop is None:
             return
-        pop = self._pop
-        self._pop = None
         try:
-            pop.grab_release()
+            self.unbind_all("<Button-1>")
+            self.unbind_all("<Escape>")
         except tk.TclError:
             pass
+        pop = self._pop
+        self._pop = None
+        if Select._open is self:
+            Select._open = None
         try:
             pop.destroy()
         except tk.TclError:

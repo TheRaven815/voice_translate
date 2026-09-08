@@ -85,9 +85,9 @@ class App(tk.Tk):
 
         st = tk.Frame(head, bg=C.rail)
         st.pack(anchor="w", pady=(6, 0))
-        self._dot = tk.Canvas(st, width=7, height=7, bg=C.rail, highlightthickness=0, bd=0)
+        self._dot = tk.Canvas(st, width=8, height=8, bg=C.rail, highlightthickness=0, bd=0)
         self._dot.pack(side=tk.LEFT, pady=1)
-        self._dot_id = self._dot.create_oval(0, 0, 7, 7, fill=C.dim, outline="")
+        self._dot_id = self._dot.create_oval(1, 1, 7, 7, fill=C.dim, outline="")
         self.status = tk.Label(st, text="Hazır", font=self.font_ui, fg=C.muted, bg=C.rail)
         self.status.pack(side=tk.LEFT, padx=(6, 0))
 
@@ -365,6 +365,7 @@ class App(tk.Tk):
         self.key_entry.configure(state=tk.DISABLED if running else tk.NORMAL)
         self._paint(self.start_btn, filled=not running, enabled=not running)
         self._paint(self.stop_btn, filled=running, enabled=running)
+        self._dot.itemconfigure(self._dot_id, fill=C.live if running else C.dim)
 
     def _swap_langs(self) -> None:
         if self.src_box["state"] == "disabled":

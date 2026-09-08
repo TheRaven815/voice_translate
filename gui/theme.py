@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import os
+import sys
 import tkinter as tk
 import tkinter.font as tkfont
 from pathlib import Path
 
-_ASSETS = Path(__file__).resolve().parent.parent / "assets"
+
+def _root() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys._MEIPASS)
+    return Path(__file__).resolve().parent.parent
+
+
+_ASSETS = _root() / "assets"
 ICON_ICO = _ASSETS / "ahenk.ico"
 ICON_PNG = _ASSETS / "ahenk.png"
 APP_ID = "eneseliagir.ahenk"
