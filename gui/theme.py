@@ -5,6 +5,12 @@ from __future__ import annotations
 import os
 import tkinter as tk
 import tkinter.font as tkfont
+from pathlib import Path
+
+_ASSETS = Path(__file__).resolve().parent.parent / "assets"
+ICON_ICO = _ASSETS / "ahenk.ico"
+ICON_PNG = _ASSETS / "ahenk.png"
+APP_ID = "eneseliagir.ahenk"
 
 
 class C:
@@ -39,6 +45,38 @@ def dark_titlebar(win: tk.Tk) -> None:
             dwm(hwnd, attr, ctypes.byref(val), ctypes.sizeof(val))
     except Exception:
         pass
+
+
+def prepare_app_id() -> None:
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+    except Exception:
+        pass
+
+
+def apply_icon(win: tk.Tk) -> None:
+    if ICON_ICO.is_file():
+        try:
+            if os.name == "nt":
+                win.iconbitmap(default=str(ICON_ICO))
+            else:
+                win.iconbitmap(str(ICON_ICO))
+        except tk.TclError:
+            try:
+                win.iconbitmap(str(ICON_ICO))
+            except tk.TclError:
+                pass
+    if ICON_PNG.is_file():
+        try:
+            img = tk.PhotoImage(file=str(ICON_PNG))
+            win._ahenk_icon = img
+            win.iconphoto(True, img)
+        except tk.TclError:
+            pass
 
 
 def pick_fonts(root: tk.Tk) -> dict[str, tuple]:

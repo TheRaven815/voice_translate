@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import tkinter as tk
 
-from voice_translate.gui.theme import C
+from .theme import C
 
 
 class Select(tk.Frame):

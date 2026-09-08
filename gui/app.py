@@ -7,18 +7,22 @@ import queue
 import threading
 import tkinter as tk
 
-from voice_translate.config import resolve_api_key, save_api_key
-from voice_translate.devices import all_inputs, all_outputs, default_speaker, pick_loopback
-from voice_translate.gui.theme import C, dark_titlebar, pick_fonts
-from voice_translate.gui.widgets import Select
-from voice_translate.languages import LANGS
-from voice_translate.loop import SystemAudioLoop
+from config import resolve_api_key, save_api_key
+from devices import NONE_OUTPUT, all_inputs, all_outputs, default_speaker, pick_loopback
+from languages import AUTO_SRC, LANGS, source_code, source_names
+from loop import SystemAudioLoop
+from meta import APP_AUTHOR, APP_TITLE, __version__
+
+from .theme import C, apply_icon, dark_titlebar, pick_fonts, prepare_app_id
+from .widgets import Select
 
 
 class App(tk.Tk):
     def __init__(self):
+        prepare_app_id()
         super().__init__()
-        self.title("Çeviri")
+        self.title(APP_TITLE)
+        apply_icon(self)
         self.geometry("960x580")
         self.minsize(780, 460)
         self.configure(bg=C.bg)
@@ -27,6 +31,7 @@ class App(tk.Tk):
         self.loop_obj: SystemAudioLoop | None = None
         self.inputs: list = []
         self.outputs: list = []
+        self._about: tk.Toplevel | None = None
         fonts = pick_fonts(self)
         self.font_ui = fonts["ui"]
         self.font_brand = fonts["brand"]
@@ -65,9 +70,18 @@ class App(tk.Tk):
         head = tk.Frame(rail, bg=C.rail)
         head.grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 12))
 
-        tk.Label(
-            head, text="Çeviri", font=self.font_brand, fg=C.text, bg=C.rail, anchor="w"
-        ).pack(anchor="w")
+        title = tk.Frame(head, bg=C.rail)
+        title.pack(fill=tk.X)
+        self.brand = tk.Label(
+            title, text=APP_TITLE, font=self.font_brand, fg=C.text, bg=C.rail
+        )
+        self.brand.pack(side=tk.LEFT)
+        self.version_lbl = tk.Label(
+            title, text=f"v{__version__}", font=self.font_ui, fg=C.dim, bg=C.rail
+        )
+        self.version_lbl.pack(side=tk.LEFT, padx=(8, 0))
+        self.info_btn = self._text_btn(title, "ⓘ", self._open_about)
+        self.info_btn.pack(side=tk.RIGHT)
 
         st = tk.Frame(head, bg=C.rail)
         st.pack(anchor="w", pady=(6, 0))
@@ -117,9 +131,9 @@ class App(tk.Tk):
         langs.columnconfigure(0, weight=1)
         langs.columnconfigure(2, weight=1)
 
-        self.src_var = tk.StringVar(value="İngilizce")
+        self.src_var = tk.StringVar(value=AUTO_SRC)
         self.src_box = Select(
-            langs, textvariable=self.src_var, values=list(LANGS), font=self.font_ui
+            langs, textvariable=self.src_var, values=source_names(), font=self.font_ui
         )
         self.src_box.grid(row=0, column=0, sticky="ew")
 
@@ -355,6 +369,8 @@ class App(tk.Tk):
     def _swap_langs(self) -> None:
         if self.src_box["state"] == "disabled":
             return
+        if self.src_var.get() == AUTO_SRC:
+            return
         a, b = self.src_var.get(), self.dst_var.get()
         self.src_var.set(b)
         self.dst_var.set(a)
@@ -368,7 +384,7 @@ class App(tk.Tk):
         self.in_box["values"] = [
             ("[Sistem] " if m.isloopback else "[Mikrofon] ") + m.name for m in ins
         ]
-        self.out_box["values"] = [s.name for s in outs]
+        self.out_box["values"] = [NONE_OUTPUT] + [s.name for s in outs]
         if not stopping:
             try:
                 default_in = pick_loopback(None)
@@ -383,8 +399,16 @@ class App(tk.Tk):
             try:
                 self.out_var.set(default_speaker().name)
             except Exception:
-                if outs:
-                    self.out_var.set(outs[0].name)
+                self.out_var.set(NONE_OUTPUT)
+
+    def _selected_speaker(self):
+        i = self.out_box.current()
+        if i <= 0:
+            return None
+        try:
+            return self.outputs[i - 1]
+        except IndexError:
+            return None
 
     def _append(self, text: str):
         if text.startswith("[hata]"):
@@ -443,6 +467,8 @@ class App(tk.Tk):
             self._append("[bilgi] API anahtarı kaydedildi.\n")
         else:
             self._append("[bilgi] Kayıtlı anahtar silindi.\n")
+        self.key_entry.selection_clear()
+        self.focus_set()
 
     def start(self):
         if self.worker is not None and self.worker.is_alive():
@@ -453,15 +479,15 @@ class App(tk.Tk):
             return
         try:
             source = self.inputs[self.in_box.current()]
-            speaker = self.outputs[self.out_box.current()]
         except (IndexError, tk.TclError):
-            self._append("[hata] Geçerli giriş/çıkış aygıtı seçin.\n")
+            self._append("[hata] Geçerli giriş aygıtı seçin.\n")
             return
+        speaker = self._selected_speaker()
         try:
             save_api_key(api_key)
         except OSError:
             pass
-        src, dst = LANGS[self.src_var.get()], LANGS[self.dst_var.get()]
+        src, dst = source_code(self.src_var.get()), LANGS[self.dst_var.get()]
         self._clear_pane(self.heard)
         self._clear_pane(self.trans)
         self.loop_obj = SystemAudioLoop(
@@ -473,7 +499,9 @@ class App(tk.Tk):
             on_text=self.log_queue.put,
             console_input=False,
         )
-        self._append(f"[bilgi] {source.name} -> {speaker.name} ({src}>{dst})\n")
+        dest = speaker.name if speaker is not None else NONE_OUTPUT
+        src_disp = "auto" if src is None else src
+        self._append(f"[bilgi] {source.name} -> {dest} ({src_disp}>{dst})\n")
         self.worker = threading.Thread(target=self._run, daemon=True)
         self.worker.start()
         self._set_running(True)
@@ -495,8 +523,72 @@ class App(tk.Tk):
             self._set_status("Durduruluyor", C.warn)
             self._paint(self.stop_btn, filled=False, enabled=False)
 
+    def _open_about(self) -> None:
+        if self._about is not None and self._about.winfo_exists():
+            self._about.deiconify()
+            self._about.lift()
+            self._about.focus_set()
+            return
+        pop = tk.Toplevel(self)
+        self._about = pop
+        pop.title("Hakkında")
+        pop.configure(bg=C.bg)
+        pop.resizable(False, False)
+        pop.transient(self)
+        pop.protocol("WM_DELETE_WINDOW", self._close_about)
+        pop.bind("<Escape>", lambda _e: self._close_about())
+
+        body = tk.Frame(pop, bg=C.bg)
+        body.pack(fill=tk.BOTH, expand=True, padx=24, pady=20)
+        tk.Label(
+            body, text="Hakkında", font=self.font_ui, fg=C.muted, bg=C.bg, anchor="w"
+        ).pack(anchor="w")
+        self.about_name = tk.Label(
+            body, text=APP_TITLE, font=self.font_brand, fg=C.text, bg=C.bg, anchor="w"
+        )
+        self.about_name.pack(anchor="w", pady=(12, 0))
+        self.about_version = tk.Label(
+            body, text=f"v{__version__}", font=self.font_ui, fg=C.dim, bg=C.bg, anchor="w"
+        )
+        self.about_version.pack(anchor="w", pady=(4, 0))
+        tk.Label(
+            body,
+            text="Canlı sistem-sesi çevirisi",
+            font=self.font_ui,
+            fg=C.muted,
+            bg=C.bg,
+            anchor="w",
+        ).pack(anchor="w", pady=(12, 0))
+        self.about_author = tk.Label(
+            body, text=APP_AUTHOR, font=self.font_ui, fg=C.text, bg=C.bg, anchor="w"
+        )
+        self.about_author.pack(anchor="w", pady=(4, 0))
+
+        pop.update_idletasks()
+        w, h = pop.winfo_reqwidth(), pop.winfo_reqheight()
+        x = self.winfo_rootx() + (self.winfo_width() - w) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - h) // 2
+        pop.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        dark_titlebar(pop)
+        try:
+            pop.grab_set()
+        except tk.TclError:
+            pass
+        pop.focus_set()
+
+    def _close_about(self) -> None:
+        if self._about is None:
+            return
+        try:
+            self._about.grab_release()
+        except tk.TclError:
+            pass
+        self._about.destroy()
+        self._about = None
+
     def _on_close(self):
         self.stop()
+        self._close_about()
         for box in (self.in_box, self.out_box, self.src_box, self.dst_box):
             box._close()
         self.destroy()

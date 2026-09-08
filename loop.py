@@ -8,11 +8,10 @@ import threading
 from types import SimpleNamespace
 
 import numpy as np
-import soundcard as sc
 from google import genai
 from google.genai import types
 
-from voice_translate.audio import (
+from audio import (
     CAPTURE_BLOCK,
     CAPTURE_RATE,
     RECEIVE_SAMPLE_RATE,
@@ -23,12 +22,14 @@ from voice_translate.audio import (
 MODEL = "models/gemini-3.5-live-translate-preview"
 
 
-def build_config(src: str, dst: str) -> types.LiveConnectConfig:
+def build_config(src: str | None, dst: str) -> types.LiveConnectConfig:
+    if src:
+        input_tr = types.AudioTranscriptionConfig(language_codes=[src])
+    else:
+        input_tr = types.AudioTranscriptionConfig()
     return types.LiveConnectConfig(
         response_modalities=["AUDIO"],
-        input_audio_transcription=types.AudioTranscriptionConfig(
-            language_codes=[src],
-        ),
+        input_audio_transcription=input_tr,
         output_audio_transcription=types.AudioTranscriptionConfig(),
         context_window_compression=types.ContextWindowCompressionConfig(
             trigger_tokens=0,
@@ -191,7 +192,8 @@ class SystemAudioLoop:
             turn = self.session.receive()
             async for response in turn:
                 if data := response.data:
-                    self.audio_in_queue.put_nowait(data)
+                    if self.audio_in_queue is not None:
+                        self.audio_in_queue.put_nowait(data)
                     continue
                 content = getattr(response, "server_content", None)
                 if content is not None:
@@ -203,7 +205,9 @@ class SystemAudioLoop:
             # kuyruk silinince ses kesik kesik kalır.
 
     def _play_thread(self):
-        speaker = self.output_speaker or sc.default_speaker()
+        speaker = self.output_speaker
+        if speaker is None:
+            return
         preroll_n = int(RECEIVE_SAMPLE_RATE * 0.08)  # ~80 ms jitter tamponu
         pending: list[np.ndarray] = []
         pending_n = 0
@@ -275,14 +279,17 @@ class SystemAudioLoop:
             self._stop = asyncio.Event()
             self._cap_stop.clear()
             self._play_stop.clear()
-            self.audio_in_queue = asyncio.Queue()
+            self.audio_in_queue = (
+                asyncio.Queue() if self.output_speaker is not None else None
+            )
             self.out_queue = asyncio.Queue(maxsize=50)
             stopper = self.send_text() if self.console_input else self.watch_stop()
             stop_task = tg.create_task(stopper)
             tg.create_task(self.send_realtime())
             tg.create_task(self.listen_system())
             tg.create_task(self.receive())
-            tg.create_task(self.play())
+            if self.output_speaker is not None:
+                tg.create_task(self.play())
             await stop_task
             self._cap_stop.set()
             self._play_stop.set()

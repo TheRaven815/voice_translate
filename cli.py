@@ -1,4 +1,4 @@
-"""Konsol girişi: python live_translate.py …"""
+"""Konsol girişi: python cli.py …"""
 
 from __future__ import annotations
 
@@ -6,14 +6,14 @@ import argparse
 import asyncio
 import sys
 
-from voice_translate.config import resolve_api_key
-from voice_translate.devices import default_microphone, list_devices, pick_loopback
-from voice_translate.loop import SystemAudioLoop
+from config import resolve_api_key
+from devices import default_microphone, default_speaker, list_devices, pick_loopback
+from loop import SystemAudioLoop
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="PC sistem sesini canlı çevir")
-    parser.add_argument("--src", default="en", help="kaynak dil (varsayılan: en)")
+    parser.add_argument("--src", default="auto", help="kaynak dil kodu veya auto (varsayılan: auto)")
     parser.add_argument("--dst", default="tr", help="hedef dil (varsayılan: tr)")
     parser.add_argument("--device", default=None, help="loopback cihaz adı filtresi")
     parser.add_argument("--mic", action="store_true", help="sistem sesi yerine mikrofon")
@@ -39,8 +39,15 @@ def main() -> None:
         print(f"Sistem sesi yakalanıyor (loopback): {source.name}")
     print(f"{args.src} -> {args.dst} çeviri başlıyor. Durdurmak: q + Enter veya Ctrl+C")
 
-    loop = SystemAudioLoop(args.src, args.dst, source, api_key)
+    speaker = default_speaker()
+    print(f"Çıkış: {speaker.name}")
+    src = None if args.src.strip().lower() in ("auto", "") else args.src.strip()
+    loop = SystemAudioLoop(src, args.dst, source, api_key, output_speaker=speaker)
     try:
         asyncio.run(loop.run())
     except KeyboardInterrupt:
         print("\nDurduruldu.")
+
+
+if __name__ == "__main__":
+    main()

@@ -5,6 +5,9 @@ from __future__ import annotations
 import soundcard as sc
 
 
+NONE_OUTPUT = "Hiçbiri"
+
+
 def list_devices() -> None:
     print("Hoparlörler:")
     for s in sc.all_speakers():

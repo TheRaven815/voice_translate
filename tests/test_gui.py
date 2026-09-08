@@ -1,9 +1,42 @@
 """GUI: Başlat, Tkinter'ın __getattr__ tuzakına düşmeden log yazmalı."""
 
-import gui
+import tkinter as tk
+
+from devices import NONE_OUTPUT
+from gui.app import App
+from gui.theme import ICON_ICO, ICON_PNG
+from languages import AUTO_SRC, source_code
+from meta import APP_AUTHOR, APP_TITLE, __version__
+
+
+def test_app_name_version_and_about():
+    app = App()
+    try:
+        assert app.title() == APP_TITLE == "Ahenk"
+        assert app.brand["text"] == "Ahenk"
+        assert app.version_lbl["text"] == "v0.1.0"
+        assert ICON_ICO.is_file()
+        assert ICON_PNG.is_file()
+        assert getattr(app, "_ahenk_icon", None) is not None
+        assert app.info_btn["text"] == "ⓘ"
+        assert app._about is None
+        app._open_about()
+        assert app._about is not None
+        assert app._about.title() == "Hakkında"
+        assert app.about_name["text"] == "Ahenk"
+        assert app.about_version["text"] == "v0.1.0"
+        assert app.about_author["text"] == APP_AUTHOR == "Enes Eliağır"
+        first = app._about
+        app._open_about()
+        assert app._about is first
+        app._close_about()
+        assert app._about is None
+    finally:
+        app.destroy()
+
 
 def test_start_without_key_logs_error_not_crash():
-    app = gui.App()
+    app = App()
     try:
         app.key_var.set("")
         app.start()  # eski kod: AttributeError '_append'
@@ -17,7 +50,7 @@ def test_start_without_key_logs_error_not_crash():
 
 
 def test_transcript_chunks_become_plain_text():
-    app = gui.App()
+    app = App()
     try:
         app.log_queue.put(("heard", "Onlar da dedi ki, gördüğün gibi"))
         app.log_queue.put(("heard", " başka bir sorun kalmış mıydı?"))
@@ -30,5 +63,50 @@ def test_transcript_chunks_become_plain_text():
         assert "[duyulan]" not in heard
         assert "They also asked if anything else remained." in trans
         assert "[çeviri]" not in trans
+    finally:
+        app.destroy()
+
+
+def test_none_output_means_text_only():
+    app = App()
+    try:
+        assert app.out_box["values"][0] == NONE_OUTPUT
+        app.out_var.set(NONE_OUTPUT)
+        assert app._selected_speaker() is None
+    finally:
+        app.destroy()
+
+
+def test_auto_source_is_selectable_not_a_target():
+    app = App()
+    try:
+        assert app.src_box["values"][0] == AUTO_SRC
+        assert AUTO_SRC not in app.dst_box["values"]
+        assert app.src_var.get() == AUTO_SRC
+        assert source_code(app.src_var.get()) is None
+        app.dst_var.set("Türkçe")
+        app._swap_langs()
+        assert app.src_var.get() == AUTO_SRC
+        assert app.dst_var.get() == "Türkçe"
+    finally:
+        app.destroy()
+
+
+def test_save_key_clears_selection_and_focus(tmp_path, monkeypatch):
+    monkeypatch.setattr("config.load_dotenv", lambda: None)
+    monkeypatch.setenv("VOICE_TRANSLATE_CONFIG", str(tmp_path / "config.json"))
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    app = App()
+    try:
+        app.key_var.set("sk-test")
+        app.key_entry.focus_force()
+        app.key_entry.selection_range(0, tk.END)
+        app.update()
+        assert app.key_entry.selection_present()
+        app.save_key()
+        app.update()
+        assert not app.key_entry.selection_present()
+        assert app.focus_get() is not app.key_entry
+        assert "kaydedildi" in app.log.get("1.0", "end")
     finally:
         app.destroy()

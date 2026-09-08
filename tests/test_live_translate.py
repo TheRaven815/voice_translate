@@ -16,9 +16,9 @@ from unittest.mock import AsyncMock
 import numpy as np
 import pytest
 
-from voice_translate.audio import pcm16_to_float, to_16k_mono
-from voice_translate.devices import pick_loopback
-from voice_translate.loop import SystemAudioLoop, build_config, merge_transcript
+from audio import pcm16_to_float, to_16k_mono
+from devices import pick_loopback
+from loop import SystemAudioLoop, build_config, merge_transcript
 
 
 def test_resample_48k_stereo_to_16k_mono():
@@ -43,6 +43,10 @@ def test_build_config_matches_installed_sdk():
     cfg = build_config("en", "tr")
     assert cfg.translation_config.target_language_code == "tr"
     assert cfg.response_modalities == ["AUDIO"]
+    assert cfg.input_audio_transcription.language_codes == ["en"]
+    auto = build_config(None, "tr")
+    assert auto.translation_config.target_language_code == "tr"
+    assert not auto.input_audio_transcription.language_codes
 
 
 def test_merge_transcript_joins_deltas_and_cumulative():
@@ -219,6 +223,39 @@ def test_request_stop_without_run_is_safe():
     loop_obj._play_stop = __import__("threading").Event()
     loop_obj._play_q = None
     loop_obj.request_stop()  # yükseltmemeli
+
+
+def test_none_speaker_skips_playback_keeps_text():
+    heard: list = []
+    session = FakeSession()
+    loop_obj = SystemAudioLoop(
+        "en", "tr", FakeMic(), "dummy-key",
+        output_speaker=None,
+        on_text=heard.append,
+        console_input=False,
+    )
+    loop_obj.client = _stub_client(session)
+    errors: list = []
+    t = threading.Thread(target=_run_worker, args=(loop_obj, errors), daemon=True)
+    t.start()
+    try:
+        deadline = time.time() + 15
+        while loop_obj.session is None and time.time() < deadline:
+            time.sleep(0.05)
+        assert loop_obj.session is not None, "session kurulamadı"
+        deadline = time.time() + 15
+        while not session.send_realtime_input.await_count and time.time() < deadline:
+            time.sleep(0.05)
+        trans = "".join(m[1] for m in heard if isinstance(m, tuple) and m[0] == "trans")
+        assert "Bir, iki, üç." in trans, f"çeviri metni gelmedi: {heard}"
+        assert loop_obj.audio_in_queue is None
+        assert loop_obj._play_q is None
+    finally:
+        loop_obj.request_stop()
+        t.join(timeout=20)
+    assert not t.is_alive(), "worker durmadı"
+    assert errors == [], f"worker hatası: {errors}"
+
 
 
 def test_duplex_with_real_devices_stays_alive():

@@ -1,1 +1,0 @@
-"""Canlı sistem-sesi çevirisi."""

@@ -2,7 +2,7 @@
 
 import json
 
-from voice_translate import config
+import config
 
 
 def _isolate(tmp_path, monkeypatch):
