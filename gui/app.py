@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import queue
 import threading
+import time
 import tkinter as tk
 
-from config import resolve_api_key, save_api_key
+from config import load as load_config, resolve_api_key, save_api_key, save_preferences
 from devices import NONE_OUTPUT, all_inputs, all_outputs, default_speaker, pick_loopback
 from languages import AUTO_SRC, LANGS, source_code, source_names
 from loop import SystemAudioLoop
@@ -32,6 +33,7 @@ class App(tk.Tk):
         self.inputs: list = []
         self.outputs: list = []
         self._about: tk.Toplevel | None = None
+        self._overlay: tk.Toplevel | None = None
         fonts = pick_fonts(self)
         self.font_ui = fonts["ui"]
         self.font_brand = fonts["brand"]
@@ -82,14 +84,19 @@ class App(tk.Tk):
         self.version_lbl.pack(side=tk.LEFT, padx=(8, 0))
         self.info_btn = self._text_btn(title, "ⓘ", self._open_about)
         self.info_btn.pack(side=tk.RIGHT)
+        self.overlay_btn = self._text_btn(title, "Altyazı", self.toggle_overlay)
+        self.overlay_btn.pack(side=tk.RIGHT, padx=(0, 8))
 
         st = tk.Frame(head, bg=C.rail)
-        st.pack(anchor="w", pady=(6, 0))
+        st.pack(anchor="w", pady=(6, 0), fill=tk.X)
         self._dot = tk.Canvas(st, width=8, height=8, bg=C.rail, highlightthickness=0, bd=0)
         self._dot.pack(side=tk.LEFT, pady=1)
         self._dot_id = self._dot.create_oval(1, 1, 7, 7, fill=C.dim, outline="")
         self.status = tk.Label(st, text="Hazır", font=self.font_ui, fg=C.muted, bg=C.rail)
         self.status.pack(side=tk.LEFT, padx=(6, 0))
+        self.meter = tk.Canvas(st, width=36, height=4, bg=C.line, highlightthickness=0, bd=0)
+        self.meter.pack(side=tk.RIGHT, padx=(0, 2), pady=3)
+        self._meter_bar = self.meter.create_rectangle(0, 0, 0, 4, fill=C.live, outline="")
 
         self._rail_sep(rail, 1)
 
@@ -131,7 +138,11 @@ class App(tk.Tk):
         langs.columnconfigure(0, weight=1)
         langs.columnconfigure(2, weight=1)
 
-        self.src_var = tk.StringVar(value=AUTO_SRC)
+        cfg = load_config()
+        src_val = cfg.src_lang if cfg.src_lang in source_names() else AUTO_SRC
+        dst_val = cfg.dst_lang if cfg.dst_lang in LANGS else "Türkçe"
+
+        self.src_var = tk.StringVar(value=src_val)
         self.src_box = Select(
             langs, textvariable=self.src_var, values=source_names(), font=self.font_ui
         )
@@ -145,11 +156,14 @@ class App(tk.Tk):
         swap.bind("<Enter>", lambda _e: swap.configure(fg=C.text))
         swap.bind("<Leave>", lambda _e: swap.configure(fg=C.dim))
 
-        self.dst_var = tk.StringVar(value="Türkçe")
+        self.dst_var = tk.StringVar(value=dst_val)
         self.dst_box = Select(
             langs, textvariable=self.dst_var, values=list(LANGS), font=self.font_ui
         )
         self.dst_box.grid(row=0, column=2, sticky="ew")
+
+        for var in (self.in_var, self.out_var, self.src_var, self.dst_var):
+            var.trace_add("write", lambda *_: self._save_user_prefs())
 
         self._rail_sep(rail, 7)
 
@@ -193,12 +207,17 @@ class App(tk.Tk):
         self._paint(self.stop_btn, filled=False, enabled=False)
 
     def _build_main(self, main: tk.Frame):
-        tk.Label(main, text="Duyulan", font=self.font_ui, fg=C.muted, bg=C.bg).grid(
-            row=0, column=0, sticky="w", padx=(16, 8), pady=(12, 6)
-        )
-        tk.Label(main, text="Çeviri", font=self.font_ui, fg=C.muted, bg=C.bg).grid(
-            row=0, column=1, sticky="w", padx=(16, 16), pady=(12, 6)
-        )
+        heard_h = tk.Frame(main, bg=C.bg)
+        heard_h.grid(row=0, column=0, sticky="ew", padx=(16, 8), pady=(12, 6))
+        tk.Label(heard_h, text="Duyulan", font=self.font_ui, fg=C.muted, bg=C.bg).pack(side=tk.LEFT)
+        self._text_btn(heard_h, "Temizle", lambda: self._clear_pane(self.heard)).pack(side=tk.RIGHT)
+        self._text_btn(heard_h, "Kopyala", lambda: self._copy_pane(self.heard)).pack(side=tk.RIGHT, padx=(0, 8))
+
+        trans_h = tk.Frame(main, bg=C.bg)
+        trans_h.grid(row=0, column=1, sticky="ew", padx=(16, 16), pady=(12, 6))
+        tk.Label(trans_h, text="Çeviri", font=self.font_ui, fg=C.muted, bg=C.bg).pack(side=tk.LEFT)
+        self._text_btn(trans_h, "Temizle", lambda: self._clear_pane(self.trans)).pack(side=tk.RIGHT)
+        self._text_btn(trans_h, "Kopyala", lambda: self._copy_pane(self.trans)).pack(side=tk.RIGHT, padx=(0, 8))
 
         heard_wrap = tk.Frame(main, bg=C.bg, bd=0, highlightthickness=0)
         trans_wrap = tk.Frame(main, bg=C.bg, bd=0, highlightthickness=0)
@@ -289,8 +308,9 @@ class App(tk.Tk):
             row=row, column=0, sticky="ew", padx=16, pady=(12, 0)
         )
 
-    def _text_btn(self, parent, label: str, command) -> tk.Label:
-        w = tk.Label(parent, text=label, font=self.font_ui, fg=C.dim, bg=C.rail, cursor="hand2")
+    def _text_btn(self, parent, label: str, command, bg: str | None = None) -> tk.Label:
+        color_bg = bg or (parent["bg"] if "bg" in parent.keys() else C.rail)
+        w = tk.Label(parent, text=label, font=self.font_ui, fg=C.dim, bg=color_bg, cursor="hand2")
         w.bind("<Button-1>", lambda _e: command())
         w.bind("<Enter>", lambda _e: w.configure(fg=C.text))
         w.bind("<Leave>", lambda _e: w.configure(fg=C.dim))
@@ -366,6 +386,8 @@ class App(tk.Tk):
         self._paint(self.start_btn, filled=not running, enabled=not running)
         self._paint(self.stop_btn, filled=running, enabled=running)
         self._dot.itemconfigure(self._dot_id, fill=C.live if running else C.dim)
+        if not running:
+            self._update_meter(0.0)
 
     def _swap_langs(self) -> None:
         if self.src_box["state"] == "disabled":
@@ -387,20 +409,27 @@ class App(tk.Tk):
         ]
         self.out_box["values"] = [NONE_OUTPUT] + [s.name for s in outs]
         if not stopping:
-            try:
-                default_in = pick_loopback(None)
-                self.in_var.set(
-                    ("[Sistem] " if default_in.isloopback else "[Mikrofon] ") + default_in.name
-                )
-            except RuntimeError:
-                if ins:
+            cfg = load_config()
+            if cfg.input_device and cfg.input_device in self.in_box["values"]:
+                self.in_var.set(cfg.input_device)
+            else:
+                try:
+                    default_in = pick_loopback(None)
                     self.in_var.set(
-                        ("[Sistem] " if ins[0].isloopback else "[Mikrofon] ") + ins[0].name
+                        ("[Sistem] " if default_in.isloopback else "[Mikrofon] ") + default_in.name
                     )
-            try:
-                self.out_var.set(default_speaker().name)
-            except Exception:
-                self.out_var.set(NONE_OUTPUT)
+                except RuntimeError:
+                    if ins:
+                        self.in_var.set(
+                            ("[Sistem] " if ins[0].isloopback else "[Mikrofon] ") + ins[0].name
+                        )
+            if cfg.output_device and cfg.output_device in self.out_box["values"]:
+                self.out_var.set(cfg.output_device)
+            else:
+                try:
+                    self.out_var.set(default_speaker().name)
+                except Exception:
+                    self.out_var.set(NONE_OUTPUT)
 
     def _selected_speaker(self):
         i = self.out_box.current()
@@ -424,9 +453,37 @@ class App(tk.Tk):
     def _write_pane(self, widget, text: str):
         widget.insert(tk.END, text, ("body",))
         widget.see(tk.END)
+        if widget is self.trans and self._overlay is not None and self._overlay.winfo_exists():
+            lines = [l.strip() for l in widget.get("1.0", "end").splitlines() if l.strip()]
+            if lines:
+                self.overlay_label.configure(text=lines[-1])
 
     def _clear_pane(self, widget):
         widget.delete("1.0", tk.END)
+        if widget is self.trans and self._overlay is not None and self._overlay.winfo_exists():
+            self.overlay_label.configure(text="...")
+
+    def _copy_pane(self, pane: tk.Text):
+        content = pane.get("1.0", "end-1c").strip()
+        if content:
+            self.clipboard_clear()
+            self.clipboard_append(content)
+            self._append("[bilgi] Metin panoya kopyalandı.\n")
+
+    def _update_meter(self, level: float) -> None:
+        w = int(max(0.0, min(1.0, level)) * 36)
+        self.meter.coords(self._meter_bar, 0, 0, w, 4)
+
+    def _save_user_prefs(self):
+        try:
+            save_preferences(
+                input_device=self.in_var.get(),
+                output_device=self.out_var.get(),
+                src_lang=self.src_var.get(),
+                dst_lang=self.dst_var.get(),
+            )
+        except OSError:
+            pass
 
     def _pump_log(self):
         try:
@@ -451,6 +508,8 @@ class App(tk.Tk):
                         self._write_pane(self.trans, "\n")
                     elif kind == "log":
                         self._append(payload)
+                    elif kind == "level":
+                        self._update_meter(float(payload))
                     continue
                 self._append(str(msg))
         except queue.Empty:
@@ -509,14 +568,26 @@ class App(tk.Tk):
         self._set_status("Çalışıyor", C.live)
 
     def _run(self):
-        try:
-            asyncio.run(self.loop_obj.run())
-        except asyncio.CancelledError:
-            pass  # normal durdurma
-        except Exception as e:  # bağlantı/anahtar hatası arayüze düşsün
-            self.log_queue.put(f"\n[hata] {type(e).__name__}: {e}\n")
-        finally:
-            self.log_queue.put("__stopped__")
+        retries = 0
+        max_retries = 3
+        while self.loop_obj and not self.loop_obj._user_stop.is_set():
+            try:
+                asyncio.run(self.loop_obj.run())
+                break
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                if self.loop_obj._user_stop.is_set():
+                    break
+                retries += 1
+                self.log_queue.put(f"\n[hata] {type(e).__name__}: {e}\n")
+                if retries <= max_retries:
+                    self.log_queue.put(f"[bilgi] Yeniden bağlanılıyor ({retries}/{max_retries})...\n")
+                    time.sleep(2)
+                else:
+                    self.log_queue.put("[hata] Bağlantı kurulamadı.\n")
+                    break
+        self.log_queue.put("__stopped__")
 
     def stop(self):
         if self.loop_obj is not None:
@@ -650,9 +721,74 @@ class App(tk.Tk):
         self._about.destroy()
         self._about = None
 
+    def toggle_overlay(self) -> None:
+        if self._overlay is not None and self._overlay.winfo_exists():
+            self._overlay.destroy()
+            self._overlay = None
+            self.overlay_btn.configure(fg=C.dim)
+            return
+
+        pop = tk.Toplevel(self)
+        self._overlay = pop
+        pop.title("Altyazı")
+        pop.overrideredirect(True)
+        try:
+            pop.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        pop.configure(bg="#0c0c0c")
+        self.overlay_btn.configure(fg=C.live)
+
+        def start_move(e):
+            pop._x = e.x
+            pop._y = e.y
+
+        def do_move(e):
+            x = pop.winfo_x() + (e.x - pop._x)
+            y = pop.winfo_y() + (e.y - pop._y)
+            pop.geometry(f"+{x}+{y}")
+
+        wrap = tk.Frame(pop, bg="#0c0c0c", highlightthickness=1, highlightbackground=C.line, bd=0)
+        wrap.pack(fill=tk.BOTH, expand=True)
+
+        close_btn = tk.Label(wrap, text="✕", font=self.font_ui, fg=C.dim, bg="#0c0c0c", cursor="hand2")
+        close_btn.pack(side=tk.RIGHT, padx=8, pady=4, anchor="ne")
+        close_btn.bind("<Button-1>", lambda _e: self.toggle_overlay())
+        close_btn.bind("<Enter>", lambda _e: close_btn.configure(fg=C.text))
+        close_btn.bind("<Leave>", lambda _e: close_btn.configure(fg=C.dim))
+
+        lines = [l.strip() for l in self.trans.get("1.0", "end").splitlines() if l.strip()]
+        cur_text = lines[-1] if lines else "..."
+
+        self.overlay_label = tk.Label(
+            wrap,
+            text=cur_text,
+            font=(self.font_brand[0], 12, "bold"),
+            fg="#ffffff",
+            bg="#0c0c0c",
+            wraplength=520,
+            justify=tk.CENTER,
+            padx=16,
+            pady=10,
+        )
+        self.overlay_label.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        for w in (pop, wrap, self.overlay_label):
+            w.bind("<ButtonPress-1>", start_move)
+            w.bind("<B1-Motion>", do_move)
+
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        w, h = 580, 56
+        x = max(0, (sw - w) // 2)
+        y = max(0, sh - h - 100)
+        pop.geometry(f"{w}x{h}+{x}+{y}")
     def _on_close(self):
         self.stop()
         self._close_about()
+        if self._overlay is not None and self._overlay.winfo_exists():
+            self._overlay.destroy()
+            self._overlay = None
         for box in (self.in_box, self.out_box, self.src_box, self.dst_box):
             box._close()
         self.destroy()

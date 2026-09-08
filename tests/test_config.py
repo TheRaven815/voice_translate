@@ -50,3 +50,18 @@ def test_save_preserves_unknown_fields(tmp_path, monkeypatch):
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["api_key"] == "new"
     assert data["theme"] == "dark"
+
+
+def test_save_preferences(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    config.save_preferences(
+        input_device="Mic 1",
+        output_device="Speaker 1",
+        src_lang="İngilizce",
+        dst_lang="Türkçe",
+    )
+    loaded = config.load()
+    assert loaded.input_device == "Mic 1"
+    assert loaded.output_device == "Speaker 1"
+    assert loaded.src_lang == "İngilizce"
+    assert loaded.dst_lang == "Türkçe"

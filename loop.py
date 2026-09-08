@@ -132,8 +132,16 @@ class SystemAudioLoop:
                 frame = mic.record(numframes=CAPTURE_BLOCK)
                 if frame is None or len(frame) == 0:
                     continue
-                # Sessizlikte bile gönder: model cümle sınırını ancak akışla anlar.
-                pcm = to_16k_mono(np.asarray(frame, dtype=np.float32))
+                arr = np.asarray(frame, dtype=np.float32)
+                if self._emit is not None and self._loop is not None:
+                    rms = float(np.sqrt(np.mean(arr**2)))
+                    try:
+                        self._loop.call_soon_threadsafe(
+                            self._emit, ("level", min(1.0, rms * 8.0))
+                        )
+                    except RuntimeError:
+                        pass
+                pcm = to_16k_mono(arr)
                 try:
                     self._loop.call_soon_threadsafe(
                         self._post, {"data": pcm, "mime_type": "audio/pcm"}
@@ -164,6 +172,8 @@ class SystemAudioLoop:
             print(msg, end="", flush=True)
             return
         kind = msg[0]
+        if kind == "level":
+            return
         if kind in ("heard", "trans"):
             if not self._open[kind]:
                 self._open[kind] = True

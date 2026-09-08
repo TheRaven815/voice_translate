@@ -17,7 +17,10 @@ APP_NAME = "voice_translate"
 @dataclass
 class Settings:
     api_key: str = ""
-
+    input_device: str = ""
+    output_device: str = ""
+    src_lang: str = ""
+    dst_lang: str = ""
 
 def config_dir() -> Path:
     if os.name == "nt":
@@ -63,18 +66,46 @@ def _write_raw(data: dict) -> Path:
 
 def load() -> Settings:
     raw = _read_raw()
-    return Settings(api_key=str(raw.get("api_key") or ""))
+    return Settings(
+        api_key=str(raw.get("api_key") or ""),
+        input_device=str(raw.get("input_device") or ""),
+        output_device=str(raw.get("output_device") or ""),
+        src_lang=str(raw.get("src_lang") or ""),
+        dst_lang=str(raw.get("dst_lang") or ""),
+    )
 
 
 def save(settings: Settings) -> Path:
     raw = _read_raw()
     raw["api_key"] = settings.api_key
+    raw["input_device"] = settings.input_device
+    raw["output_device"] = settings.output_device
+    raw["src_lang"] = settings.src_lang
+    raw["dst_lang"] = settings.dst_lang
     return _write_raw(raw)
-
 
 def save_api_key(key: str) -> Path:
     settings = load()
     settings.api_key = key.strip()
+    return save(settings)
+
+
+def save_preferences(
+    *,
+    input_device: str | None = None,
+    output_device: str | None = None,
+    src_lang: str | None = None,
+    dst_lang: str | None = None,
+) -> Path:
+    settings = load()
+    if input_device is not None:
+        settings.input_device = input_device
+    if output_device is not None:
+        settings.output_device = output_device
+    if src_lang is not None:
+        settings.src_lang = src_lang
+    if dst_lang is not None:
+        settings.dst_lang = dst_lang
     return save(settings)
 
 

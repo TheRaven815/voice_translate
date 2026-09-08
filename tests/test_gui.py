@@ -167,3 +167,66 @@ def test_running_paints_status_dot_green():
         assert app._dot.itemcget(app._dot_id, "fill") == C.dim
     finally:
         app.destroy()
+
+
+def test_pane_copy_and_clear():
+    app = App()
+    try:
+        app._write_pane(app.heard, "Test heard audio")
+        app._write_pane(app.trans, "Test çeviri metni")
+        assert "Test heard audio" in app.heard.get("1.0", "end")
+        assert "Test çeviri metni" in app.trans.get("1.0", "end")
+
+        app._copy_pane(app.trans)
+        assert app.clipboard_get() == "Test çeviri metni"
+
+        app._clear_pane(app.trans)
+        assert app.trans.get("1.0", "end").strip() == ""
+    finally:
+        app.destroy()
+
+
+def test_vu_meter_update():
+    app = App()
+    try:
+        app._update_meter(0.5)
+        coords = app.meter.coords(app._meter_bar)
+        assert coords == [0.0, 0.0, 18.0, 4.0]
+        app._update_meter(0.0)
+        coords = app.meter.coords(app._meter_bar)
+        assert coords == [0.0, 0.0, 0.0, 4.0]
+    finally:
+        app.destroy()
+
+
+def test_overlay_toggle_and_live_update():
+    app = App()
+    try:
+        assert app._overlay is None
+        app.toggle_overlay()
+        assert app._overlay is not None
+        assert app._overlay.winfo_exists()
+
+        app._write_pane(app.trans, "İlk canlı altyazı\n")
+        assert app.overlay_label.cget("text") == "İlk canlı altyazı"
+
+        app.toggle_overlay()
+        assert app._overlay is None
+    finally:
+        app.destroy()
+
+
+def test_preferences_remembered_across_app_launch(tmp_path, monkeypatch):
+    monkeypatch.setattr("config.load_dotenv", lambda: None)
+    monkeypatch.setenv("VOICE_TRANSLATE_CONFIG", str(tmp_path / "config.json"))
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+    import config
+    config.save_preferences(src_lang="İngilizce", dst_lang="Almanca")
+
+    app = App()
+    try:
+        assert app.src_var.get() == "İngilizce"
+        assert app.dst_var.get() == "Almanca"
+    finally:
+        app.destroy()
