@@ -16,14 +16,9 @@ from unittest.mock import AsyncMock
 import numpy as np
 import pytest
 
-from live_translate import (
-    SystemAudioLoop,
-    build_config,
-    merge_transcript,
-    pcm16_to_float,
-    pick_loopback,
-    to_16k_mono,
-)
+from voice_translate.audio import pcm16_to_float, to_16k_mono
+from voice_translate.devices import pick_loopback
+from voice_translate.loop import SystemAudioLoop, build_config, merge_transcript
 
 
 def test_resample_48k_stereo_to_16k_mono():
