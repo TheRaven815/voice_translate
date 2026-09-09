@@ -7,3 +7,6 @@ venv/
 dist/
 build/
 *.spec
+.env.*
+config.json
+*.exe
