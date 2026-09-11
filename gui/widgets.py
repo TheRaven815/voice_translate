@@ -174,6 +174,17 @@ class Select(tk.Frame):
             bid = top.bind(seq, self._on_top_event, add="+")
             self._top_bindings.append((top, seq, bid))
 
+    def _inside_pop_rect(self) -> bool:
+        if self._pop is None:
+            return False
+        try:
+            px, py = self._pop.winfo_rootx(), self._pop.winfo_rooty()
+            pw, ph = self._pop.winfo_width(), self._pop.winfo_height()
+            mx, my = self.winfo_pointerx(), self.winfo_pointery()
+            return px - 2 <= mx <= px + pw + 2 and py - 2 <= my <= py + ph + 2
+        except tk.TclError:
+            return False
+
     def _on_top_event(self, e) -> None:
         if self._pop is None:
             return
@@ -183,6 +194,16 @@ class Select(tk.Frame):
                 geom = (top.winfo_x(), top.winfo_y(), top.winfo_width(), top.winfo_height())
                 if geom != self._last_top_geom:
                     self._close()
+            elif e.type == tk.EventType.FocusOut:
+                try:
+                    focused = self.focus_get()
+                except (KeyError, tk.TclError):
+                    focused = None
+                if focused is not None and (self._inside(focused, self._pop) or self._inside(focused, self)):
+                    return
+                if self._inside_pop_rect():
+                    return
+                self._close()
             else:
                 self._close()
     def _on_escape(self, _e=None):

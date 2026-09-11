@@ -157,6 +157,26 @@ def test_select_popup_closes_on_window_move():
         app.destroy()
 
 
+def test_select_pick_preserves_choice_when_focus_inside_popup():
+    app = App()
+    try:
+        app.in_box["values"] = ["Cihaz A", "Cihaz B", "Cihaz C"]
+        app.in_var.set("Cihaz A")
+        app.in_box._toggle()
+        app.update()
+        pop = app.in_box._pop
+        assert pop is not None
+        app.in_box._inside_pop_rect = lambda: True
+        app.event_generate("<FocusOut>")
+        app.update()
+        assert app.in_box._pop is not None
+        app.in_box._pick("Cihaz B")
+        assert app.in_var.get() == "Cihaz B"
+        assert app.in_box._pop is None
+    finally:
+        app.destroy()
+
+
 def test_running_paints_status_dot_green():
     app = App()
     try:
