@@ -6,12 +6,37 @@ VOICE_TRANSLATE_CONFIG ile yol override edilir (test).
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
 
-APP_NAME = "voice_translate"
+APP_NAME = "Ahenk"
+LEGACY_APP_NAME = "voice_translate"
+
+# Basitce acikta okunmayi onlemek icin gomulu anahtar
+_SECRET_KEY = b"Ahenk_Gemini_Secret_Key_v1"
+
+
+def _encrypt_key(plain: str) -> str:
+    if not plain:
+        return ""
+    data = plain.encode("utf-8")
+    xor_bytes = bytes(b ^ _SECRET_KEY[i % len(_SECRET_KEY)] for i, b in enumerate(data))
+    return base64.b64encode(xor_bytes).decode("ascii")
+
+
+def _decrypt_key(cipher: str) -> str:
+    if not cipher:
+        return ""
+    if cipher.startswith("AIza"):
+        return cipher
+    try:
+        data = base64.b64decode(cipher.encode("ascii"), validate=True)
+        return bytes(b ^ _SECRET_KEY[i % len(_SECRET_KEY)] for i, b in enumerate(data)).decode("utf-8")
+    except Exception:
+        return cipher
 
 
 @dataclass
@@ -24,16 +49,16 @@ class Settings:
 
 def config_dir() -> Path:
     if os.name == "nt":
-        root = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
-        return Path(root) / APP_NAME
-    xdg = os.environ.get("XDG_CONFIG_HOME")
-    if xdg:
-        return Path(xdg) / APP_NAME
-    return Path.home() / ".config" / APP_NAME
+        root = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
+    elif os.environ.get("XDG_CONFIG_HOME"):
+        root = Path(os.environ["XDG_CONFIG_HOME"])
+    else:
+        root = Path.home() / ".config"
+    return root / APP_NAME
 
 
 def config_path() -> Path:
-    override = os.environ.get("VOICE_TRANSLATE_CONFIG")
+    override = os.environ.get("AHENK_CONFIG") or os.environ.get("VOICE_TRANSLATE_CONFIG")
     if override:
         return Path(override)
     return config_dir() / "config.json"
@@ -42,7 +67,11 @@ def config_path() -> Path:
 def _read_raw() -> dict:
     path = config_path()
     if not path.is_file():
-        return {}
+        legacy = path.parent.parent / LEGACY_APP_NAME / path.name
+        if legacy.is_file():
+            path = legacy
+        else:
+            return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
@@ -66,8 +95,9 @@ def _write_raw(data: dict) -> Path:
 
 def load() -> Settings:
     raw = _read_raw()
+    raw_key = str(raw.get("api_key") or "")
     return Settings(
-        api_key=str(raw.get("api_key") or ""),
+        api_key=_decrypt_key(raw_key),
         input_device=str(raw.get("input_device") or ""),
         output_device=str(raw.get("output_device") or ""),
         src_lang=str(raw.get("src_lang") or ""),
@@ -77,7 +107,7 @@ def load() -> Settings:
 
 def save(settings: Settings) -> Path:
     raw = _read_raw()
-    raw["api_key"] = settings.api_key
+    raw["api_key"] = _encrypt_key(settings.api_key)
     raw["input_device"] = settings.input_device
     raw["output_device"] = settings.output_device
     raw["src_lang"] = settings.src_lang

@@ -45,23 +45,7 @@ goto menu
 
 :build
 echo.
-echo  PyInstaller kuruluyor...
-"%VPY%" -m pip install -q pyinstaller
-if errorlevel 1 (
-  echo  PyInstaller kurulamadi.
-  pause
-  goto menu
-)
-echo  Derleniyor: dist\Ahenk.exe
-"%VPY%" -m PyInstaller --noconfirm --clean --onefile --windowed --name Ahenk --icon assets\ahenk.ico --add-data "assets;assets" --hidden-import soundcard --hidden-import google.genai --collect-submodules google.genai main.py
-if errorlevel 1 (
-  echo  Derleme basarisiz.
-  pause
-  goto menu
-)
-echo.
-echo  Hazir: %cd%\dist\Ahenk.exe
-pause
+call build.bat
 goto menu
 
 :deps

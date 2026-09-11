@@ -202,8 +202,8 @@ Not in git. Tests override the path with `VOICE_TRANSLATE_CONFIG`.
 
 | OS | File |
 | --- | --- |
-| Windows | `%APPDATA%\voice_translate\config.json` |
-| Linux / macOS | `$XDG_CONFIG_HOME/voice_translate/config.json` or `~/.config/voice_translate/config.json` |
+| Windows | `%APPDATA%\Ahenk\config.json` |
+| Linux / macOS | `$XDG_CONFIG_HOME/Ahenk/config.json` or `~/.config/Ahenk/config.json` |
 
 Mode `0600` on Unix. Fields: `api_key`, `input_device`, `output_device`, `src_lang`, `dst_lang`. Unknown fields are kept.
 

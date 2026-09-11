@@ -48,8 +48,27 @@ def test_save_preserves_unknown_fields(tmp_path, monkeypatch):
     path.write_text(json.dumps({"api_key": "old", "theme": "dark"}), encoding="utf-8")
     config.save_api_key("new")
     data = json.loads(path.read_text(encoding="utf-8"))
-    assert data["api_key"] == "new"
+    assert data["api_key"] != "new"  # sifreli saklanmali
+    assert config.load().api_key == "new"
     assert data["theme"] == "dark"
+
+
+def test_api_key_encrypted_on_disk(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    plain = "AIzaSyTestSecret123"
+    config.save_api_key(plain)
+    path = tmp_path / "config.json"
+    raw_content = path.read_text(encoding="utf-8")
+    assert plain not in raw_content
+    assert config.load().api_key == plain
+    assert config.resolve_api_key() == plain
+
+
+def test_legacy_unencrypted_key_load(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"api_key": "AIzaSyLegacyKey"}), encoding="utf-8")
+    assert config.load().api_key == "AIzaSyLegacyKey"
 
 
 def test_save_preferences(tmp_path, monkeypatch):

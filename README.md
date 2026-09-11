@@ -200,8 +200,8 @@ Git’e düşmez. Testte `VOICE_TRANSLATE_CONFIG` ile yol değiştirilir.
 
 | OS | Dosya |
 | --- | --- |
-| Windows | `%APPDATA%\voice_translate\config.json` |
-| Linux / macOS | `$XDG_CONFIG_HOME/voice_translate/config.json` veya `~/.config/voice_translate/config.json` |
+| Windows | `%APPDATA%\Ahenk\config.json` |
+| Linux / macOS | `$XDG_CONFIG_HOME/Ahenk/config.json` veya `~/.config/Ahenk/config.json` |
 
 Unix’te dosya `0600`. Alanlar: `api_key`, `input_device`, `output_device`, `src_lang`, `dst_lang`. Bilinmeyen alanlar korunur.
 
