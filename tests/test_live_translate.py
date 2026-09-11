@@ -221,8 +221,10 @@ def test_request_stop_without_run_is_safe():
     loop_obj._stop = None
     loop_obj._cap_stop = __import__("threading").Event()
     loop_obj._play_stop = __import__("threading").Event()
+    loop_obj._user_stop = __import__("threading").Event()
     loop_obj._play_q = None
     loop_obj.request_stop()  # yükseltmemeli
+    assert loop_obj._user_stop.is_set()
 
 
 def test_none_speaker_skips_playback_keeps_text():

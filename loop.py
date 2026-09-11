@@ -77,12 +77,15 @@ class SystemAudioLoop:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._cap_stop = threading.Event()
         self._play_stop = threading.Event()
+        self._user_stop = threading.Event()
         self._play_q: queue.Queue | None = None
         self._bufs = {"heard": "", "trans": ""}
         self._open = {"heard": False, "trans": False}
 
     def request_stop(self):
         """GUI'den thread-safe durdurma; worker zaten ölmüşse sessiz geç."""
+        if hasattr(self, "_user_stop"):
+            self._user_stop.set()
         self._cap_stop.set()
         self._play_stop.set()
         if self._play_q is not None:

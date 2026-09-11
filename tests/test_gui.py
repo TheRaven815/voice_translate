@@ -230,3 +230,23 @@ def test_preferences_remembered_across_app_launch(tmp_path, monkeypatch):
         assert app.dst_var.get() == "Almanca"
     finally:
         app.destroy()
+
+
+def test_worker_run_stops_cleanly_without_attribute_error():
+    app = App()
+    try:
+        class DummyLoop:
+            def __init__(self):
+                self._user_stop = __import__("threading").Event()
+                self._user_stop.set()
+
+            async def run(self):
+                pass
+
+        app.loop_obj = DummyLoop()
+        app._run()
+        msg = app.log_queue.get_nowait()
+        assert msg == "__stopped__"
+    finally:
+        app.destroy()
+

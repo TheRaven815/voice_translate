@@ -570,20 +570,24 @@ class App(tk.Tk):
     def _run(self):
         retries = 0
         max_retries = 3
-        while self.loop_obj and not self.loop_obj._user_stop.is_set():
+        while self.loop_obj and not getattr(self.loop_obj, "_user_stop", threading.Event()).is_set():
             try:
                 asyncio.run(self.loop_obj.run())
                 break
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                if self.loop_obj._user_stop.is_set():
+                user_stop = getattr(self.loop_obj, "_user_stop", None)
+                if user_stop and user_stop.is_set():
                     break
                 retries += 1
                 self.log_queue.put(f"\n[hata] {type(e).__name__}: {e}\n")
                 if retries <= max_retries:
                     self.log_queue.put(f"[bilgi] Yeniden bağlanılıyor ({retries}/{max_retries})...\n")
-                    time.sleep(2)
+                    if user_stop:
+                        user_stop.wait(2)
+                    else:
+                        time.sleep(2)
                 else:
                     self.log_queue.put("[hata] Bağlantı kurulamadı.\n")
                     break
