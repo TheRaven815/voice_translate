@@ -19,6 +19,7 @@ def main() -> None:
     parser.add_argument("--mic", action="store_true", help="sistem sesi yerine mikrofon")
     parser.add_argument("--list-devices", action="store_true")
     parser.add_argument("--api-key", default=None)
+    parser.add_argument("--model", default=None, help="Gemini Live model adı")
     args = parser.parse_args()
 
     if args.list_devices:
@@ -42,10 +43,12 @@ def main() -> None:
     speaker = default_speaker()
     print(f"Çıkış: {speaker.name}")
     src = None if args.src.strip().lower() in ("auto", "") else args.src.strip()
-    loop = SystemAudioLoop(src, args.dst, source, api_key, output_speaker=speaker)
+    loop = SystemAudioLoop(
+        src, args.dst, source, api_key, output_speaker=speaker, model=args.model
+    )
     try:
         asyncio.run(loop.run())
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, asyncio.CancelledError):
         print("\nDurduruldu.")
 
 

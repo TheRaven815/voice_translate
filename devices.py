@@ -10,18 +10,19 @@ NONE_OUTPUT = "Hiçbiri"
 
 def list_devices() -> None:
     print("Hoparlörler:")
+    def_sp = sc.default_speaker()
     for s in sc.all_speakers():
-        default = " (varsayılan)" if s == sc.default_speaker() else ""
+        default = " (varsayılan)" if def_sp is not None and s == def_sp else ""
         print(f"  - {s.name}{default}")
+    mics = sc.all_microphones(include_loopback=True)
     print("Loopback (sistem sesi) kaynakları:")
-    for m in sc.all_microphones(include_loopback=True):
+    for m in mics:
         if m.isloopback:
             print(f"  - {m.name}")
     print("Mikrofonlar:")
-    for m in sc.all_microphones(include_loopback=True):
+    for m in mics:
         if not m.isloopback:
             print(f"  - {m.name}")
-
 
 def pick_loopback(device_substr: str | None):
     loops = [m for m in sc.all_microphones(include_loopback=True) if m.isloopback]
@@ -33,9 +34,10 @@ def pick_loopback(device_substr: str | None):
                 return m
         raise RuntimeError(f"'{device_substr}' ile eşleşen loopback cihaz yok.")
     default_sp = sc.default_speaker()
-    for m in loops:
-        if default_sp.name in m.name or m.name in default_sp.name:
-            return m
+    if default_sp is not None:
+        for m in loops:
+            if default_sp.name in m.name or m.name in default_sp.name:
+                return m
     return loops[0]
 
 

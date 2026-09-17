@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import queue
 import threading
+import os
 import time
 from types import SimpleNamespace
 
@@ -20,7 +21,8 @@ from audio import (
     to_16k_mono,
 )
 
-MODEL = "models/gemini-3.5-live-translate-preview"
+DEFAULT_MODEL = "models/gemini-3.5-live-translate-preview"
+MODEL = os.environ.get("GEMINI_LIVE_MODEL") or DEFAULT_MODEL
 
 
 def build_config(src: str | None, dst: str) -> types.LiveConnectConfig:
@@ -54,14 +56,16 @@ def merge_transcript(prev: str, incoming: str) -> tuple[str, str]:
 class SystemAudioLoop:
     def __init__(
         self,
-        src,
-        dst,
+        src: str | None,
+        dst: str,
         source_mic,
-        api_key,
+        api_key: str,
         output_speaker=None,
         on_text=None,
-        console_input=True,
+        console_input: bool = True,
+        model: str | None = None,
     ):
+        self.model = model or os.environ.get("GEMINI_LIVE_MODEL") or DEFAULT_MODEL
         self.client = genai.Client(
             http_options={"api_version": "v1beta"},
             api_key=api_key,
@@ -82,6 +86,7 @@ class SystemAudioLoop:
         self._play_q: queue.Queue | None = None
         self._bufs = {"heard": "", "trans": ""}
         self._open = {"heard": False, "trans": False}
+        self._active_stream: str | None = None
         self.last_level: float = 0.0
         self._last_level_emit: float = 0.0
 
@@ -205,12 +210,15 @@ class SystemAudioLoop:
         if kind == "level":
             return
         if kind in ("heard", "trans"):
-            if not self._open[kind]:
-                self._open[kind] = True
-                print("\nDuyulan:\n" if kind == "heard" else "\nÇeviri:\n", end="", flush=True)
+            if self._active_stream != kind:
+                if self._active_stream is not None:
+                    print()
+                self._active_stream = kind
+                print("Duyulan:\n" if kind == "heard" else "Çeviri:\n", end="", flush=True)
             print(msg[1], end="", flush=True)
         elif kind in ("heard_end", "trans_end"):
-            self._open[kind.removesuffix("_end")] = False
+            if self._active_stream == kind.removesuffix("_end"):
+                self._active_stream = None
             print("\n", flush=True)
         elif kind == "log" and len(msg) > 1:
             print(msg[1], end="", flush=True)
@@ -238,9 +246,11 @@ class SystemAudioLoop:
                 content = getattr(response, "server_content", None)
                 if content is not None:
                     self._handle_tr("heard", getattr(content, "input_transcription", None))
-                    self._handle_tr("trans", getattr(content, "output_transcription", None))
-                elif text := response.text:
-                    self._handle_tr("trans", SimpleNamespace(text=text, finished=False))
+                    out_tr = getattr(content, "output_transcription", None)
+                    if out_tr is not None:
+                        self._handle_tr("trans", out_tr)
+                    elif response.text:
+                        self._handle_tr("trans", SimpleNamespace(text=response.text, finished=False))
             # Çeviride turn_complete kuyruğu boşaltmaz: her cümle bir turn,
             # kuyruk silinince ses kesik kesik kalır.
 
@@ -319,7 +329,7 @@ class SystemAudioLoop:
 
     async def run(self):
         async with (
-            self.client.aio.live.connect(model=MODEL, config=self.config) as session,
+            self.client.aio.live.connect(model=self.model, config=self.config) as session,
             asyncio.TaskGroup() as tg,
         ):
             self.session = session

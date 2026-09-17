@@ -589,15 +589,16 @@ class App(tk.Tk):
         src, dst = source_code(self.src_var.get()), LANGS[self.dst_var.get()]
         self._clear_pane(self.heard)
         self._clear_pane(self.trans)
-        self.loop_obj = SystemAudioLoop(
-            src,
-            dst,
-            source,
-            api_key,
-            output_speaker=speaker,
-            on_text=self.log_queue.put,
-            console_input=False,
-        )
+        self._loop_kwargs = {
+            "src": src,
+            "dst": dst,
+            "source_mic": source,
+            "api_key": api_key,
+            "output_speaker": speaker,
+            "on_text": self.log_queue.put,
+            "console_input": False,
+        }
+        self.loop_obj = SystemAudioLoop(**self._loop_kwargs)
         dest = speaker.name if speaker is not None else NONE_OUTPUT
         src_disp = "auto" if src is None else src
         self._append(f"[bilgi] {source.name} -> {dest} ({src_disp}>{dst})\n")
@@ -615,18 +616,23 @@ class App(tk.Tk):
                 break
             except asyncio.CancelledError:
                 break
-            except Exception as e:
+            except BaseException as e:
                 user_stop = getattr(self.loop_obj, "_user_stop", None)
                 if user_stop and user_stop.is_set():
                     break
                 retries += 1
-                self.log_queue.put(f"\n[hata] {type(e).__name__}: {e}\n")
+                root_err = e
+                if hasattr(e, "exceptions") and getattr(e, "exceptions"):
+                    root_err = getattr(e, "exceptions")[0]
+                self.log_queue.put(f"\n[hata] {type(root_err).__name__}: {root_err}\n")
                 if retries <= max_retries:
                     self.log_queue.put(f"[bilgi] Yeniden bağlanılıyor ({retries}/{max_retries})...\n")
                     if user_stop:
                         user_stop.wait(2)
                     else:
                         time.sleep(2)
+                    if hasattr(self, "_loop_kwargs"):
+                        self.loop_obj = SystemAudioLoop(**self._loop_kwargs)
                 else:
                     self.log_queue.put("[hata] Bağlantı kurulamadı.\n")
                     break

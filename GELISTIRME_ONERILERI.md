@@ -132,12 +132,12 @@ Bu liste, kod tabanının tamamı (çekirdek döngü, ses boru hattı, UI/UX, CL
 
 ## 4. Mimari, Hata Yönetimi ve Dayanıklılık (P2 - Orta Öncelik)
 
-- [ ] **[gui/app.py:527-545] Yeniden denemede (Retry) kirli `SystemAudioLoop` nesnesinin tekrar kullanılması**
+- [x] **[gui/app.py:527-545] Yeniden denemede (Retry) kirli `SystemAudioLoop` nesnesinin tekrar kullanılması**
   - *Sorun:* `asyncio.run(self.loop_obj.run())` hata alıp çöktüğünde `retries += 1` yapılıyor ve aynı `self.loop_obj` tekrar `asyncio.run`'a veriliyor. Bu nesnenin içindeki kuyruklar, iptal bayrakları ve Gemini client oturumu eski kapalı döngüye bağlı kalıyor.
   - *Etki:* Yeniden denemeler çoğunlukla `RuntimeError: Event loop is closed` hatası vererek başarısız oluyor.
   - *Çözüm:* Her yeniden denemede sıfır `SystemAudioLoop` nesnesi oluştur.
 
-- [ ] **[gui/app.py:596] Python 3.11+ `ExceptionGroup` nedeniyle hataların maskelenmesi**
+- [x] **[gui/app.py:596] Python 3.11+ `ExceptionGroup` nedeniyle hataların maskelenmesi**
   - *Sorun:* TaskGroup içindeki hatalar `ExceptionGroup` olarak yakalanıyor. GUI logunda sadece `ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)` yazıyor.
   - *Etki:* Kullanıcı gerçek hatanın (örneğin 403 API Key hatası mı yoksa mikrofon erişim hatası mı) ne olduğunu göremiyor.
   - *Çözüm:* `getattr(e, "exceptions", [e])[0]` ile asıl kök hatayı çöz ve loga yazdır.
@@ -146,7 +146,7 @@ Bu liste, kod tabanının tamamı (çekirdek döngü, ses boru hattı, UI/UX, CL
   - *Sorun:* Cihaz bağlantısı koptuğunda `mic.record()` veya `sp.play()` hata veriyor, iş parçacığı sessizce ölüyor ve program hata vermeden sonsuz sessizlikte bekliyor.
   - *Çözüm:* Donanım hatalarını yakala, ana döngüye ileterek kullanıcıya `Aygıt bağlantısı koptu` uyarısı ver ve durdur.
 
-- [ ] **[cli.py:46-49] CLI `q + Enter` ile çıkışta çirkin traceback düşmesi**
+- [x] **[cli.py:46-49] CLI `q + Enter` ile çıkışta çirkin traceback düşmesi**
   - *Sorun:* `loop.py` içindeki kullanıcı çıkışı `asyncio.CancelledError` fırlatıyor. `cli.py` sadece `KeyboardInterrupt` yakaladığı için temiz çıkışta bile konsola Python hata izi dökülüyor.
   - *Çözüm:* `except (KeyboardInterrupt, asyncio.CancelledError):` olarak güncelle.
 
@@ -154,15 +154,15 @@ Bu liste, kod tabanının tamamı (çekirdek döngü, ses boru hattı, UI/UX, CL
   - *Sorun:* `send_text` içindeki `input()` komutu Windows üzerinde `ReadFile` ile tüm iş parçacığını bloke ediyor. Canlı gelen çeviri metinleri `input` satırıyla iç içe giriyor ve Ctrl+C yapıldığında Enter'a basana kadar terminal kapanmıyor.
   - *Çözüm:* Windows için `msvcrt.kbhit()` tabanlı bloke olmayan okuma ekle veya `--no-interactive` parametresi sağla.
 
-- [ ] **[loop.py:179-195] Konsol modunda duyulan ve çevrilen metinlerin satır satır birbirine karışması**
+- [x] **[loop.py:179-195] Konsol modunda duyulan ve çevrilen metinlerin satır satır birbirine karışması**
   - *Sorun:* Gelen ve giden akış eşzamanlı geldiğinde `_open` sözlüğü mevcut aktif akışı takip etmediği için duyulan ses ile çeviri tek bir satırda harf harf birbirine giriyor.
   - *Çözüm:* `active_stream` değişkeni tut; akış türü değiştiğinde araya yeni satır ve başlık koy.
 
-- [ ] **[devices.py:33-37] Varsayılan hoparlör `None` olduğunda çökme**
+- [x] **[devices.py:33-37] Varsayılan hoparlör `None` olduğunda çökme**
   - *Sorun:* Sistemde hiç çıkış aygıtı yoksa `sc.default_speaker()` `None` döner. Kod `default_sp.name` okumaya çalıştığı için `AttributeError` patlar.
   - *Çözüm:* `if default_sp is not None:` kontrolü ekle.
 
-- [ ] **[loop.py:24] Canlı çeviri model adının sabit kodlanması (Hardcoded Model)**
+- [x] **[loop.py:24] Canlı çeviri model adının sabit kodlanması (Hardcoded Model)**
   - *Sorun:* `MODEL = "models/gemini-3.5-live-translate-preview"` kod içine gömülü. Google model adını güncellediğinde kod değiştirilmeden program çalışmaz.
   - *Çözüm:* `os.environ.get("GEMINI_LIVE_MODEL")` ve `--model` CLI parametresi ile ezilebilir yap.
 
@@ -182,7 +182,7 @@ Bu liste, kod tabanının tamamı (çekirdek döngü, ses boru hattı, UI/UX, CL
 
 ## 5. Ölü Kod, Fazlalıklar ve Kod Temizliği (P2 - P3)
 
-- [ ] **[loop.py:216-218] Asla ulaşılamayan ölü kod (`elif text := response.text`)**
+- [x] **[loop.py:216-218] Asla ulaşılamayan ölü kod (`elif text := response.text`)**
   - *Sorun:* `google.genai` yanıtında `server_content is not None` ise ilk `if` bloğuna girer. Eğer `None` ise `response.text` zaten `None` döner. Dolayısıyla `elif` bloğu hiçbir zaman çalışmaz.
   - *Çözüm:* `output_transcription` bulunamadığında `response.text` kontrolünü `if content is not None:` içine taşı.
 
@@ -198,7 +198,7 @@ Bu liste, kod tabanının tamamı (çekirdek döngü, ses boru hattı, UI/UX, CL
   - *Sorun:* `__getitem__` içinde `"state"` destekleniyor ancak `__setitem__` içine `"state"` yazıldığında `KeyError` patlıyor. Ayrıca `Select.configure(values=[...])` çağrısı `TclError` veriyor.
   - *Çözüm:* `__setitem__` ve `configure` metotlarında `"state"` ve `"values"` desteğini standart Tkinter arayüzüne tam uyumlu hale getir.
 
-- [ ] **[gui/theme.py:75-78] `apply_icon()` içindeki gereksiz mükerrer try-except**
+- [x] **[gui/theme.py:75-78] `apply_icon()` içindeki gereksiz mükerrer try-except**
   - *Sorun:* Linux/macOS kolunda hata alındığında aynı başarısız kod satırı `except` içinde bir kez daha çalıştırılıyor.
   - *Çözüm:* İç içe try-except bloklarını tekilleştir.
 
@@ -206,7 +206,7 @@ Bu liste, kod tabanının tamamı (çekirdek döngü, ses boru hattı, UI/UX, CL
   - *Sorun:* `save_api_key` önce `load()` ile diskten okuyup şifreyi çözüyor, sonra `save()` çağırarak diskten tekrar okuyup şifreyi yeniden kriptoluyor.
   - *Çözüm:* Ham ayar sözlüğünü doğrudan güncelleyerek çift disk I/O ve gereksiz şifreleme turunu kaldır.
 
-- [ ] **[devices.py:13, 18-24] Mükerrer WASAPI COM sorguları**
+- [x] **[devices.py:13, 18-24] Mükerrer WASAPI COM sorguları**
   - *Sorun:* `list_devices()` içinde `sc.all_microphones(include_loopback=True)` arka arkaya iki kez çağrılıyor. Döngü içinde her hoparlör için `sc.default_speaker()` tekrar tekrar tetikleniyor.
   - *Çözüm:* Donanım listesini bir defa alıp hafızada filtrele; varsayılan hoparlörü döngü öncesinde tek değişkene ata.
 
@@ -222,25 +222,25 @@ Bu liste, kod tabanının tamamı (çekirdek döngü, ses boru hattı, UI/UX, CL
 
 ## 6. Bağımlılıklar, Derleme ve Test Geliştirmeleri (P2 - P3)
 
-- [ ] **[requirements.txt:5] Çalışma zamanı bağımlılıklarına test paketlerinin karışması**
+- [x] **[requirements.txt:5] Çalışma zamanı bağımlılıklarına test paketlerinin karışması**
   - *Sorun:* `pytest>=8` ana `requirements.txt` içinde yer alıyor.
   - *Etki:* Son kullanıcılar veya `ahenk.bat` kurulumu yapanlar gereksiz yere pytest ve yan paketlerini yüklüyor; PyInstaller paket boyutu şişiyor.
   - *Çözüm:* `requirements.txt` (prod) ve `requirements-dev.txt` (dev) olarak ikiye ayır.
 
-- [ ] **[requirements.txt:1] `google-genai>=2.0` için üst sürüm sınırı olmaması**
+- [x] **[requirements.txt:1] `google-genai>=2.0` için üst sürüm sınırı olmaması**
   - *Sorun:* Canlı WebSocket ve model şemaları hızla değişen bir SDK'da üst sürüm kısıtı olmaması gelecekteki bir güncellemede kodun bozulmasına yol açabilir.
   - *Çözüm:* Sürümü `google-genai>=2.0,<3.0` veya test edilen kararlı aralıkta sabitle.
 
-- [ ] **[Ahenk.spec:17] PyInstaller `excludes` listesinin boş olması (Büyük Binary Boyutu)**
+- [x] **[Ahenk.spec:17] PyInstaller `excludes` listesinin boş olması (Büyük Binary Boyutu)**
   - *Sorun:* `excludes=[]` boş olduğu için `pytest`, `unittest`, `tkinter.test`, `numpy.testing`, `numpy.f2py` gibi geliştirme modülleri `.exe` içine gömülüyor.
   - *Etki:* Üretilen `.exe` dosyası gereksiz yere 30-50 MB daha büyük oluyor.
   - *Çözüm:* `Ahenk.spec` içine kapsamlı `excludes` listesi ekle ve `optimize=1` yap.
 
-- [ ] **[Ahenk.spec:39] İkon tanımında tip uyuşmazlığı**
+- [x] **[Ahenk.spec:39] İkon tanımında tip uyuşmazlığı**
   - *Sorun:* `icon=['assets/ahenk.ico']` şeklinde liste verilmiş; PyInstaller string dosya yolu bekler.
   - *Çözüm:* `icon='assets/ahenk.ico'` olarak düzelt.
 
-- [ ] **[tests/] `cli.py` için test bulunmaması (0% Test Kapsamı)**
+- [x] **[tests/] `cli.py` için test bulunmaması (0% Test Kapsamı)**
   - *Sorun:* CLI argümanları (`--src`, `--dst`, `--device`, `--list-devices`, `--api-key`), eksik anahtarda `sys.exit(1)` davranışı ve döngü parametreleri hiç test edilmiyor.
   - *Çözüm:* `tests/test_cli.py` dosyasını oluştur ve CLI bayraklarını, hata durumlarını test et.
 
