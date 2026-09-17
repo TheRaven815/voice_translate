@@ -10,12 +10,32 @@ import tkinter as tk
 
 from config import load as load_config, resolve_api_key, save_api_key, save_preferences
 from devices import NONE_OUTPUT, all_inputs, all_outputs, default_speaker, pick_loopback
-from languages import AUTO_SRC, LANGS, source_code, source_names
+from languages import AUTO_SRC, LANGS, lang_code_to_name, source_code, source_names, src_code_to_name
 from loop import SystemAudioLoop
 from meta import APP_AUTHOR, APP_TITLE, __version__
 
 from .theme import C, ICON_PNG, apply_icon, dark_titlebar, pick_fonts, prepare_app_id
 from .widgets import Select
+
+def format_user_error(err: BaseException) -> str:
+    """Teknik istisnaları kullanıcı dostu Türkçe açıklamaya dönüştürür."""
+    msg = str(err)
+    err_type = type(err).__name__
+    msg_lower = msg.lower()
+
+    if "api_key_invalid" in msg_lower or "api key not valid" in msg_lower:
+        return "Geçersiz API anahtarı. Lütfen Google AI Studio anahtarınızı kontrol edin (https://aistudio.google.com/apikey)."
+    if "429" in msg or "resource_exhausted" in msg_lower or "quota" in msg_lower:
+        return "Gemini API kota sınırı aşıldı (429 Resource Exhausted). Lütfen biraz bekleyin veya kotanızı kontrol edin."
+    if "404" in msg or "not_found" in msg_lower:
+        return "Belirtilen Gemini modeli bulunamadı (404 Not Found). Model adını kontrol edin."
+    if "403" in msg or "permission_denied" in msg_lower or "forbidden" in msg_lower:
+        return "Gemini API erişim izni reddedildi (403). Anahtarınızın Gemini Live API yetkisini kontrol edin."
+    if any(k in err_type.lower() or k in msg_lower for k in ("connection", "socket", "timeout", "gaierror", "network")):
+        return f"Ağ bağlantısı hatası ({err_type}): İnternet bağlantınızı ve güvenlik duvarınızı kontrol edin."
+    if "ses aygıtı" in msg_lower or "soundcard" in msg_lower:
+        return f"Ses aygıtı hatası: {msg}"
+    return f"{err_type}: {msg}"
 
 
 class App(tk.Tk):
@@ -28,7 +48,13 @@ class App(tk.Tk):
         super().__init__()
         self.title(APP_TITLE)
         apply_icon(self)
-        self.geometry("960x580")
+        if getattr(self, "_cfg", None) and self._cfg.window_geom:
+            try:
+                self.geometry(self._cfg.window_geom)
+            except tk.TclError:
+                self.geometry("960x580")
+        else:
+            self.geometry("960x580")
         self.minsize(780, 460)
         self.configure(bg=C.bg)
         self.log_queue: queue.Queue = queue.Queue()
@@ -110,9 +136,9 @@ class App(tk.Tk):
         self._dot_id = self._dot.create_oval(1, 1, 7, 7, fill=C.dim, outline="")
         self.status = tk.Label(self._rail_st, text="Hazır", font=self.font_ui, fg=C.muted, bg=C.rail)
         self.status.pack(side=tk.LEFT, padx=(6, 0))
-        self.meter = tk.Canvas(self._rail_st, width=36, height=4, bg=C.line, highlightthickness=0, bd=0)
-        self.meter.pack(side=tk.RIGHT, padx=(0, 2), pady=3)
-        self._meter_bar = self.meter.create_rectangle(0, 0, 0, 4, fill=C.live, outline="")
+        self.meter = tk.Canvas(self._rail_st, width=54, height=6, bg=C.line, highlightthickness=0, bd=0)
+        self.meter.pack(side=tk.RIGHT, padx=(0, 2), pady=2)
+        self._meter_bar = self.meter.create_rectangle(0, 0, 0, 6, fill=C.live, outline="")
 
         self._rail_sep(rail, 1)
 
@@ -157,8 +183,8 @@ class App(tk.Tk):
         self._langs_frame.columnconfigure(2, weight=1)
 
         cfg = getattr(self, "_cfg", None) or load_config()
-        src_val = cfg.src_lang if cfg.src_lang in source_names() else AUTO_SRC
-        dst_val = cfg.dst_lang if cfg.dst_lang in LANGS else "Türkçe"
+        src_val = src_code_to_name(cfg.src_lang)
+        dst_val = lang_code_to_name(cfg.dst_lang)
         self.src_var = tk.StringVar(value=src_val)
         self.src_box = Select(
             self._langs_frame, textvariable=self.src_var, values=source_names(), font=self.font_ui
@@ -180,7 +206,7 @@ class App(tk.Tk):
         self.dst_box.grid(row=0, column=2, sticky="ew")
 
         for var in (self.in_var, self.out_var, self.src_var, self.dst_var):
-            var.trace_add("write", lambda *_: self._save_user_prefs())
+            var.trace_add("write", self._on_runtime_pref_change)
 
         self._rail_sep(rail, 7)
 
@@ -355,7 +381,7 @@ class App(tk.Tk):
             padx=10,
             pady=5,
             cursor="hand2",
-            takefocus=0,
+            takefocus=1,
         )
         btn.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
         btn._rest_bg = C.panel
@@ -398,11 +424,6 @@ class App(tk.Tk):
         self._dot.itemconfigure(self._dot_id, fill=color)
 
     def _set_running(self, running: bool) -> None:
-        box = "disabled" if running else "readonly"
-        self.in_box.configure(state=box)
-        self.out_box.configure(state=box)
-        self.src_box.configure(state=box)
-        self.dst_box.configure(state=box)
         self.key_entry.configure(state=tk.DISABLED if running else tk.NORMAL)
         self._paint(self.start_btn, filled=not running, enabled=not running)
         self._paint(self.stop_btn, filled=running, enabled=running)
@@ -411,8 +432,6 @@ class App(tk.Tk):
             self._update_meter(0.0)
 
     def _swap_langs(self) -> None:
-        if self.src_box["state"] == "disabled":
-            return
         if self.src_var.get() == AUTO_SRC:
             return
         a, b = self.src_var.get(), self.dst_var.get()
@@ -537,8 +556,8 @@ class App(tk.Tk):
             self._append("[bilgi] Metin panoya kopyalandı.\n")
 
     def _update_meter(self, level: float) -> None:
-        w = int(max(0.0, min(1.0, level)) * 36)
-        self.meter.coords(self._meter_bar, 0, 0, w, 4)
+        w = int(max(0.0, min(1.0, level)) * 54)
+        self.meter.coords(self._meter_bar, 0, 0, w, 6)
 
     def _save_user_prefs(self):
         if getattr(self, "_save_prefs_timer", None) is not None:
@@ -550,17 +569,55 @@ class App(tk.Tk):
 
     def _do_save_user_prefs(self):
         self._save_prefs_timer = None
+        src_raw = self.src_var.get()
+        src_code = "auto" if src_raw == AUTO_SRC else LANGS.get(src_raw, src_raw)
+        dst_code = LANGS.get(self.dst_var.get(), self.dst_var.get())
+        overlay_geom = None
+        if self._overlay is not None and self._overlay.winfo_exists():
+            overlay_geom = self._overlay.geometry()
         try:
             save_preferences(
                 input_device=self.in_var.get(),
                 output_device=self.out_var.get(),
-                src_lang=self.src_var.get(),
-                dst_lang=self.dst_var.get(),
+                src_lang=src_code,
+                dst_lang=dst_code,
                 theme=getattr(self, "_theme", "dark"),
+                window_geom=self.geometry(),
+                overlay_geom=overlay_geom,
             )
         except OSError:
             pass
 
+    def restart(self) -> None:
+        """Çalışırken ayarları nazikçe yeniden başlatarak uygular."""
+        if self.worker is not None and self.worker.is_alive():
+            self.stop()
+            def _wait_and_start():
+                if self.worker is not None:
+                    self.worker.join(timeout=1.2)
+                try:
+                    self.after(50, self.start)
+                except tk.TclError:
+                    pass
+            threading.Thread(target=_wait_and_start, daemon=True).start()
+        else:
+            self.start()
+
+    def _on_runtime_pref_change(self, *args):
+        self._save_user_prefs()
+        if self.worker is not None and self.worker.is_alive() and not self._stopping.is_set():
+            if getattr(self, "_restart_timer", None) is not None:
+                try:
+                    self.after_cancel(self._restart_timer)
+                except Exception:
+                    pass
+            self._restart_timer = self.after(300, self._do_runtime_restart)
+
+    def _do_runtime_restart(self):
+        self._restart_timer = None
+        if self.worker is not None and self.worker.is_alive() and not self._stopping.is_set():
+            self._append("[bilgi] Ayarlar güncellendi, yeni parametrelerle yeniden başlatılıyor...\n")
+            self.restart()
     def toggle_theme(self) -> None:
         new_theme = "light" if C.current == "dark" else "dark"
         self.set_theme(new_theme)
@@ -714,7 +771,7 @@ class App(tk.Tk):
                         elif kind == "log":
                             self._append(payload)
                         elif kind == "level":
-                            self._update_meter(float(payload))
+                            pass
                         elif kind == "status":
                             status_text = payload
                             color = msg[2] if len(msg) > 2 else C.live
@@ -725,6 +782,10 @@ class App(tk.Tk):
         except queue.Empty:
             pass
         finally:
+            if self.loop_obj is not None:
+                self._update_meter(getattr(self.loop_obj, "last_level", 0.0))
+            elif not (self.worker is not None and self.worker.is_alive()):
+                self._update_meter(0.0)
             self.after(120, self._pump_log)
 
     def save_key(self):
@@ -798,7 +859,7 @@ class App(tk.Tk):
                 if isinstance(root_err, asyncio.CancelledError):
                     break
                 retries += 1
-                self.log_queue.put(f"\n[hata] {type(root_err).__name__}: {root_err}\n")
+                self.log_queue.put(f"\n[hata] {format_user_error(root_err)}\n")
                 if retries <= max_retries:
                     self.log_queue.put(("status", f"Yeniden bağlanılıyor ({retries}/{max_retries})", C.warn))
                     self.log_queue.put(f"[bilgi] Yeniden bağlanılıyor ({retries}/{max_retries})...\n")
@@ -950,10 +1011,10 @@ class App(tk.Tk):
             return
         pop.update_idletasks()
         width = pop.winfo_width()
-        height = min(max(56, pop.winfo_reqheight()), pop.winfo_screenheight())
+        height = max(56, pop.winfo_reqheight())
         x = pop.winfo_x()
         bottom = pop.winfo_y() + pop.winfo_height()
-        y = min(max(0, bottom - height), pop.winfo_screenheight() - height)
+        y = bottom - height
         pop.geometry(f"{width}x{height}{x:+d}{y:+d}")
 
     def toggle_overlay(self) -> None:
@@ -1016,9 +1077,15 @@ class App(tk.Tk):
         sw = self.winfo_screenwidth()
         sh = self.winfo_screenheight()
         w, h = 580, 56
-        x = max(0, (sw - w) // 2)
-        y = max(0, sh - h - 100)
-        pop.geometry(f"{w}x{h}+{x}+{y}")
+        if getattr(self, "_cfg", None) and self._cfg.overlay_geom:
+            try:
+                pop.geometry(self._cfg.overlay_geom)
+            except tk.TclError:
+                pop.geometry(f"{w}x{h}+{(sw - w) // 2}+{sh - h - 100}")
+        else:
+            pop.geometry(f"{w}x{h}+{(sw - w) // 2}+{sh - h - 100}")
+        for w_widget in (pop, wrap, self.overlay_label):
+            w_widget.bind("<ButtonRelease-1>", lambda _e: self._save_user_prefs(), add="+")
         self._fit_overlay()
     def _on_close(self):
         self.stop()

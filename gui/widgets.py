@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import time
 import tkinter as tk
 import tkinter.font as tkfont
 
 from .theme import C
-
 
 class Select(tk.Frame):
     """Tek satırlık seçici; ttk.Combobox'un native çerçevesini taşımıyor."""
@@ -14,7 +14,7 @@ class Select(tk.Frame):
     _open: Select | None = None
 
     def __init__(self, master, *, textvariable, values=(), font=None, **_):
-        super().__init__(master, bg=C.line, highlightthickness=0, bd=0)
+        super().__init__(master, bg=C.line, highlightthickness=1, highlightbackground=C.line, highlightcolor=C.fill, bd=0, takefocus=1)
         self.var = textvariable
         self._values = list(values)
         self._state = "readonly"
@@ -22,6 +22,9 @@ class Select(tk.Frame):
         self._top_bindings: list[tuple[tk.Misc, str, str]] = []
         self._last_top_geom: tuple[int, int, int, int] | None = None
         self._pop: tk.Toplevel | None = None
+        self._rows: list[tk.Label] = []
+        self._highlight_idx: int = -1
+        self._canvas: tk.Canvas | None = None
         self._inner = tk.Frame(self, bg=C.panel, bd=0, highlightthickness=0)
         self._inner.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
         self._arr = tk.Label(
@@ -43,6 +46,15 @@ class Select(tk.Frame):
         for w in (self, self._inner, self._lbl, self._arr):
             w.bind("<Button-1>", self._toggle)
 
+        self.bind("<FocusIn>", lambda _e: self._on_focus_in())
+        self.bind("<FocusOut>", lambda _e: self._on_focus_out())
+        self.bind("<Up>", self._on_key_up)
+        self.bind("<Down>", self._on_key_down)
+        self.bind("<Return>", self._on_key_enter)
+        self.bind("<KP_Enter>", self._on_key_enter)
+        self.bind("<space>", self._on_key_space)
+        self.bind("<Escape>", lambda _e: self._close())
+        self.bind("<Key>", self._on_key_char)
     def current(self) -> int:
         try:
             return self._values.index(self.var.get())
@@ -96,6 +108,79 @@ class Select(tk.Frame):
         self.var.set(val)
         self._close()
 
+    def _on_focus_in(self):
+        self.configure(bg=C.fill)
+
+    def _on_focus_out(self):
+        self.configure(bg=C.line)
+
+    def _set_popup_highlight(self, idx: int) -> None:
+        if not self._rows:
+            return
+        idx = max(0, min(len(self._rows) - 1, idx))
+        if 0 <= self._highlight_idx < len(self._rows):
+            self._rows[self._highlight_idx].configure(bg=C.panel)
+        self._highlight_idx = idx
+        self._rows[idx].configure(bg=C.hover)
+        if self._canvas is not None and len(self._rows) > 1:
+            self._canvas.yview_moveto(idx / len(self._rows))
+
+    def _on_key_down(self, _e=None):
+        if self._state == "disabled" or not self._values:
+            return "break"
+        if self._pop is not None:
+            self._set_popup_highlight(self._highlight_idx + 1)
+        else:
+            cur = self.current()
+            next_idx = min(len(self._values) - 1, cur + 1) if cur >= 0 else 0
+            self.var.set(self._values[next_idx])
+        return "break"
+
+    def _on_key_up(self, _e=None):
+        if self._state == "disabled" or not self._values:
+            return "break"
+        if self._pop is not None:
+            self._set_popup_highlight(self._highlight_idx - 1)
+        else:
+            cur = self.current()
+            prev_idx = max(0, cur - 1) if cur >= 0 else 0
+            self.var.set(self._values[prev_idx])
+        return "break"
+
+    def _on_key_enter(self, _e=None):
+        if self._state == "disabled":
+            return "break"
+        if self._pop is not None:
+            if 0 <= self._highlight_idx < len(self._values):
+                self._pick(self._values[self._highlight_idx])
+            else:
+                self._close()
+        else:
+            self._toggle()
+        return "break"
+
+    def _on_key_space(self, _e=None):
+        if self._state == "disabled":
+            return "break"
+        if self._pop is None:
+            self._toggle()
+            return "break"
+        return None
+
+    def _on_key_char(self, e):
+        if self._state == "disabled" or not e.char or not self._values:
+            return
+        ch = e.char.lower()
+        if not ch.isalnum():
+            return
+        for i, val in enumerate(self._values):
+            if str(val).lower().startswith(ch):
+                if self._pop is not None:
+                    self._set_popup_highlight(i)
+                else:
+                    self.var.set(val)
+                break
+
     def _toggle(self, _e=None):
         if self._state == "disabled":
             return
@@ -106,7 +191,6 @@ class Select(tk.Frame):
             Select._open._close()
         if not self._values:
             return
-        self.update_idletasks()
         pop = tk.Toplevel(self)
         pop.wm_overrideredirect(True)
         pop.configure(bg=C.line)
@@ -124,10 +208,10 @@ class Select(tk.Frame):
             canvas = tk.Canvas(
                 inner, bg=C.panel, highlightthickness=0, bd=0, height=visible * row_h
             )
+            self._canvas = canvas
             host = tk.Frame(canvas, bg=C.panel)
             win = canvas.create_window((0, 0), window=host, anchor="nw")
             canvas.pack(fill=tk.BOTH, expand=True)
-
             def _sync(_e=None):
                 canvas.configure(scrollregion=canvas.bbox("all"))
                 canvas.itemconfigure(win, width=max(1, canvas.winfo_width()))
@@ -143,8 +227,10 @@ class Select(tk.Frame):
             host.bind("<MouseWheel>", _wheel)
 
         cur = self.current()
+        self._rows.clear()
+        self._highlight_idx = cur if cur >= 0 else 0
         for i, v in enumerate(self._values):
-            base = C.hover if i == cur else C.panel
+            base = C.hover if i == self._highlight_idx else C.panel
             row = tk.Label(
                 host,
                 text=v,
@@ -156,12 +242,11 @@ class Select(tk.Frame):
                 font=self._font,
             )
             row.pack(fill=tk.X)
+            self._rows.append(row)
             row.bind("<Button-1>", lambda _e, val=v: self._pick(val))
-            row.bind("<Enter>", lambda _e, r=row: r.configure(bg=C.hover))
-            row.bind("<Leave>", lambda _e, r=row, b=base: r.configure(bg=b))
+            row.bind("<Enter>", lambda _e, idx=i: self._set_popup_highlight(idx))
             if len(self._values) > 8:
                 row.bind("<MouseWheel>", _wheel)
-
         x = self.winfo_rootx()
         y = self.winfo_rooty() + self.winfo_height() - 1
         font_obj = tkfont.Font(self, font=self._font)
@@ -176,6 +261,11 @@ class Select(tk.Frame):
             y = max(0, self.winfo_rooty() - h + 1)
         pop.geometry(f"{w}x{h}+{x}+{y}")
         pop.bind("<Escape>", lambda _e: self._close())
+        pop.bind("<Up>", self._on_key_up)
+        pop.bind("<Down>", self._on_key_down)
+        pop.bind("<Return>", self._on_key_enter)
+        pop.bind("<KP_Enter>", self._on_key_enter)
+        pop.bind("<Key>", self._on_key_char)
         self._pop = pop
         Select._open = self
         pop.after_idle(self._arm_dismiss)
@@ -184,6 +274,7 @@ class Select(tk.Frame):
         if self._pop is None:
             return
         top = self.winfo_toplevel()
+        self._armed_time = time.monotonic()
         self._last_top_geom = (top.winfo_x(), top.winfo_y(), top.winfo_width(), top.winfo_height())
         for seq, cb in (
             ("<Button-1>", self._on_global_click),
@@ -215,11 +306,13 @@ class Select(tk.Frame):
                 if geom != self._last_top_geom:
                     self._close()
             elif e.type == tk.EventType.FocusOut:
+                if time.monotonic() - getattr(self, "_armed_time", 0.0) < 0.05:
+                    return
                 try:
                     focused = self.focus_get()
                 except (KeyError, tk.TclError):
                     focused = None
-                if focused is not None and (self._inside(focused, self._pop) or self._inside(focused, self)):
+                if focused is not None and self._inside(focused, self._pop):
                     return
                 if self._inside_pop_rect():
                     return
@@ -267,11 +360,15 @@ class Select(tk.Frame):
             except tk.TclError:
                 pass
         self._top_bindings.clear()
+        self._rows.clear()
+        self._canvas = None
+        self._highlight_idx = -1
         pop = self._pop
         self._pop = None
         if Select._open is self:
             Select._open = None
-        try:
-            pop.destroy()
-        except tk.TclError:
-            pass
+        if pop is not None:
+            try:
+                pop.destroy()
+            except tk.TclError:
+                pass

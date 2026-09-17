@@ -13,9 +13,19 @@ call :ensure_python
 if errorlevel 1 goto :fail
 call :ensure_venv
 if errorlevel 1 goto :fail
-call :ensure_deps
-if errorlevel 1 goto :fail
 
+if "%~1"=="cli" (
+  "%VPY%" cli.py %2 %3 %4 %5 %6 %7 %8 %9
+  exit /b %errorlevel%
+)
+if "%~1"=="run" (
+  "%VPY%" main.py %2 %3 %4 %5 %6 %7 %8 %9
+  exit /b %errorlevel%
+)
+if not "%~1"=="" (
+  "%VPY%" cli.py %*
+  exit /b %errorlevel%
+)
 :menu
 echo.
 echo  Ahenk
@@ -98,10 +108,12 @@ exit /b 1
 if exist "%VPY%" exit /b 0
 echo  venv olusturuluyor...
 %SYSPY% -m venv .venv
-if exist "%VPY%" exit /b 0
-echo  venv olusturulamadi.
-exit /b 1
-
+if not exist "%VPY%" (
+  echo  venv olusturulamadi.
+  exit /b 1
+)
+call :ensure_deps
+exit /b %errorlevel%
 :ensure_deps
 echo  Kutuphaneler kontrol ediliyor...
 "%VPY%" -m pip install -q --upgrade pip

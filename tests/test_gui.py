@@ -4,9 +4,11 @@ import tkinter as tk
 
 import pytest
 
+import config
 from devices import NONE_OUTPUT
 from gui.app import App
 from gui.theme import C, ICON_ICO, ICON_PNG
+from gui.widgets import Select
 from languages import AUTO_SRC, source_code
 from meta import APP_AUTHOR, APP_TITLE, __version__
 
@@ -291,10 +293,10 @@ def test_vu_meter_update():
     try:
         app._update_meter(0.5)
         coords = app.meter.coords(app._meter_bar)
-        assert coords == [0.0, 0.0, 18.0, 4.0]
+        assert coords == [0.0, 0.0, 27.0, 6.0]
         app._update_meter(0.0)
         coords = app.meter.coords(app._meter_bar)
-        assert coords == [0.0, 0.0, 0.0, 4.0]
+        assert coords == [0.0, 0.0, 0.0, 6.0]
     finally:
         app.destroy()
 
@@ -520,8 +522,110 @@ def test_user_prefs_debounce(monkeypatch):
         # Flush timer manually
         app._do_save_user_prefs()
         assert len(saves) == 1
-        assert saves[0]["src_lang"] == "İngilizce"
-        assert saves[0]["dst_lang"] == "Almanca"
+        assert saves[0]["src_lang"] == "en"
+        assert saves[0]["dst_lang"] == "de"
+        assert "window_geom" in saves[0]
+    finally:
+        app.destroy()
+
+def test_language_code_and_name_bidirectional_conversion():
+    from languages import lang_code_to_name, src_code_to_name
+    assert src_code_to_name("auto") == "Otomatik"
+    assert src_code_to_name("none") == "Otomatik"
+    assert src_code_to_name("") == "Otomatik"
+    assert src_code_to_name("en") == "İngilizce"
+    assert src_code_to_name("İngilizce") == "İngilizce"
+    assert lang_code_to_name("tr") == "Türkçe"
+    assert lang_code_to_name("Türkçe") == "Türkçe"
+    assert lang_code_to_name("de") == "Almanca"
+    assert lang_code_to_name("unknown_code") == "Türkçe"
+
+
+def test_window_geometry_loaded_from_config(monkeypatch):
+    cfg_mock = config.Settings(
+        window_geom="820x480+50+50",
+        overlay_geom="520x60+60+60",
+    )
+    monkeypatch.setattr("gui.app.load_config", lambda: cfg_mock)
+    app = App()
+    try:
+        assert app.geometry().startswith("820x480")
+        app.toggle_overlay()
+        assert app._overlay is not None
+        assert app._overlay.geometry().startswith("520x60")
+    finally:
+        app.destroy()
+
+def test_format_user_error_mappings():
+    from gui.app import format_user_error
+    err_key = RuntimeError("API_KEY_INVALID: bad key")
+    assert "Geçersiz API anahtarı" in format_user_error(err_key)
+
+    err_quota = RuntimeError("ResourceExhausted: 429 quota exceeded")
+    assert "kota sınırı" in format_user_error(err_quota)
+
+    err_model = RuntimeError("404 Not Found: model not found")
+    assert "modeli bulunamadı" in format_user_error(err_model)
+
+    err_net = ConnectionResetError("Connection reset by peer")
+    assert "Ağ bağlantısı hatası" in format_user_error(err_net)
+
+    err_sound = RuntimeError("Ses aygıtı bağlantısı koptu")
+    assert "Ses aygıtı hatası" in format_user_error(err_sound)
+
+def test_select_keyboard_navigation():
+    root = tk.Tk()
+    try:
+        var = tk.StringVar(value="Türkçe")
+        sel = Select(root, textvariable=var, values=["İngilizce", "Türkçe", "Almanca"])
+        sel.pack()
+
+        # Test Down and Up keys when popup is closed
+        sel._on_key_down()
+        assert var.get() == "Almanca"
+        sel._on_key_up()
+        assert var.get() == "Türkçe"
+        sel._on_key_up()
+        assert var.get() == "İngilizce"
+
+        # Test letter key jump
+        sel._on_key_char(type("Event", (), {"char": "a"})())
+        assert var.get() == "Almanca"
+
+        # Test Open popup via Space / Enter
+        sel._on_key_space()
+        assert sel._pop is not None
+        assert sel._highlight_idx == 2  # Almanca is at index 2
+        sel._on_key_up()
+        assert sel._highlight_idx == 1  # Türkçe
+        sel._on_key_enter()
+        assert sel._pop is None
+        assert var.get() == "Türkçe"
+    finally:
+        root.destroy()
+
+def test_vu_meter_reads_loop_last_level_directly():
+    app = App()
+    try:
+        app.loop_obj = type("MockLoop", (), {"last_level": 0.8})()
+        app._pump_log()
+        coords = app.meter.coords(app._meter_bar)
+        assert coords[2] > 40.0
+        assert coords[3] == 6.0
+    finally:
+        app.destroy()
+
+def test_runtime_language_change_triggers_restart(monkeypatch):
+    app = App()
+    try:
+        restarted = []
+        monkeypatch.setattr(app, "restart", lambda: restarted.append(True))
+        # Simulate running worker
+        app.worker = type("MockWorker", (), {"is_alive": lambda self: True})()
+        app.src_var.set("Almanca")
+        # Run debounce timer callback
+        app._do_runtime_restart()
+        assert len(restarted) == 1
     finally:
         app.destroy()
 

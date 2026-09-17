@@ -21,17 +21,75 @@ def pcm16_to_float(pcm: bytes) -> np.ndarray:
         return np.empty(0, dtype=np.float32)
     return samples.astype(np.float32) * (1.0 / 32768.0)
 
+class AudioConverter:
+    """Yakalama örneklerini 16 kHz mono PCM16'ya dönüştürür.
+    Artan örnekleri bloklar arasında saklayarak faz kayması, tıkırtı ve perde bozulmasını önler.
+    """
 
-def to_16k_mono(frame: np.ndarray) -> bytes:
+    def __init__(self, in_rate: int = CAPTURE_RATE, out_rate: int = SEND_SAMPLE_RATE):
+        self.in_rate = in_rate
+        self.out_rate = out_rate
+        self._leftover = np.empty(0, dtype=np.float32)
+        self._phase = 0.0
+
+    def process(self, frame: np.ndarray) -> bytes:
+        mono = frame.mean(axis=1) if frame.ndim > 1 else frame
+        if len(self._leftover) > 0:
+            mono = np.concatenate([self._leftover, mono])
+
+        total_in = len(mono)
+        if total_in < 2:
+            self._leftover = mono.astype(np.float32)
+            return b""
+
+        if self.in_rate == self.out_rate:
+            pcm = np.clip(mono * 32767.0, -32768, 32767).astype(np.int16)
+            self._leftover = np.empty(0, dtype=np.float32)
+            return pcm.tobytes()
+
+        step = self.in_rate / self.out_rate
+        max_idx = total_in - 1.0001
+        if self._phase >= max_idx:
+            self._phase -= total_in
+            self._leftover = np.empty(0, dtype=np.float32)
+            return b""
+
+        n_out = int((max_idx - self._phase) / step) + 1
+        if n_out <= 0:
+            self._leftover = mono.astype(np.float32)
+            return b""
+
+        in_indices = self._phase + np.arange(n_out) * step
+        idx_floor = in_indices.astype(np.int32)
+        idx_ceil = idx_floor + 1
+        frac = (in_indices - idx_floor).astype(np.float32)
+
+        out_samples = mono[idx_floor] * (1.0 - frac) + mono[idx_ceil] * frac
+
+        next_idx = in_indices[-1] + step
+        consumed = int(np.floor(in_indices[-1]))
+        self._leftover = mono[consumed:].astype(np.float32)
+        self._phase = float(next_idx - consumed)
+
+        pcm = np.clip(out_samples * 32767.0, -32768, 32767).astype(np.int16)
+        return pcm.tobytes()
+
+    def reset(self) -> None:
+        self._leftover = np.empty(0, dtype=np.float32)
+        self._phase = 0.0
+
+
+def to_16k_mono(frame: np.ndarray, in_rate: int = CAPTURE_RATE) -> bytes:
     """float32 (n, ch) yakalamayı 16 kHz mono int16 PCM'e çevirir."""
     mono = frame.mean(axis=1) if frame.ndim > 1 else frame
-    ratio = CAPTURE_RATE // SEND_SAMPLE_RATE
-    if ratio > 1 and len(mono) >= ratio:
+    if in_rate == SEND_SAMPLE_RATE:
+        pcm = np.clip(mono * 32767.0, -32768, 32767).astype(np.int16)
+        return pcm.tobytes()
+    if in_rate == 48000 and len(mono) % 3 == 0 and len(mono) >= 3:
+        ratio = 3
         n_out = len(mono) // ratio
-        downsampled = (
-            mono[: n_out * ratio].reshape(n_out, ratio).mean(axis=1).astype(np.float32)
-        )
-    else:
-        downsampled = mono.astype(np.float32)
-    pcm = np.clip(downsampled * 32767.0, -32768, 32767).astype(np.int16)
-    return pcm.tobytes()
+        downsampled = mono[: n_out * ratio].reshape(n_out, ratio).mean(axis=1).astype(np.float32)
+        pcm = np.clip(downsampled * 32767.0, -32768, 32767).astype(np.int16)
+        return pcm.tobytes()
+    conv = AudioConverter(in_rate, SEND_SAMPLE_RATE)
+    return conv.process(mono)

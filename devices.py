@@ -52,6 +52,17 @@ def all_outputs():
 def default_speaker():
     return sc.default_speaker()
 
+def pick_speaker(device_substr: str | None = None):
+    speakers = list(sc.all_speakers())
+    if not speakers:
+        return None
+    if device_substr:
+        for s in speakers:
+            if device_substr.lower() in s.name.lower():
+                return s
+        raise RuntimeError(f"'{device_substr}' ile eşleşen hoparlör yok.")
+    return default_speaker()
+
 
 def default_microphone():
     return sc.default_microphone()

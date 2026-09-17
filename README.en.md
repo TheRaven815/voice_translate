@@ -143,17 +143,22 @@ First launch (no saved prefs): default loopback in, default speaker out, source 
 .venv\Scripts\python cli.py --device Headphones --src auto --dst de
 ```
 
-| Flag | Default | |
+| Flag | Default | Description |
 | --- | --- | --- |
 | `--src` | `auto` | BCP-47 or `auto` |
 | `--dst` | `tr` | Target BCP-47 |
-| `--device` | none | Substring of the loopback name |
-| `--mic` | off | Default microphone instead of system audio |
+| `--device` | none | Substring of the loopback/input device name |
+| `--output` | none | Substring of the output speaker device name |
+| `--mic` | off | Capture microphone instead of system audio |
+| `--text-only` | off | Run without speaker audio output (text-only) |
+| `--no-interactive` | off | Run without reading console stdin; exit with Ctrl+C |
 | `--list-devices` | | Print speakers / loopback / mics, then exit |
-| `--api-key` | none | Lands in shell history; do not use |
+| `--list-langs` | | Print supported language names and codes, then exit |
+| `--version` | | Print version and exit |
+| `--model` | default | Gemini Live model name |
+| `--api-key` | none | Lands in shell history; prefer `.env` or GUI |
 
-Output is always the default speaker (no Hiçbiri). Stop with `q` + Enter or Ctrl+C.
-
+Stop with `q` + Enter or Ctrl+C (or direct Ctrl+C in `--no-interactive` mode).
 `--src` / `--dst` are codes, not the GUI labels (`en`, `tr`, `de`, …).
 
 ## Languages

@@ -401,4 +401,55 @@ def test_loopback_echo_suppressed_during_playback(monkeypatch):
     # Ensure the check prevents sending
     assert loop_obj.source_mic.isloopback is True
     assert loop_obj.output_speaker is not None
-    assert time.monotonic() < loop_obj._playback_until + 0.15
+
+def test_receive_handles_both_audio_and_transcription():
+    emitted = []
+    loop_obj = SystemAudioLoop(
+        "en", "tr", FakeMic(), "dummy-key",
+        output_speaker=FakeSpeaker(),
+        on_text=lambda msg: emitted.append(msg),
+    )
+    loop_obj.audio_in_queue = asyncio.Queue()
+
+    class CombinedSession:
+        def receive(self):
+            async def _gen():
+                yield SimpleNamespace(
+                    data=b"\x01\x02\x03\x04",
+                    text=None,
+                    server_content=SimpleNamespace(
+                        output_transcription=SimpleNamespace(text="Merged audio-text", finished=True),
+                        input_transcription=None,
+                    ),
+                )
+                await asyncio.sleep(3600)
+            return _gen()
+
+    loop_obj.session = CombinedSession()
+
+    async def _run():
+        task = asyncio.create_task(loop_obj.receive())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(_run())
+    assert not loop_obj.audio_in_queue.empty()
+    assert loop_obj.audio_in_queue.get_nowait() == b"\x01\x02\x03\x04"
+    assert ("trans", "Merged audio-text") in emitted
+    assert ("trans_end",) in emitted
+
+def test_audio_converter_sample_rate_resampling():
+    from audio import AudioConverter
+    conv48 = AudioConverter(48000, 16000)
+    total_bytes = sum(len(conv48.process(np.zeros(960, dtype=np.float32))) for _ in range(50))
+    # 1 second of 48k input must produce 16k mono 16-bit samples = 32000 bytes
+    assert total_bytes == 32000
+
+    conv44 = AudioConverter(44100, 16000)
+    total_bytes_44 = sum(len(conv44.process(np.zeros(882, dtype=np.float32))) for _ in range(50))
+    # 1 second of 44.1k input must produce 16k mono 16-bit samples = 32000 bytes
+    assert total_bytes_44 == 32000

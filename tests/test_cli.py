@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -52,6 +53,7 @@ def test_cli_runs_loop_with_args(monkeypatch):
             "test_key",
             output_speaker=fake_speaker,
             model="custom-model",
+            console_input=True,
         )
         mock_run.assert_called_once()
 
@@ -116,3 +118,76 @@ def test_cli_loopback_error_exits(monkeypatch, capsys):
     assert exc.value.code == 1
     err = capsys.readouterr().err
     assert "Loopback cihaz bulunamadı" in err
+def test_cli_list_langs(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["cli.py", "--list-langs"])
+    cli.main()
+    out = capsys.readouterr().out
+    assert "Desteklenen diller:" in out
+    assert "en   : İngilizce" in out
+    assert "tr   : Türkçe" in out
+
+
+def test_cli_invalid_languages_exit(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["cli.py", "--src", "xyz", "--mic", "--api-key", "key"])
+    monkeypatch.setattr("cli.default_microphone", lambda: MagicMock(name="Mic"))
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "Geçersiz kaynak dil 'xyz'" in err
+
+
+def test_cli_no_interactive_flag(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["cli.py", "--api-key", "test_key", "--mic", "--no-interactive"],
+    )
+    fake_source = MagicMock(name="FakeMic")
+    fake_source.name = "FakeMic"
+    monkeypatch.setattr("cli.default_microphone", lambda: fake_source)
+    monkeypatch.setattr("cli.default_speaker", lambda: MagicMock(name="Spk"))
+
+    mock_loop_cls = MagicMock()
+    monkeypatch.setattr("cli.SystemAudioLoop", mock_loop_cls)
+
+    with patch("asyncio.run"):
+        cli.main()
+        assert mock_loop_cls.call_args.kwargs["console_input"] is False
+
+
+def test_cli_custom_output_speaker(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["cli.py", "--api-key", "test_key", "--mic", "--output", "Headphones"],
+    )
+    fake_source = MagicMock(name="FakeMic")
+    fake_source.name = "FakeMic"
+    fake_speaker = MagicMock(name="Headphones")
+    fake_speaker.name = "Headphones"
+
+    monkeypatch.setattr("cli.default_microphone", lambda: fake_source)
+    monkeypatch.setattr("cli.pick_speaker", lambda name: fake_speaker)
+
+    mock_loop_cls = MagicMock()
+    monkeypatch.setattr("cli.SystemAudioLoop", mock_loop_cls)
+
+    with patch("asyncio.run"):
+        cli.main()
+        assert mock_loop_cls.call_args.kwargs["output_speaker"] == fake_speaker
+
+
+def test_cli_handles_exception_group_cancelled(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["cli.py", "--api-key", "test_key", "--mic"])
+    fake_source = MagicMock(name="FakeMic")
+    monkeypatch.setattr("cli.default_microphone", lambda: fake_source)
+    monkeypatch.setattr("cli.default_speaker", lambda: MagicMock())
+    monkeypatch.setattr("cli.SystemAudioLoop", MagicMock())
+
+    cancelled = asyncio.CancelledError("Kullanıcı çıkışı")
+    eg = BaseExceptionGroup("taskgroup", [cancelled])
+    with patch("asyncio.run", side_effect=eg):
+        cli.main()
+    out = capsys.readouterr().out
+    assert "Durduruldu." in out

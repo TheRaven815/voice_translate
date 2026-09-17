@@ -6,6 +6,7 @@ import asyncio
 import queue
 import threading
 import os
+import sys
 import time
 from types import SimpleNamespace
 
@@ -18,6 +19,7 @@ from audio import (
     CAPTURE_RATE,
     RECEIVE_SAMPLE_RATE,
     SEND_SAMPLE_RATE,
+    AudioConverter,
     pcm16_to_float,
     to_16k_mono,
 )
@@ -118,14 +120,36 @@ class SystemAudioLoop:
         await self._stop.wait()
 
     async def send_text(self):
-        while True:
-            text = await asyncio.to_thread(input, "çıkmak için q + Enter > ")
-            if text.strip().lower() == "q":
-                break
-            if self.session is not None:
-                content = types.Content(role="user", parts=[types.Part(text=text or ".")])
-                await self.session.send_client_content(turns=content, turn_complete=True)
+        q: queue.Queue[str] = queue.Queue()
+        stop_evt = threading.Event()
 
+        def _reader():
+            while not stop_evt.is_set():
+                try:
+                    line = sys.stdin.readline()
+                    if not line:
+                        break
+                    q.put(line)
+                except Exception:
+                    break
+
+        t = threading.Thread(target=_reader, daemon=True)
+        t.start()
+        try:
+            while not (self._stop and self._stop.is_set()):
+                try:
+                    line = q.get_nowait()
+                except queue.Empty:
+                    await asyncio.sleep(0.1)
+                    continue
+                text = line.strip()
+                if text.lower() == "q":
+                    break
+                if text and self.session is not None:
+                    content = types.Content(role="user", parts=[types.Part(text=text)])
+                    await self.session.send_client_content(turns=content, turn_complete=True)
+        finally:
+            stop_evt.set()
     async def send_realtime(self):
         while True:
             msg = await self.out_queue.get()
@@ -151,6 +175,7 @@ class SystemAudioLoop:
         chunk'ta ayrı to_thread kullanmak erişim ihlaline yol açar.
         """
         is_loopback = getattr(self.source_mic, "isloopback", False)
+        conv = AudioConverter(in_rate=CAPTURE_RATE, out_rate=SEND_SAMPLE_RATE)
         with self.source_mic.recorder(
             samplerate=CAPTURE_RATE, channels=2, blocksize=CAPTURE_BLOCK
         ) as mic:
@@ -162,25 +187,22 @@ class SystemAudioLoop:
                     if time.monotonic() < self._playback_until + 0.15:
                         continue
                 arr = np.asarray(frame, dtype=np.float32)
-                pcm = to_16k_mono(arr)
-                if self._emit is not None and self._loop is not None:
-                    mono = arr.mean(axis=1) if arr.ndim > 1 else arr
-                    rms = (
-                        float(np.sqrt(np.dot(mono, mono) / len(mono)))
-                        if len(mono) > 0
-                        else 0.0
-                    )
-                    lvl = min(1.0, rms * 8.0)
-                    self.last_level = lvl
-                    now = time.monotonic()
-                    if now - self._last_level_emit >= 0.08:
-                        self._last_level_emit = now
-                        try:
-                            self._loop.call_soon_threadsafe(
-                                self._emit, ("level", lvl)
-                            )
-                        except RuntimeError:
-                            pass
+                pcm = conv.process(arr)
+                if not pcm:
+                    continue
+                mono = arr.mean(axis=1) if arr.ndim > 1 else arr
+                rms = (
+                    float(np.sqrt(np.dot(mono, mono) / len(mono)))
+                    if len(mono) > 0
+                    else 0.0
+                )
+                if rms > 1e-4:
+                    import math
+                    db = 20.0 * math.log10(rms)
+                    lvl = max(0.0, min(1.0, (db + 50.0) / 50.0))
+                else:
+                    lvl = 0.0
+                self.last_level = lvl
                 try:
                     self._loop.call_soon_threadsafe(
                         self._post, {"data": pcm, "mime_type": f"audio/pcm;rate={SEND_SAMPLE_RATE}"}
@@ -269,7 +291,6 @@ class SystemAudioLoop:
                                 self.audio_in_queue.put_nowait(data)
                             except asyncio.QueueFull:
                                 pass
-                    continue
                 content = getattr(response, "server_content", None)
                 if content is not None:
                     self._handle_tr("heard", getattr(content, "input_transcription", None))

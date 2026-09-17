@@ -141,17 +141,22 @@ python3 -m venv .venv
 .venv\Scripts\python cli.py --device Headphones --src auto --dst de
 ```
 
-| Bayrak | Varsayılan | |
+| Bayrak | Varsayılan | Açıklama |
 | --- | --- | --- |
 | `--src` | `auto` | BCP-47 veya `auto` |
 | `--dst` | `tr` | Hedef BCP-47 |
-| `--device` | yok | Loopback adında alt dizgi |
-| `--mic` | kapalı | Sistem sesi yerine varsayılan mikrofon |
+| `--device` | yok | Giriş/loopback aygıt adı filtresi |
+| `--output` | yok | Çıkış hoparlörü aygıt adı filtresi |
+| `--mic` | kapalı | Sistem sesi yerine mikrofon yakala |
+| `--text-only` | kapalı | Hoparlör çıkışı olmadan yalnız metin çevir |
+| `--no-interactive` | kapalı | Konsoldan metin girişi almadan yalnız Ctrl+C ile çalış |
 | `--list-devices` | | Hoparlör / loopback / mikrofon listesi, çık |
-| `--api-key` | yok | Kabuk geçmişine düşer; kullanmayın |
+| `--list-langs` | | Desteklenen dilleri ve kodlarını listele, çık |
+| `--version` | | Sürüm bilgisini yazdır, çık |
+| `--model` | varsayılan | Gemini Live model adı |
+| `--api-key` | yok | Kabuk geçmişine düşer; `.env` veya GUI tercih edin |
 
-Çıkış hoparlörü her zaman varsayılan hoparlördür (GUI’deki Hiçbiri yok). Durdur: `q` + Enter veya Ctrl+C.
-
+Durdurmak için `q` + Enter veya Ctrl+C (`--no-interactive` modunda doğrudan Ctrl+C).
 `--src` / `--dst` kodları GUI adlarından bağımsızdır (`en`, `tr`, `de` …).
 
 ## Diller

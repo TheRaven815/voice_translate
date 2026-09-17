@@ -4,8 +4,14 @@ title Ahenk Derleme
 cd /d "%~dp0"
 chcp 65001 >nul
 
-set "VPY=.venv\Scripts\python.exe"
+set "NOPAUSE="
+if /i "%~1"=="/nopause" set "NOPAUSE=1"
+if /i "%~1"=="--nopause" set "NOPAUSE=1"
 
+set "VPY="
+if exist ".venv\Scripts\python.exe" set "VPY=.venv\Scripts\python.exe"
+if not defined VPY if exist "venv\Scripts\python.exe" set "VPY=venv\Scripts\python.exe"
+if not defined VPY set "VPY=.venv\Scripts\python.exe"
 if not exist "%VPY%" (
     echo [.venv bulunamadi, olusturuluyor...]
     where py >nul 2>&1 && (set "SYSPY=py -3") || (where python >nul 2>&1 && set "SYSPY=python")
@@ -47,14 +53,15 @@ if exist "Ahenk.spec" (
 if errorlevel 1 (
     echo.
     echo [HATA: Derleme basarisiz oldu!]
-    pause
+    if not defined NOPAUSE pause
     exit /b 1
 )
 
 echo.
 echo ========================================
 echo   Derleme tamamlandi!
-echo   Cikti: %cd%\dist\Ahenk.exe
+echo   GUI Cikti: %cd%\dist\Ahenk.exe
+echo   CLI Cikti: %cd%\dist\Ahenk-cli.exe
 echo ========================================
 echo.
-pause
+if not defined NOPAUSE pause

@@ -30,3 +30,21 @@ def source_code(name: str) -> str | None:
 
 def source_names() -> list[str]:
     return [AUTO_SRC, *LANGS]
+
+CODE_TO_NAME = {v: k for k, v in LANGS.items()}
+
+
+def lang_code_to_name(code: str, default: str = "Türkçe") -> str:
+    if not code:
+        return default
+    if code in LANGS:
+        return code
+    return CODE_TO_NAME.get(code.lower(), default)
+
+
+def src_code_to_name(code: str, default: str = AUTO_SRC) -> str:
+    if not code or code.lower() in ("auto", "none"):
+        return AUTO_SRC
+    if code == AUTO_SRC or code in LANGS:
+        return code
+    return CODE_TO_NAME.get(code.lower(), default)

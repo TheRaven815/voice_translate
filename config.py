@@ -112,6 +112,10 @@ class Settings:
     src_lang: str = ""
     dst_lang: str = ""
     theme: str = "dark"
+    window_geom: str = ""
+    overlay_geom: str = ""
+
+
 def config_dir() -> Path:
     if os.name == "nt":
         root = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
@@ -168,6 +172,8 @@ def load() -> Settings:
         src_lang=str(raw.get("src_lang") or ""),
         dst_lang=str(raw.get("dst_lang") or ""),
         theme=str(raw.get("theme") or "dark"),
+        window_geom=str(raw.get("window_geom") or ""),
+        overlay_geom=str(raw.get("overlay_geom") or ""),
     )
 
 
@@ -179,6 +185,8 @@ def save(settings: Settings) -> Path:
     raw["src_lang"] = settings.src_lang
     raw["dst_lang"] = settings.dst_lang
     raw["theme"] = settings.theme
+    raw["window_geom"] = settings.window_geom
+    raw["overlay_geom"] = settings.overlay_geom
     return _write_raw(raw)
 
 def save_api_key(key: str) -> Path:
@@ -194,6 +202,8 @@ def save_preferences(
     src_lang: str | None = None,
     dst_lang: str | None = None,
     theme: str | None = None,
+    window_geom: str | None = None,
+    overlay_geom: str | None = None,
 ) -> Path:
     raw = _read_raw()
     if input_device is not None:
@@ -206,6 +216,10 @@ def save_preferences(
         raw["dst_lang"] = dst_lang
     if theme is not None:
         raw["theme"] = theme
+    if window_geom is not None:
+        raw["window_geom"] = window_geom
+    if overlay_geom is not None:
+        raw["overlay_geom"] = overlay_geom
     return _write_raw(raw)
 
 

@@ -87,11 +87,15 @@ def test_save_preferences(tmp_path, monkeypatch):
     config.save_preferences(
         input_device="Mic 1",
         output_device="Speaker 1",
-        src_lang="İngilizce",
-        dst_lang="Türkçe",
+        src_lang="en",
+        dst_lang="tr",
+        window_geom="900x500+100+100",
+        overlay_geom="500x50+200+200",
     )
     loaded = config.load()
     assert loaded.input_device == "Mic 1"
     assert loaded.output_device == "Speaker 1"
-    assert loaded.src_lang == "İngilizce"
-    assert loaded.dst_lang == "Türkçe"
+    assert loaded.src_lang == "en"
+    assert loaded.dst_lang == "tr"
+    assert loaded.window_geom == "900x500+100+100"
+    assert loaded.overlay_geom == "500x50+200+200"
