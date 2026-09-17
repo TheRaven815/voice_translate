@@ -43,12 +43,12 @@ Bu liste, kod tabanının tamamı (çekirdek döngü, ses boru hattı, UI/UX, CL
 
 ## 2. Ses, Kuyruk ve Performans Optimizasyonları (P1 - Yüksek Öncelik)
 
-- [ ] **[loop.py:124-128] Ters çalışan kuyruk düşürme mantığı (Inverted Drop Policy)**
+- [x] **[loop.py:124-128] Ters çalışan kuyruk düşürme mantığı (Inverted Drop Policy)**
   - *Sorun:* `_post()` içinde `put_nowait(msg)` kuyruk dolduğunda `QueueFull` alıp `pass` geçiyor. Yorum satırında "eski chunk düşer" yazsa da aslında **yeni** ses paketi atılıyor, eski 50 paket kuyrukta kalıyor.
   - *Etki:* Ağ yavaşladığında 1000 ms'ye kadar eski ses birikiyor, gecikme kalıcı hale geliyor ve çeviri desenskronize oluyor.
   - *Çözüm:* Kuyruk dolduğunda önce en eski öğeyi `get_nowait()` ile düşür, ardından yeni öğeyi ekle (`play()` fonksiyonundaki gibi).
 
-- [ ] **[loop.py:141-144] VU Metre kuyruk istilası (50 Hz / sn log_queue flooding)**
+- [x] **[loop.py:141-144] VU Metre kuyruk istilası (50 Hz / sn log_queue flooding)**
   - *Sorun:* Her 20 ms'de bir (`_capture_thread`), RMS seviyesi `log_queue` içine `("level", ...)` mesajı olarak atılıyor (saniyede 50 mesaj). `gui/app.py` ise her 120 ms'de bir kuyruğu okuyor; 6 mesajın 5'i gereksiz yere canvas koordinatını değiştirip çöpe gidiyor.
   - *Etki:* GUI thread üzerinde gereksiz koordinat hesaplama yükü ve metin çeviri olaylarının gecikmesi.
   - *Çözüm:* Seviyeyi kuyruğa basmak yerine `loop_obj` üzerinde atomic/thread-safe bir `last_level` float değişkeni olarak sakla, GUI 120 ms timer tetiklendiğinde son değeri doğrudan oradan oku.
@@ -63,7 +63,7 @@ Bu liste, kod tabanının tamamı (çekirdek döngü, ses boru hattı, UI/UX, CL
   - *Etki:* Fazladan coroutine context-switch ve bellek kopyalaması.
   - *Çözüm:* `receive()` içinden doğrudan `_play_q.put_nowait()` çağır, aradaki `audio_in_queue` ve aktarım coroutine'ini kaldır.
 
-- [ ] **[loop.py:141] RMS hesaplamasında gereksiz dizi kopyası**
+- [x] **[loop.py:141] RMS hesaplamasında gereksiz dizi kopyası**
   - *Sorun:* `rms = float(np.sqrt(np.mean(arr**2)))` saniyede 50 kez yeni bir 960x2 dizi tahsis ediyor.
   - *Çözüm:* İndirgenmiş tek kanallı dizi üzerinden BLAS destekli `np.dot` ile sıfır ek bellek tahsisiyle hesapla: `np.sqrt(np.dot(mono, mono) / len(mono))`.
 
@@ -71,37 +71,37 @@ Bu liste, kod tabanının tamamı (çekirdek döngü, ses boru hattı, UI/UX, CL
 
 ## 3. UI / UX Düzeltmeleri ve Geliştirmeleri (P1 - P2)
 
-- [ ] **[gui/theme.py:47-53] Windows High-DPI bulanıklık sorunu (DPI Awareness)**
+- [x] **[gui/theme.py:47-53] Windows High-DPI bulanıklık sorunu (DPI Awareness)**
   - *Sorun:* DPI awareness ayarlanmadığı için Windows %125, %150, %200 ölçeklemede Tkinter penceresini bitmap olarak büyütüyor.
   - *Etki:* Yazılar, kenarlıklar ve ikonlar bulanık görünüyor.
   - *Çözüm:* `gui/theme.py` içindeki `prepare_app_id` fonksiyonunda `ctypes.windll.shcore.SetProcessDpiAwareness(1)` çağrısı ekle.
 
-- [ ] **[gui/widgets.py:152-164] Dropdown menünün ekranın altına taşması ve tıklanamaması**
+- [x] **[gui/widgets.py:152-164] Dropdown menünün ekranın altına taşması ve tıklanamaması**
   - *Sorun:* `Select` popup açılırken yatay taşma (`screen_w`) kontrol ediliyor ama dikey taşma (`screen_h`) kontrol edilmiyor.
   - *Etki:* Pencere ekranın altındayken hedef dil seçimi açıldığında menü görev çubuğunun altına kaçıyor ve öğeler seçilemiyor.
   - *Çözüm:* `if y + h > screen_h: y = max(0, self.winfo_rooty() - h + 1)` kontrolü ekleyerek menüyü yukarıya doğru aç.
 
-- [ ] **[gui/app.py:753-759] Altyazı penceresi sürüklenirken titreme / sıçrama (Drag Jitter)**
+- [x] **[gui/app.py:753-759] Altyazı penceresi sürüklenirken titreme / sıçrama (Drag Jitter)**
   - *Sorun:* Sürükleme olayında `e.x` ve `e.y` yerel bileşen koordinatları kullanılıyor; fare etiket kenarlığını geçtiğinde koordinat aniden 16 px zıplıyor.
   - *Etki:* Altyazı kutusu sürüklenirken şiddetli titreme ve zıplama yaşanıyor.
   - *Çözüm:* `e.x_root` ve `e.y_root` mutlak ekran koordinatlarını kullan: `pop.geometry(f"+{e.x_root - pop._drag_x}+{e.y_root - pop._drag_y}")`.
 
-- [ ] **[gui/app.py:391-424] Aygıt taramasının ana iş parçacığını dondurması (UI Freeze on Refresh)**
+- [x] **[gui/app.py:391-424] Aygıt taramasının ana iş parçacığını dondurması (UI Freeze on Refresh)**
   - *Sorun:* `refresh_devices()` ana thread'de `soundcard.all_inputs()` ve `all_outputs()` çağırıyor. Windows COM arayüzü Bluetooth veya harici aygıtları sorgularken 500 ms - 2 sn arayüzü kilitliyor.
   - *Etki:* "Yenile" butonuna basıldığında pencere "(Yanıt Vermiyor)" durumuna düşüyor.
   - *Çözüm:* Aygıt taramasını arka plan daemon iş parçacığında çalıştır, sonuçları `self.after` ile ana thread'e aktar.
 
-- [ ] **[gui/app.py:483-486] `in_box.current() == -1` durumunda sessizce son aygıtın seçilmesi**
+- [x] **[gui/app.py:483-486] `in_box.current() == -1` durumunda sessizce son aygıtın seçilmesi**
   - *Sorun:* `Select.current()` eşleşme bulamazsa `-1` döndürür. Python'da `self.inputs[-1]` hata vermez, listenin en sonundaki aygıtı seçer.
   - *Etki:* Yanlış/geçersiz aygıt seçildiğinde kullanıcıya uyarı vermek yerine rastgele son aygıt başlatılır.
   - *Çözüm:* `idx = self.in_box.current(); if idx < 0 or idx >= len(self.inputs): raise ValueError(...)` doğrulaması ekle.
 
-- [ ] **[gui/app.py:51, 135-164] Dar sol panel nedeniyle dil isimlerinin kesilmesi**
+- [x] **[gui/app.py:51, 135-164] Dar sol panel nedeniyle dil isimlerinin kesilmesi**
   - *Sorun:* Sol panel sabit 248 px. Kaynak ve hedef dil yan yana yerleştirildiği için açılır kutulara sadece ~56 px alan kalıyor.
   - *Etki:* "Otomatik algıla", "Geleneksel Çince", "Endonezce" gibi diller sığmıyor ve okunamıyor.
   - *Çözüm:* Sol paneli 280-300 px seviyesine genişlet veya kaynak/hedef dilleri aralarında dikey swap butonuyla alt alta hizala.
 
-- [ ] **[gui/app.py:427-434, 729-738] Canlı altyazı akışında O(N) metin ayrıştırma ve UI takılması**
+- [x] **[gui/app.py:427-434, 729-738] Canlı altyazı akışında O(N) metin ayrıştırma ve UI takılması**
   - *Sorun:* Gelen her ses parçasında `widget.get("1.0", "end").splitlines()` ile tüm metin baştan sona okunup satırlara bölünüyor ve senkron `update_idletasks()` çağrılıyor.
   - *Etki:* Çeviri uzadıkça CPU tavan yapıyor, arayüzde mikro donmalar ve altyazı kutusunda titremeler başlıyor.
   - *Çözüm:* Tüm metni kopyalamak yerine sadece son satırı al (`widget.get("end - 2 lines", "end - 1 chars")`) ve geometri güncellemelerini debounce et.
@@ -110,7 +110,7 @@ Bu liste, kod tabanının tamamı (çekirdek döngü, ses boru hattı, UI/UX, CL
   - *Sorun:* "Başlat" tıklandığı an henüz bağlantı kurulmadan gösterge "Çalışıyor" (yeşil) oluyor. Hata olduğunda neden durduğu anlaşılmıyor.
   - *Çözüm:* Durumları ayrıştır: `Bağlanıyor...` (sarı), `Dinleniyor` (yeşil), `Çevriliyor` (canlı mavi/yeşil), `Yeniden bağlanıyor` (turuncu), `Hata` (kırmızı).
 
-- [ ] **[gui/app.py] Klavye kısayolları ve erişilebilirlik desteği**
+- [x] **[gui/app.py] Klavye kısayolları ve erişilebilirlik desteği**
   - *Sorun:* Klavye ile başlatma/durdurma, altyazı açma veya dil değiştirme yapılamıyor.
   - *Çözüm:* `<Control-Return>` veya `<F5>` ile Başlat/Durdur, `<Control-O>` veya `<F2>` ile Altyazı Penceresi, API anahtarı alanında `<Return>` ile kaydetme bağla. `Select` bileşenine klavye ok tuşları (`<Up>`, `<Down>`, `<Return>`) desteği ekle.
 
@@ -118,12 +118,12 @@ Bu liste, kod tabanının tamamı (çekirdek döngü, ses boru hattı, UI/UX, CL
   - *Sorun:* 36x4 px boyutundaki giriş göstergesi doğrusal RMS kullandığı için insan kulağı algısına uymuyor ve çok küçük. Çıkış sesi (çeviri konuşması) için hiçbir gösterge yok.
   - *Çözüm:* Göstergeyi genişlet (80x6 px), RMS değerini logaritmik (dBFS) ölçeğe çevir ve yanına çıkış sesi (hoparlör aktivitesi) için ikinci bir mini seviye/nabız barı ekle.
 
-- [ ] **[gui/theme.py:56-78] Windows görev çubuğunda bulanık ikon sorunu**
+- [x] **[gui/theme.py:56-78] Windows görev çubuğunda bulanık ikon sorunu**
   - *Sorun:* `apply_icon` önce `.ico` yüklüyor, hemen ardından 1024x1024 PNG'yi `iconphoto` ile basıyor. Tkinter PNG'yi kötü bir algoritmayla küçülterek `.ico` dosyasını eziyor.
   - *Etki:* Windows görev çubuğunda ve Alt+Tab menüsünde ikon pikselli/bulanık çıkıyor.
   - *Çözüm:* Windows üzerinde (`os.name == "nt"`) sadece çok çözünürlüklü `iconbitmap` kullan, `iconphoto` çağrısını sadece Linux/macOS için çalıştır.
 
-- [ ] **[gui/app.py:712] Çoklu monitör negatif koordinat hatası (Multi-Monitor Teleport)**
+- [x] **[gui/app.py:712] Çoklu monitör negatif koordinat hatası (Multi-Monitor Teleport)**
   - *Sorun:* Hakkında penceresi `max(x, 0)` ve `max(y, 0)` ile konumlandırılıyor.
   - *Etki:* Sol veya üst tarafta ikincil monitör kullanan sistemlerde pencere ikincil ekranda değil ana ekranda zorla açılıyor.
   - *Çözüm:* `max(x, 0)` sınırlamasını kaldır, pencereyi ana pencere koordinatlarına göre göreceli ortala.

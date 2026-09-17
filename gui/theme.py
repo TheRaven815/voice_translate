@@ -55,34 +55,42 @@ def dark_titlebar(win: tk.Tk) -> None:
         pass
 
 
+_app_id_prepared = False
+
 def prepare_app_id() -> None:
-    if os.name != "nt":
+    global _app_id_prepared
+    if _app_id_prepared or os.name != "nt":
         return
+    _app_id_prepared = True
     try:
         import ctypes
 
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            ctypes.windll.user32.SetProcessDPIAware()
     except Exception:
         pass
 
-
 def apply_icon(win: tk.Tk) -> None:
+    has_ico = False
     if ICON_ICO.is_file():
         try:
             if os.name == "nt":
                 win.iconbitmap(default=str(ICON_ICO))
+                has_ico = True
             else:
                 win.iconbitmap(str(ICON_ICO))
+                has_ico = True
         except tk.TclError:
-            try:
-                win.iconbitmap(str(ICON_ICO))
-            except tk.TclError:
-                pass
+            pass
     if ICON_PNG.is_file():
         try:
             img = tk.PhotoImage(file=str(ICON_PNG))
             win._ahenk_icon = img
-            win.iconphoto(True, img)
+            if not has_ico or os.name != "nt":
+                win.iconphoto(True, img)
         except tk.TclError:
             pass
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import queue
 import threading
+import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -81,6 +82,8 @@ class SystemAudioLoop:
         self._play_q: queue.Queue | None = None
         self._bufs = {"heard": "", "trans": ""}
         self._open = {"heard": False, "trans": False}
+        self.last_level: float = 0.0
+        self._last_level_emit: float = 0.0
 
     def request_stop(self):
         """GUI'den thread-safe durdurma; worker zaten ölmüşse sessiz geç."""
@@ -120,7 +123,14 @@ class SystemAudioLoop:
         try:
             self.out_queue.put_nowait(msg)
         except asyncio.QueueFull:
-            pass  # model gerideyse eski chunk düşer
+            try:
+                self.out_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                self.out_queue.put_nowait(msg)
+            except asyncio.QueueFull:
+                pass
 
     def _capture_thread(self):
         """Ömrü boyunca TEK thread'de bloklayan yakalama.
@@ -136,15 +146,25 @@ class SystemAudioLoop:
                 if frame is None or len(frame) == 0:
                     continue
                 arr = np.asarray(frame, dtype=np.float32)
-                if self._emit is not None and self._loop is not None:
-                    rms = float(np.sqrt(np.mean(arr**2)))
-                    try:
-                        self._loop.call_soon_threadsafe(
-                            self._emit, ("level", min(1.0, rms * 8.0))
-                        )
-                    except RuntimeError:
-                        pass
                 pcm = to_16k_mono(arr)
+                if self._emit is not None and self._loop is not None:
+                    mono = arr.mean(axis=1) if arr.ndim > 1 else arr
+                    rms = (
+                        float(np.sqrt(np.dot(mono, mono) / len(mono)))
+                        if len(mono) > 0
+                        else 0.0
+                    )
+                    lvl = min(1.0, rms * 8.0)
+                    self.last_level = lvl
+                    now = time.monotonic()
+                    if now - self._last_level_emit >= 0.08:
+                        self._last_level_emit = now
+                        try:
+                            self._loop.call_soon_threadsafe(
+                                self._emit, ("level", lvl)
+                            )
+                        except RuntimeError:
+                            pass
                 try:
                     self._loop.call_soon_threadsafe(
                         self._post, {"data": pcm, "mime_type": "audio/pcm"}

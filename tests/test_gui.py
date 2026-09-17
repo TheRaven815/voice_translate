@@ -18,7 +18,15 @@ def hide_test_windows(monkeypatch):
     toplevel_init = tk.Toplevel.__init__
 
     def hidden_tk_init(self, *args, **kwargs):
-        tk_init(self, *args, **kwargs)
+        for attempt in range(3):
+            try:
+                tk_init(self, *args, **kwargs)
+                break
+            except tk.TclError:
+                if attempt == 2:
+                    raise
+                import time
+                time.sleep(0.05)
         self.withdraw()
 
     def hidden_app_init(self, *args, **kwargs):
@@ -73,6 +81,17 @@ def test_start_without_key_logs_error_not_crash():
         assert app.worker is None
         app._append("[bilgi] Kulaklık -> Hoparlör (en>tr)\n")
         assert "[bilgi] Kulaklık" in app.log.get("1.0", "end")
+    finally:
+        app.destroy()
+
+def test_start_with_invalid_device_index_logs_error():
+    app = App()
+    try:
+        app.key_var.set("valid_api_key")
+        app.in_var.set("Nonexistent Device")
+        app.start()
+        assert app.worker is None
+        assert "Geçerli giriş aygıtı seçin" in app.log.get("1.0", "end")
     finally:
         app.destroy()
 

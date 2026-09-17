@@ -71,6 +71,16 @@ def test_merge_transcript_joins_deltas_and_cumulative():
     assert full == "Onlar da dedi"
     assert delta == " dedi"
 
+def test_post_drops_oldest_chunk_when_queue_full():
+    loop = SystemAudioLoop("en", "tr", None, "dummy_key")
+    loop.out_queue = asyncio.Queue(maxsize=2)
+    loop._post("chunk1")
+    loop._post("chunk2")
+    loop._post("chunk3")
+    assert loop.out_queue.qsize() == 2
+    assert loop.out_queue.get_nowait() == "chunk2"
+    assert loop.out_queue.get_nowait() == "chunk3"
+
 
 class _Ctx:
     def __init__(self, inner):

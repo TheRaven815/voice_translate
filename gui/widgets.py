@@ -157,6 +157,9 @@ class Select(tk.Frame):
         if x + w > screen_w:
             x = max(0, screen_w - w)
         h = row_h * visible + 2
+        screen_h = self.winfo_screenheight()
+        if y + h > screen_h:
+            y = max(0, self.winfo_rooty() - h + 1)
         pop.geometry(f"{w}x{h}+{x}+{y}")
         pop.bind("<Escape>", lambda _e: self._close())
         self._pop = pop

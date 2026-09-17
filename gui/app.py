@@ -48,7 +48,7 @@ class App(tk.Tk):
         self.columnconfigure(2, weight=1)
         self.rowconfigure(0, weight=1)
 
-        rail = tk.Frame(self, bg=C.rail, width=248, bd=0, highlightthickness=0)
+        rail = tk.Frame(self, bg=C.rail, width=280, bd=0, highlightthickness=0)
         rail.grid(row=0, column=0, sticky="nsw")
         rail.grid_propagate(False)
         rail.columnconfigure(0, weight=1)
@@ -67,6 +67,11 @@ class App(tk.Tk):
         self._build_rail(rail)
         self._build_main(main)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.bind("<Control-Return>", lambda _e: self._toggle_start_stop())
+        self.bind("<F5>", lambda _e: self._toggle_start_stop())
+        self.bind("<Control-o>", lambda _e: self.toggle_overlay())
+        self.bind("<Control-O>", lambda _e: self.toggle_overlay())
+        self.bind("<F2>", lambda _e: self.toggle_overlay())
 
     def _build_rail(self, rail: tk.Frame):
         head = tk.Frame(rail, bg=C.rail)
@@ -106,7 +111,9 @@ class App(tk.Tk):
         tk.Label(devices, text="Aygıt", font=self.font_ui, fg=C.muted, bg=C.rail).grid(
             row=0, column=0, sticky="w"
         )
-        self.refresh_btn = self._text_btn(devices, "Yenile", self.refresh_devices)
+        self.refresh_btn = self._text_btn(
+            devices, "Yenile", lambda: self.refresh_devices(async_scan=True)
+        )
         self.refresh_btn.grid(row=0, column=1, sticky="e")
 
         fields = tk.Frame(rail, bg=C.rail)
@@ -193,6 +200,7 @@ class App(tk.Tk):
             bd=0,
         )
         self.key_entry.pack(fill=tk.X, padx=1, pady=1, ipady=4)
+        self.key_entry.bind("<Return>", lambda _e: self.save_key())
 
         btns = tk.Frame(rail, bg=C.rail)
         btns.grid(row=9, column=0, sticky="ew", padx=16, pady=16)
@@ -398,10 +406,24 @@ class App(tk.Tk):
         self.src_var.set(b)
         self.dst_var.set(a)
 
-    def refresh_devices(self):
+    def refresh_devices(self, async_scan: bool = False):
         stopping = self.worker is not None and self.worker.is_alive()
+        if async_scan:
+            def _scan():
+                try:
+                    ins = all_inputs()
+                    outs = all_outputs()
+                    self.after(0, lambda: self._apply_devices(ins, outs, stopping))
+                except Exception as e:
+                    self.after(0, lambda: self._append(f"[hata] Aygıt tarama hatası: {e}\n"))
+            threading.Thread(target=_scan, daemon=True).start()
+            return
+
         ins = all_inputs()
         outs = all_outputs()
+        self._apply_devices(ins, outs, stopping)
+
+    def _apply_devices(self, ins, outs, stopping: bool):
         self.inputs = ins
         self.outputs = outs
         self.in_box["values"] = [
@@ -430,7 +452,6 @@ class App(tk.Tk):
                     self.out_var.set(default_speaker().name)
                 except Exception:
                     self.out_var.set(NONE_OUTPUT)
-
     def _selected_speaker(self):
         i = self.out_box.current()
         if i <= 0:
@@ -450,13 +471,26 @@ class App(tk.Tk):
         self.log.insert(tk.END, text, (tag,))
         self.log.see(tk.END)
 
+    def _toggle_start_stop(self):
+        if self.worker is not None and self.worker.is_alive():
+            self.stop()
+        else:
+            self.start()
+
     def _write_pane(self, widget, text: str):
         widget.insert(tk.END, text, ("body",))
         widget.see(tk.END)
         if widget is self.trans and self._overlay is not None and self._overlay.winfo_exists():
-            lines = [l.strip() for l in widget.get("1.0", "end").splitlines() if l.strip()]
-            if lines:
-                self.overlay_label.configure(text=lines[-1])
+            last = widget.get("end - 2 lines linestart", "end - 1 chars").strip()
+            if not last:
+                lines = [
+                    l.strip()
+                    for l in widget.get("end - 4 lines linestart", "end - 1 chars").splitlines()
+                    if l.strip()
+                ]
+                last = lines[-1] if lines else ""
+            if last:
+                self.overlay_label.configure(text=last)
                 self._fit_overlay()
 
     def _clear_pane(self, widget):
@@ -542,11 +576,11 @@ class App(tk.Tk):
         if not api_key:
             self._append("[hata] API anahtarı girin (https://aistudio.google.com/apikey)\n")
             return
-        try:
-            source = self.inputs[self.in_box.current()]
-        except (IndexError, tk.TclError):
+        idx = self.in_box.current()
+        if idx < 0 or idx >= len(self.inputs):
             self._append("[hata] Geçerli giriş aygıtı seçin.\n")
             return
+        source = self.inputs[idx]
         speaker = self._selected_speaker()
         try:
             save_api_key(api_key)
@@ -714,7 +748,7 @@ class App(tk.Tk):
         h = pop.winfo_reqheight()
         x = self.winfo_rootx() + (self.winfo_width() - w) // 2
         y = self.winfo_rooty() + (self.winfo_height() - h) // 2
-        pop.geometry(f"{w}x{h}+{max(x, 0)}+{max(y, 0)}")
+        pop.geometry(f"{w}x{h}+{x}+{y}")
         try:
             pop.grab_set()
         except tk.TclError:
@@ -761,12 +795,12 @@ class App(tk.Tk):
         self.overlay_btn.configure(fg=C.live)
 
         def start_move(e):
-            pop._x = e.x
-            pop._y = e.y
+            pop._drag_x = e.x_root - pop.winfo_x()
+            pop._drag_y = e.y_root - pop.winfo_y()
 
         def do_move(e):
-            x = pop.winfo_x() + (e.x - pop._x)
-            y = pop.winfo_y() + (e.y - pop._y)
+            x = e.x_root - pop._drag_x
+            y = e.y_root - pop._drag_y
             pop.geometry(f"+{x}+{y}")
 
         wrap = tk.Frame(pop, bg="#0c0c0c", highlightthickness=1, highlightbackground=C.line, bd=0)
