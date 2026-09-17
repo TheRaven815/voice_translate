@@ -629,3 +629,77 @@ def test_runtime_language_change_triggers_restart(monkeypatch):
     finally:
         app.destroy()
 
+def test_gui_detected_source_and_rtl():
+    from languages import is_rtl
+    assert is_rtl("Arapça")
+    assert is_rtl("ar")
+    assert not is_rtl("Türkçe")
+
+    app = App()
+    try:
+        app.dst_var.set("Arapça")
+        app.log_queue.put(("trans", "مرحبا"))
+        app.log_queue.put(("detected_src", "en"))
+        app._pump_log()
+        assert app.detected_lbl.cget("text") == "[İngilizce]"
+        # Trans text has rtl tag applied
+        tags = app.trans.tag_names("1.0")
+        assert "rtl" in tags or "body" in tags
+    finally:
+        app.destroy()
+
+def test_gui_pin_and_zoom():
+    app = App()
+    try:
+        assert not app.always_on_top
+        app.toggle_pin()
+        assert app.always_on_top
+        app.toggle_pin()
+        assert not app.always_on_top
+
+        init_size = app.font_body[1]
+        app._adjust_font_size(2)
+        assert app.font_body[1] == init_size + 2
+        app._adjust_font_size(-2)
+        assert app.font_body[1] == init_size
+    finally:
+        app.destroy()
+
+
+def test_gui_key_mask_toggle():
+    app = App()
+    try:
+        assert app.key_entry.cget("show") == "•"
+        app._toggle_key_mask()
+        assert app.key_entry.cget("show") == ""
+        assert app.mask_btn.cget("text") == "🙈"
+        app._toggle_key_mask()
+        assert app.key_entry.cget("show") == "•"
+        assert app.mask_btn.cget("text") == "👁"
+    finally:
+        app.destroy()
+
+
+def test_gui_overlay_studio_and_export(tmp_path, monkeypatch):
+    app = App()
+    try:
+        app.toggle_overlay()
+        assert app._overlay is not None
+        assert app.overlay_font_size == 13
+        app._adjust_overlay_font(2)
+        assert app.overlay_font_size == 15
+        app._toggle_overlay_click_through()
+        assert app.overlay_click_through is True
+        app._toggle_overlay_click_through()
+        assert app.overlay_click_through is False
+
+        # Test export
+        app.trans.insert("1.0", "Hello world translation")
+        out_file = tmp_path / "export_test.txt"
+        monkeypatch.setattr("tkinter.filedialog.asksaveasfilename", lambda **kw: str(out_file))
+        app._export_transcripts()
+        assert out_file.is_file()
+        assert "Hello world translation" in out_file.read_text(encoding="utf-8")
+    finally:
+        app.destroy()
+

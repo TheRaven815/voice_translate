@@ -31,6 +31,7 @@ def build_config(
     src: str | None,
     dst: str,
     modalities: list[str] | None = None,
+    system_instruction: str | None = None,
 ) -> types.LiveConnectConfig:
     if src:
         input_tr = types.AudioTranscriptionConfig(language_codes=[src])
@@ -38,6 +39,9 @@ def build_config(
         input_tr = types.AudioTranscriptionConfig()
     mods = modalities or ["AUDIO"]
     out_tr = types.AudioTranscriptionConfig() if "AUDIO" in mods else None
+    sys_inst = None
+    if system_instruction:
+        sys_inst = types.Content(parts=[types.Part(text=system_instruction)])
     return types.LiveConnectConfig(
         response_modalities=mods,
         input_audio_transcription=input_tr,
@@ -49,6 +53,7 @@ def build_config(
         translation_config=types.TranslationConfig(
             target_language_code=dst,
         ),
+        system_instruction=sys_inst,
     )
 
 
@@ -72,6 +77,11 @@ class SystemAudioLoop:
         on_text=None,
         console_input: bool = True,
         model: str | None = None,
+        volume: float = 1.0,
+        muted: bool = False,
+        vad_threshold: float = 0.0,
+        system_instruction: str | None = None,
+        glossary: dict[str, str] | list[str] | str | None = None,
     ):
         self.model = model or os.environ.get("GEMINI_LIVE_MODEL") or DEFAULT_MODEL
         self.client = genai.Client(
@@ -81,9 +91,34 @@ class SystemAudioLoop:
         self.source_mic = source_mic
         self.output_speaker = output_speaker
         modalities = ["TEXT"] if self.output_speaker is None else ["AUDIO"]
-        self.config = build_config(src, dst, modalities=modalities)
+        full_instruction = system_instruction or ""
+        if glossary:
+            if isinstance(glossary, dict):
+                terms = "\n".join(f"- {k}: {v}" for k, v in glossary.items())
+            elif isinstance(glossary, list):
+                terms = "\n".join(f"- {item}" for item in glossary)
+            else:
+                terms = str(glossary).strip()
+            glossary_text = f"Custom translation glossary and terminology:\n{terms}"
+            full_instruction = (
+                f"{full_instruction}\n\n{glossary_text}".strip()
+                if full_instruction
+                else glossary_text
+            )
+        self.config = build_config(
+            src, dst, modalities=modalities, system_instruction=full_instruction or None
+        )
         self._emit = on_text or self._console_emit
         self.console_input = console_input
+        self.volume = max(0.0, min(2.0, float(volume)))
+        self.muted = bool(muted)
+        self.vad_threshold = max(0.0, float(vad_threshold))
+        self._paused = threading.Event()
+        self._vad_silence_chunks: int = 0
+        self.detected_src: str | None = None
+        self._last_speech_time: float = 0.0
+        self.last_latency_ms: float = 0.0
+        self._waiting_response: bool = False
         self.session = None
         self.audio_in_queue: asyncio.Queue | None = None
         self.out_queue: asyncio.Queue | None = None
@@ -99,6 +134,23 @@ class SystemAudioLoop:
         self.last_level: float = 0.0
         self._last_level_emit: float = 0.0
         self._playback_until: float = 0.0
+
+    def pause(self) -> None:
+        self._paused.set()
+
+    def resume(self) -> None:
+        self._paused.clear()
+
+    @property
+    def is_paused(self) -> bool:
+        return self._paused.is_set()
+
+    def set_volume(self, val: float) -> None:
+        self.volume = max(0.0, min(2.0, float(val)))
+
+    def set_muted(self, muted: bool) -> None:
+        self.muted = bool(muted)
+
     def request_stop(self):
         """GUI'den thread-safe durdurma; worker zaten ölmüşse sessiz geç."""
         if hasattr(self, "_user_stop"):
@@ -183,6 +235,9 @@ class SystemAudioLoop:
                 frame = mic.record(numframes=CAPTURE_BLOCK)
                 if frame is None or len(frame) == 0:
                     continue
+                if self._paused.is_set():
+                    self.last_level = 0.0
+                    continue
                 if is_loopback and self.output_speaker is not None:
                     if time.monotonic() < self._playback_until + 0.15:
                         continue
@@ -203,6 +258,18 @@ class SystemAudioLoop:
                 else:
                     lvl = 0.0
                 self.last_level = lvl
+
+                if self.vad_threshold > 0.0 and rms < self.vad_threshold:
+                    self._vad_silence_chunks += 1
+                    if self._vad_silence_chunks % 75 != 0:
+                        continue
+                else:
+                    self._vad_silence_chunks = 0
+                    if rms >= max(0.005, self.vad_threshold):
+                        if not self._waiting_response:
+                            self._last_speech_time = time.monotonic()
+                            self._waiting_response = True
+
                 try:
                     self._loop.call_soon_threadsafe(
                         self._post, {"data": pcm, "mime_type": f"audio/pcm;rate={SEND_SAMPLE_RATE}"}
@@ -263,8 +330,18 @@ class SystemAudioLoop:
             print(msg[1], end="", flush=True)
 
     def _handle_tr(self, stream: str, tr) -> None:
+        if stream == "heard" and tr is not None:
+            lang = getattr(tr, "language_code", None)
+            if lang and lang != self.detected_src:
+                self.detected_src = lang
+                self._emit(("detected_src", lang))
         text = getattr(tr, "text", None) or ""
         if text:
+            if stream == "trans" and self._waiting_response and self._last_speech_time > 0:
+                latency = (time.monotonic() - self._last_speech_time) * 1000.0
+                self.last_latency_ms = latency
+                self._waiting_response = False
+                self._emit(("latency", round(latency, 1)))
             full, delta = merge_transcript(self._bufs[stream], text)
             self._bufs[stream] = full
             if delta:
@@ -279,6 +356,11 @@ class SystemAudioLoop:
             turn = self.session.receive()
             async for response in turn:
                 if data := response.data:
+                    if self._waiting_response and self._last_speech_time > 0:
+                        latency = (time.monotonic() - self._last_speech_time) * 1000.0
+                        self.last_latency_ms = latency
+                        self._waiting_response = False
+                        self._emit(("latency", round(latency, 1)))
                     if self.audio_in_queue is not None:
                         try:
                             self.audio_in_queue.put_nowait(data)
@@ -333,6 +415,10 @@ class SystemAudioLoop:
                 audio = pcm16_to_float(pcm)
                 if audio.size == 0:
                     continue
+                if self.muted or self.volume <= 0.0:
+                    continue
+                if abs(self.volume - 1.0) > 1e-3:
+                    audio = np.clip(audio * self.volume, -1.0, 1.0)
                 if not started:
                     pending.append(audio)
                     pending_n += audio.size
@@ -346,8 +432,11 @@ class SystemAudioLoop:
                 sp.play(audio)
             if pending:
                 audio = np.concatenate(pending)
-                self._playback_until = time.monotonic() + len(audio) / RECEIVE_SAMPLE_RATE
-                sp.play(audio)
+                if not (self.muted or self.volume <= 0.0):
+                    if abs(self.volume - 1.0) > 1e-3:
+                        audio = np.clip(audio * self.volume, -1.0, 1.0)
+                    self._playback_until = time.monotonic() + len(audio) / RECEIVE_SAMPLE_RATE
+                    sp.play(audio)
                 pending.clear()
 
     async def play(self):

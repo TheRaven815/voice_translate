@@ -453,3 +453,78 @@ def test_audio_converter_sample_rate_resampling():
     total_bytes_44 = sum(len(conv44.process(np.zeros(882, dtype=np.float32))) for _ in range(50))
     # 1 second of 44.1k input must produce 16k mono 16-bit samples = 32000 bytes
     assert total_bytes_44 == 32000
+
+def test_pause_resume_and_volume_controls():
+    loop_obj = SystemAudioLoop("auto", "tr", "fake_mic", "test_key", volume=0.8, vad_threshold=0.01)
+    assert not loop_obj.is_paused
+    loop_obj.pause()
+    assert loop_obj.is_paused
+    loop_obj.resume()
+    assert not loop_obj.is_paused
+
+    loop_obj.set_volume(1.5)
+    assert loop_obj.volume == 1.5
+    loop_obj.set_volume(5.0)  # clamped to 2.0
+    assert loop_obj.volume == 2.0
+    loop_obj.set_muted(True)
+    assert loop_obj.muted is True
+
+
+def test_build_config_glossary_and_system_instruction():
+    cfg = build_config(
+        "en",
+        "tr",
+        system_instruction="Always translate in professional tone.",
+    )
+    assert cfg.system_instruction is not None
+    assert "professional tone" in cfg.system_instruction.parts[0].text
+
+    loop_obj = SystemAudioLoop(
+        "en",
+        "tr",
+        "fake_mic",
+        "test_key",
+        glossary={"Kubernetes": "K8s", "Docker": "Konteyner"},
+    )
+    assert loop_obj.config.system_instruction is not None
+    txt = loop_obj.config.system_instruction.parts[0].text
+    assert "Kubernetes: K8s" in txt
+    assert "Docker: Konteyner" in txt
+
+
+def test_receive_latency_and_detected_language():
+    emitted = []
+    loop_obj = SystemAudioLoop("auto", "tr", "fake_mic", "test_key", on_text=emitted.append)
+    loop_obj.audio_in_queue = asyncio.Queue()
+    loop_obj._last_speech_time = time.monotonic() - 0.250  # 250 ms ago
+    loop_obj._waiting_response = True
+
+    class MockSession:
+        def receive(self):
+            async def _gen():
+                yield SimpleNamespace(
+                    data=b"\x00\x01",
+                    text=None,
+                    server_content=SimpleNamespace(
+                        output_transcription=SimpleNamespace(text="Hello", finished=True),
+                        input_transcription=SimpleNamespace(text="Bonjour", language_code="fr", finished=True),
+                    ),
+                )
+                await asyncio.sleep(3600)
+            return _gen()
+
+    loop_obj.session = MockSession()
+
+    async def _run():
+        task = asyncio.create_task(loop_obj.receive())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(_run())
+    assert loop_obj.detected_src == "fr"
+    assert ("detected_src", "fr") in emitted
+    assert any(item[0] == "latency" and item[1] >= 200 for item in emitted if isinstance(item, tuple))

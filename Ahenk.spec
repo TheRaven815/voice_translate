@@ -2,7 +2,7 @@
 from PyInstaller.utils.hooks import collect_submodules
 
 
-hiddenimports = ["soundcard", "google.genai"] + collect_submodules("google.genai")
+hiddenimports = ["soundcard", "google.genai", "dotenv"] + collect_submodules("google.genai")
 
 a = Analysis(
     ["main.py"],
@@ -48,6 +48,7 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon="assets/ahenk.ico",
+    version="version_info.txt",
 )
 
 a_cli = Analysis(
@@ -93,4 +94,5 @@ exe_cli = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon="assets/ahenk.ico",
+    version="version_info.txt",
 )

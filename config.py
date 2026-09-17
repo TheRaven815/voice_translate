@@ -114,8 +114,11 @@ class Settings:
     theme: str = "dark"
     window_geom: str = ""
     overlay_geom: str = ""
-
-
+    always_on_top: bool = False
+    overlay_font_size: int = 13
+    overlay_alpha: float = 0.92
+    overlay_click_through: bool = False
+    ui_lang: str = "tr"
 def config_dir() -> Path:
     if os.name == "nt":
         root = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
@@ -174,8 +177,12 @@ def load() -> Settings:
         theme=str(raw.get("theme") or "dark"),
         window_geom=str(raw.get("window_geom") or ""),
         overlay_geom=str(raw.get("overlay_geom") or ""),
+        always_on_top=bool(raw.get("always_on_top", False)),
+        overlay_font_size=int(raw.get("overlay_font_size") or 13),
+        overlay_alpha=float(raw.get("overlay_alpha") or 0.92),
+        overlay_click_through=bool(raw.get("overlay_click_through", False)),
+        ui_lang=str(raw.get("ui_lang") or "tr"),
     )
-
 
 def save(settings: Settings) -> Path:
     raw = _read_raw()
@@ -187,6 +194,11 @@ def save(settings: Settings) -> Path:
     raw["theme"] = settings.theme
     raw["window_geom"] = settings.window_geom
     raw["overlay_geom"] = settings.overlay_geom
+    raw["always_on_top"] = settings.always_on_top
+    raw["overlay_font_size"] = settings.overlay_font_size
+    raw["overlay_alpha"] = settings.overlay_alpha
+    raw["overlay_click_through"] = settings.overlay_click_through
+    raw["ui_lang"] = settings.ui_lang
     return _write_raw(raw)
 
 def save_api_key(key: str) -> Path:
@@ -204,6 +216,11 @@ def save_preferences(
     theme: str | None = None,
     window_geom: str | None = None,
     overlay_geom: str | None = None,
+    always_on_top: bool | None = None,
+    overlay_font_size: int | None = None,
+    overlay_alpha: float | None = None,
+    overlay_click_through: bool | None = None,
+    ui_lang: str | None = None,
 ) -> Path:
     raw = _read_raw()
     if input_device is not None:
@@ -220,14 +237,29 @@ def save_preferences(
         raw["window_geom"] = window_geom
     if overlay_geom is not None:
         raw["overlay_geom"] = overlay_geom
+    if always_on_top is not None:
+        raw["always_on_top"] = always_on_top
+    if overlay_font_size is not None:
+        raw["overlay_font_size"] = overlay_font_size
+    if overlay_alpha is not None:
+        raw["overlay_alpha"] = overlay_alpha
+    if overlay_click_through is not None:
+        raw["overlay_click_through"] = overlay_click_through
+    if ui_lang is not None:
+        raw["ui_lang"] = ui_lang
     return _write_raw(raw)
 
 
 def load_dotenv() -> None:
     try:
+        import sys
         from dotenv import load_dotenv as _load
 
         _load()
+        if getattr(sys, "frozen", False):
+            exe_env = Path(sys.executable).resolve().parent / ".env"
+            if exe_env.is_file():
+                _load(exe_env)
     except ImportError:
         pass
 

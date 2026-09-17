@@ -160,28 +160,28 @@ Tarih: 2026-09-17. Kaynak: mevcut kodun uçtan uca taraması (`loop.py`, `audio.
 
 Sıra: sık kullanılan → farklılaştırıcı.
 
-- [ ] **Transkript dışa aktar (TXT / SRT / JSONL)**
+- [x] **Transkript dışa aktar (TXT / SRT / JSONL)**
   - Duyulan + çeviri, zaman damgası. Toplantı/video sonrası asıl teslimat bu. Kopyala yetersiz.
 
-- [ ] **Altyazı stüdyosu: punto, opaklık, 2–3 satır geçmiş, tıklama-delici (click-through)**
+- [x] **Altyazı stüdyosu: punto, opaklık, 2–3 satır geçmiş, tıklama-delici (click-through)**
   - Oyun/film kullanımı için overlay tek satır ve sabit 12pt. `wraplength=520` dar.
 
-- [ ] **Çeviri ses seviyesi ve hızlı sessiz**
+- [x] **Çeviri ses seviyesi ve hızlı sessiz**
   - Oynatma öncesi gain; 0 = metin-only’ye düşmeden mute. Orijinali kısmak Windows’ta sanal kablo ister — dokümante et, vaat etme.
 
-- [ ] **Duraklat (oturumu yıkmadan)**
+- [x] **Duraklat (oturumu yıkmadan)**
   - Gönderimi durdur, Gemini oturumunu açık tut; kota ve yeniden bağlanma maliyetini kes.
 
-- [ ] **Sessizlik kapısı (VAD)**
+- [x] **Sessizlik kapısı (VAD)**
   - RMS eşiğinin altında chunk gönderme. Canlı API faturasını düşürür; “her 20 ms PCM” modelini bozmadan.
 
-- [ ] **Otomatik dilde algılanan kaynak dil rozeti**
+- [x] **Otomatik dilde algılanan kaynak dil rozeti**
   - Model `language_codes` boşken kullanıcı “ne duyulduğunu” görmüyor.
 
-- [ ] **Gecikme HUD (yakalama → ilk çeviri sesi / ilk harf)**
+- [x] **Gecikme HUD (yakalama → ilk çeviri sesi / ilk harf)**
   - Ağ mı, kuyruk mı, preroll mı ayırt edilir; destek ve güven için şart.
 
-- [ ] **Oturum geçmişi (son N çeviri, arama)**
+- [x] **Oturum geçmişi (son N çeviri, arama)**
   - Paneller Temizle ile yok oluyor. Yerel SQLite veya günden günlük dosya; API’ye tekrar gitmesin.
 
 - [ ] **Sistem tepsisi + Windows ile başlat**
@@ -190,13 +190,13 @@ Sıra: sık kullanılan → farklılaştırıcı.
 - [ ] **İlk çalıştırma sihirbazı**
   - API anahtarı linki, aygıt seçimi, 10 sn deneme, gizlilik cümlesi (ses Google’a gider). Boş “Hazır” ekranı yetmez.
 
-- [ ] **API anahtarı UX**
+- [x] **API anahtarı UX**
   - Yalnız son 4 karakter; “göster”; Kaydet’te format (`AIza…`) ve canlı doğrulama; başarısızsa kırmızı durum.
 
-- [ ] **Daha fazla dil + Çince ayrımı + RTL**
+- [x] **Daha fazla dil + Çince ayrımı + RTL**
   - Hindi, Lehçe, Ukraynaca, Endonezce, Vietnamca, İsveççe; `zh-CN` / `zh-TW`; Arapça için `Text` RTL. `languages.py` tek tablo kalsın.
 
-- [ ] **Özel terimler / sözlük (glossary)**
+- [x] **Özel terimler / sözlük (glossary)**
   - Ürün adları, kişi adları. Live Translate context/system talimatı veya oturum başı metin turn’ü (SDK ne sunuyorsa).
 
 - [ ] **Toplantı modu: loopback + mikrofon karışımı**
@@ -205,38 +205,38 @@ Sıra: sık kullanılan → farklılaştırıcı.
 - [ ] **İki yönlü / konuşma modu (opsiyonel)**
   - Push-to-talk ile mic; hedef dilde cevap sesi. Ahenk’i “film altyazısı”ndan “canlı tercüman”a taşır. Ayrı preset.
 
-- [ ] **CLI’yi betiklenebilir yap**
+- [x] **CLI’yi betiklenebilir yap**
   - `--json` satır satır transcript; `--log FILE`; çıkış kodları (anahtar yok=1, aygıt yok=2). n8n / ffmpeg yanına oturur.
 
 - [ ] **Model seçici (GUI)**
   - CLI `--model` / env var var; GUI yok. Preview model adı değişince tek yerden güncellensin (`meta` veya config).
 
-- [ ] **Kota / kullanım özeti**
+- [x] **Kota / kullanım özeti**
   - Oturum süresi, gönderilen ses saniyesi (yaklaşık maliyet). Faturalı API’de güven.
 
-- [ ] **Arayüz dili (i18n)**
+- [x] **Arayüz dili (i18n)**
   - Tüm etiketler Türkçe sabit. `tr`/`en` JSON; config `ui_lang`. Dil kodları P1 maddesiyle birlikte.
 
-- [ ] **Ana pencere always-on-top ve punto**
+- [x] **Ana pencere always-on-top ve punto**
   - Altyazı yetmez; transkript panelleri ikinci monitörde pin + Ctrl+Fare tekerleği.
 
-- [ ] **Hata günlüğü dosyası**
+- [x] **Hata günlüğü dosyası**
   - `%APPDATA%\Ahenk\logs\…`. Windowed exe’de traceback yok; destek mümkün değil.
 
 ---
 
 ## P2 — Profesyonelleşme (dağıtım, güvenlik, süreç)
 
-- [ ] **LICENSE yok**
+- [x] **LICENSE yok**
   - README “henüz yok”. Public repo için MIT (veya seçilen) şart; aksi yasal belirsizlik.
 
-- [ ] **Sürüm 0.1.0 ve exe metadata yok**
+- [x] **Sürüm 0.1.0 ve exe metadata yok**
   - `meta.py` 0.1.0; PyInstaller `version`/`file_version` yok. Windows “Dosya bilgisi” boş. Semver + CHANGELOG.
 
-- [ ] **CI yok**
+- [x] **CI yok**
   - `pytest` yerel. GitHub Actions: 3.11/3.12, Windows, `requirements-dev.txt`. GUI testleri xvfb/offscreen zaten `withdraw` kullanıyor.
 
-- [ ] **`pyproject.toml` yok**
+- [x] **`pyproject.toml` yok**
   - Paket adı, requires-python, ruff/mypy, script entry (`ahenk`, `ahenk-cli`). `requirements.txt` kopyası kalmasın.
 
 - [ ] **Kurulum: Inno Setup / winget, imza**
@@ -248,7 +248,7 @@ Sıra: sık kullanılan → farklılaştırıcı.
 - [ ] **README sapması**
   - Hâlâ `pytest`’i runtime bağımlılık sayıyor; `test_cli.py`, tema, `--model`, `AHENK_CONFIG`, `!Ahenk.spec` yok. TR/EN ikisini senkron tut.
 
-- [ ] **`.env` yolu ve frozen import**
+- [x] **`.env` yolu ve frozen import**
   - *Nerede:* `config.load_dotenv()` cwd’den yükler; `Ahenk.spec` `python-dotenv` hiddenimport yok.
   - *Öneri:* Exe/proje dizininden `.env`; gerekirse hiddenimport.
 
@@ -261,7 +261,7 @@ Sıra: sık kullanılan → farklılaştırıcı.
 - [ ] **Otomatik güncelleme yok**
   - GitHub Release + exe hash. İmzalı olmadan riskli; en az “yeni sürüm var” bildirimi.
 
-- [ ] **Katkı / güvenlik dokümanı**
+- [x] **Katkı / güvenlik dokümanı**
   - `CONTRIBUTING.md`, anahtar sızdırma uyarısı, `SECURITY.md` (asıl anahtar asla issue’ya).
 
 ---

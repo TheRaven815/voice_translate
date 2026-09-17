@@ -155,6 +155,10 @@ First launch (no saved prefs): default loopback in, default speaker out, source 
 | `--list-devices` | | Print speakers / loopback / mics, then exit |
 | `--list-langs` | | Print supported language names and codes, then exit |
 | `--version` | | Print version and exit |
+| `--json` | off | Produce line-by-line streaming JSON (JSONL) for scripting |
+| `--log` | none | Log all console output to the specified file |
+| `--vad` | `0.0` | RMS silence gate threshold (e.g. `0.01`) |
+| `--volume` | `1.0` | Output translation audio gain multiplier (`0.0` - `2.0`) |
 | `--model` | default | Gemini Live model name |
 | `--api-key` | none | Lands in shell history; prefer `.env` or GUI |
 
@@ -178,9 +182,15 @@ Stop with `q` + Enter or Ctrl+C (or direct Ctrl+C in `--no-interactive` mode).
 | Arapça | `ar` |
 | Felemenkçe | `nl` |
 | Japonca | `ja` |
-| Çince | `zh` |
+| Çince (Basitleştirilmiş) | `zh-CN` |
+| Çince (Geleneksel) | `zh-TW` |
 | Korece | `ko` |
-
+| Hintçe | `hi` |
+| Lehçe | `pl` |
+| Ukraynaca | `uk` |
+| Endonezce | `id` |
+| Vietnamca | `vi` |
+| İsveççe | `sv` |
 Source **Otomatik**: empty `language_codes`; the model detects. No Auto on the target.
 
 ## API key
@@ -283,4 +293,4 @@ No network. The client is faked.
 
 ## License
 
-No `LICENSE` file yet. Pick one (e.g. MIT) before making the repo public.
+This project is licensed under the [MIT License](LICENSE).

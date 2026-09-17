@@ -153,6 +153,10 @@ python3 -m venv .venv
 | `--list-devices` | | Hoparlör / loopback / mikrofon listesi, çık |
 | `--list-langs` | | Desteklenen dilleri ve kodlarını listele, çık |
 | `--version` | | Sürüm bilgisini yazdır, çık |
+| `--json` | kapalı | Betikleme için satır satır JSON akışı (JSONL) üret |
+| `--log` | yok | Tüm konsol çıktısını belirtilen dosyaya kaydet |
+| `--vad` | `0.0` | RMS sessizlik kapısı eşiği (örn. `0.01`) |
+| `--volume` | `1.0` | Çıkış çeviri sesi kazancı (`0.0` - `2.0`) |
 | `--model` | varsayılan | Gemini Live model adı |
 | `--api-key` | yok | Kabuk geçmişine düşer; `.env` veya GUI tercih edin |
 
@@ -176,9 +180,15 @@ Durdurmak için `q` + Enter veya Ctrl+C (`--no-interactive` modunda doğrudan Ct
 | Arapça | `ar` |
 | Felemenkçe | `nl` |
 | Japonca | `ja` |
-| Çince | `zh` |
+| Çince (Basitleştirilmiş) | `zh-CN` |
+| Çince (Geleneksel) | `zh-TW` |
 | Korece | `ko` |
-
+| Hintçe | `hi` |
+| Lehçe | `pl` |
+| Ukraynaca | `uk` |
+| Endonezce | `id` |
+| Vietnamca | `vi` |
+| İsveççe | `sv` |
 Kaynak **Otomatik**: `language_codes` boş; model dili bulur. Hedefte Otomatik yok.
 
 ## API anahtarı
@@ -281,4 +291,4 @@ Ağ çağrısı yok. İstemci taklit edilir.
 
 ## Lisans
 
-Henüz `LICENSE` yok. Herkese açık yapmadan önce bir lisans seçin (ör. MIT).
+Bu proje [MIT Lisansı](LICENSE) ile lisanslanmıştır.

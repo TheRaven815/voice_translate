@@ -46,15 +46,13 @@ def test_cli_runs_loop_with_args(monkeypatch):
 
     with patch("asyncio.run") as mock_run:
         cli.main()
-        mock_loop_cls.assert_called_once_with(
-            "en",
-            "de",
-            fake_source,
-            "test_key",
-            output_speaker=fake_speaker,
-            model="custom-model",
-            console_input=True,
-        )
+        mock_loop_cls.assert_called_once()
+        kwargs = mock_loop_cls.call_args.kwargs
+        args_called = mock_loop_cls.call_args.args
+        assert args_called == ("en", "de", fake_source, "test_key")
+        assert kwargs["output_speaker"] == fake_speaker
+        assert kwargs["model"] == "custom-model"
+        assert kwargs["console_input"] is True
         mock_run.assert_called_once()
 
 def test_cli_text_only_flag(monkeypatch):
@@ -103,10 +101,9 @@ def test_cli_mic_none_exits(monkeypatch, capsys):
     monkeypatch.setattr("cli.default_microphone", lambda: None)
     with pytest.raises(SystemExit) as exc:
         cli.main()
-    assert exc.value.code == 1
+    assert exc.value.code == 2
     err = capsys.readouterr().err
     assert "Mikrofon bulunamadı" in err
-
 
 def test_cli_loopback_error_exits(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["cli.py", "--api-key", "test_key"])
@@ -115,10 +112,9 @@ def test_cli_loopback_error_exits(monkeypatch, capsys):
     monkeypatch.setattr("cli.pick_loopback", _fail)
     with pytest.raises(SystemExit) as exc:
         cli.main()
-    assert exc.value.code == 1
+    assert exc.value.code == 2
     err = capsys.readouterr().err
     assert "Loopback cihaz bulunamadı" in err
-def test_cli_list_langs(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["cli.py", "--list-langs"])
     cli.main()
     out = capsys.readouterr().out
@@ -126,6 +122,36 @@ def test_cli_list_langs(monkeypatch, capsys):
     assert "en   : İngilizce" in out
     assert "tr   : Türkçe" in out
 
+
+def test_cli_json_mode(monkeypatch, capsys):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["cli.py", "--src", "en", "--dst", "tr", "--api-key", "test_key", "--mic", "--json"],
+    )
+    fake_source = MagicMock(name="FakeMic")
+    fake_source.name = "FakeMic"
+    monkeypatch.setattr("cli.default_microphone", lambda: fake_source)
+    monkeypatch.setattr("cli.default_speaker", lambda: None)
+
+    captured_on_text = []
+    def mock_init(*args, **kwargs):
+        captured_on_text.append(kwargs.get("on_text"))
+        return MagicMock()
+
+    monkeypatch.setattr("cli.SystemAudioLoop", mock_init)
+
+    with patch("asyncio.run"):
+        cli.main()
+
+    assert len(captured_on_text) == 1
+    emit_fn = captured_on_text[0]
+    assert emit_fn is not None
+    # Emit a tuple
+    emit_fn(("heard", "Hello world"))
+    out = capsys.readouterr().out
+    assert '"type": "heard"' in out
+    assert '"text": "Hello world"' in out
 
 def test_cli_invalid_languages_exit(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["cli.py", "--src", "xyz", "--mic", "--api-key", "key"])

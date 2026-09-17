@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import queue
+import sys
 import threading
 import time
 import tkinter as tk
+from pathlib import Path
 
 from config import load as load_config, resolve_api_key, save_api_key, save_preferences
 from devices import NONE_OUTPUT, all_inputs, all_outputs, default_speaker, pick_loopback
-from languages import AUTO_SRC, LANGS, lang_code_to_name, source_code, source_names, src_code_to_name
+from export import TranscriptItem, export_jsonl, export_srt, export_txt
+from languages import AUTO_SRC, LANGS, is_rtl, lang_code_to_name, source_code, source_names, src_code_to_name
+from i18n import get_ui_lang, set_ui_lang, t
+from logger import append_history, log_exception, setup_logging
 from loop import SystemAudioLoop
 from meta import APP_AUTHOR, APP_TITLE, __version__
-
 from .theme import C, ICON_PNG, apply_icon, dark_titlebar, pick_fonts, prepare_app_id
 from .widgets import Select
 
@@ -66,6 +71,22 @@ class App(tk.Tk):
         self._about: tk.Toplevel | None = None
         self._overlay: tk.Toplevel | None = None
         self._rail_seps: list[tk.Frame] = []
+        self.always_on_top = getattr(self._cfg, "always_on_top", False)
+        self.overlay_font_size = getattr(self._cfg, "overlay_font_size", 13)
+        self.overlay_alpha = getattr(self._cfg, "overlay_alpha", 0.92)
+        self.overlay_click_through = getattr(self._cfg, "overlay_click_through", False)
+        self.overlay_history_lines = 2
+        self.transcript_items: list[TranscriptItem] = []
+        self.session_start_time: float | None = None
+        self._curr_heard_buf = ""
+        self._curr_trans_buf = ""
+        setup_logging()
+        set_ui_lang(getattr(self._cfg, "ui_lang", "tr"))
+        if self.always_on_top:
+            try:
+                self.attributes("-topmost", True)
+            except tk.TclError:
+                pass
         fonts = pick_fonts(self)
         self.font_ui = fonts["ui"]
         self.font_brand = fonts["brand"]
@@ -126,6 +147,12 @@ class App(tk.Tk):
             self._rail_title, "☀️" if C.current == "dark" else "🌙", self.toggle_theme
         )
         self.theme_btn.pack(side=tk.RIGHT, padx=(0, 6))
+        self.pin_btn = self._text_btn(
+            self._rail_title, "📌", self.toggle_pin
+        )
+        if self.always_on_top:
+            self.pin_btn.configure(fg=C.live)
+        self.pin_btn.pack(side=tk.RIGHT, padx=(0, 6))
         self.overlay_btn = self._text_btn(self._rail_title, "Altyazı", self.toggle_overlay)
         self.overlay_btn.pack(side=tk.RIGHT, padx=(0, 6))
 
@@ -136,6 +163,8 @@ class App(tk.Tk):
         self._dot_id = self._dot.create_oval(1, 1, 7, 7, fill=C.dim, outline="")
         self.status = tk.Label(self._rail_st, text="Hazır", font=self.font_ui, fg=C.muted, bg=C.rail)
         self.status.pack(side=tk.LEFT, padx=(6, 0))
+        self.timer_lbl = tk.Label(self._rail_st, text="", font=self.font_ui, fg=C.dim, bg=C.rail)
+        self.timer_lbl.pack(side=tk.RIGHT, padx=(6, 0))
         self.meter = tk.Canvas(self._rail_st, width=54, height=6, bg=C.line, highlightthickness=0, bd=0)
         self.meter.pack(side=tk.RIGHT, padx=(0, 2), pady=2)
         self._meter_bar = self.meter.create_rectangle(0, 0, 0, 6, fill=C.live, outline="")
@@ -216,8 +245,12 @@ class App(tk.Tk):
         tk.Label(self._key_frame, text="API anahtarı", font=self.font_ui, fg=C.muted, bg=C.rail).grid(
             row=0, column=0, sticky="w"
         )
-        self.save_key_btn = self._text_btn(self._key_frame, "Kaydet", self.save_key)
-        self.save_key_btn.grid(row=0, column=1, sticky="e")
+        btn_box = tk.Frame(self._key_frame, bg=C.rail)
+        btn_box.grid(row=0, column=1, sticky="e")
+        self.test_key_btn = self._text_btn(btn_box, "Test", self._test_api_key)
+        self.test_key_btn.pack(side=tk.LEFT, padx=(0, 6))
+        self.save_key_btn = self._text_btn(btn_box, "Kaydet", self.save_key)
+        self.save_key_btn.pack(side=tk.LEFT)
         self.key_var = tk.StringVar(value=resolve_api_key())
         self.key_edge = tk.Frame(self._key_frame, bg=C.line, bd=0, highlightthickness=0)
         self.key_edge.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
@@ -235,8 +268,11 @@ class App(tk.Tk):
             highlightthickness=0,
             bd=0,
         )
-        self.key_entry.pack(fill=tk.X, padx=1, pady=1, ipady=4)
+        self.key_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(1, 0), pady=1, ipady=4)
         self.key_entry.bind("<Return>", lambda _e: self.save_key())
+        self.mask_btn = tk.Label(self.key_edge, text="👁", font=self.font_ui, fg=C.dim, bg=C.panel, cursor="hand2", padx=6)
+        self.mask_btn.pack(side=tk.RIGHT, fill=tk.Y, pady=1, padx=(0, 1))
+        self.mask_btn.bind("<Button-1>", lambda _e: self._toggle_key_mask())
 
         self._btns_frame = tk.Frame(rail, bg=C.rail)
         self._btns_frame.grid(row=9, column=0, sticky="ew", padx=16, pady=16)
@@ -255,10 +291,14 @@ class App(tk.Tk):
         self.heard_h.grid(row=0, column=0, sticky="ew", padx=(16, 8), pady=(12, 6))
         self.heard_lbl = tk.Label(self.heard_h, text="Duyulan", font=self.font_ui, fg=C.muted, bg=C.bg)
         self.heard_lbl.pack(side=tk.LEFT)
+        self.detected_lbl = tk.Label(self.heard_h, text="", font=self.font_ui, fg=C.dim, bg=C.bg)
+        self.detected_lbl.pack(side=tk.LEFT, padx=(6, 0))
         self.heard_clear = self._text_btn(self.heard_h, "Temizle", lambda: self._clear_pane(self.heard))
         self.heard_clear.pack(side=tk.RIGHT)
+        self.heard_export = self._text_btn(self.heard_h, "Dışa Aktar", self._export_transcripts)
+        self.heard_export.pack(side=tk.RIGHT, padx=(0, 6))
         self.heard_copy = self._text_btn(self.heard_h, "Kopyala", lambda: self._copy_pane(self.heard))
-        self.heard_copy.pack(side=tk.RIGHT, padx=(0, 8))
+        self.heard_copy.pack(side=tk.RIGHT, padx=(0, 6))
 
         self.trans_h = tk.Frame(main, bg=C.bg)
         self.trans_h.grid(row=0, column=1, sticky="ew", padx=(16, 16), pady=(12, 6))
@@ -266,8 +306,10 @@ class App(tk.Tk):
         self.trans_lbl.pack(side=tk.LEFT)
         self.trans_clear = self._text_btn(self.trans_h, "Temizle", lambda: self._clear_pane(self.trans))
         self.trans_clear.pack(side=tk.RIGHT)
+        self.trans_export = self._text_btn(self.trans_h, "Dışa Aktar", self._export_transcripts)
+        self.trans_export.pack(side=tk.RIGHT, padx=(0, 6))
         self.trans_copy = self._text_btn(self.trans_h, "Kopyala", lambda: self._copy_pane(self.trans))
-        self.trans_copy.pack(side=tk.RIGHT, padx=(0, 8))
+        self.trans_copy.pack(side=tk.RIGHT, padx=(0, 6))
 
         self.heard_wrap = tk.Frame(main, bg=C.bg, bd=0, highlightthickness=0)
         self.trans_wrap = tk.Frame(main, bg=C.bg, bd=0, highlightthickness=0)
@@ -338,7 +380,10 @@ class App(tk.Tk):
         )
         text.grid(row=0, column=0, sticky="nsew")
         text.tag_configure("body", foreground=C.text)
+        text.tag_configure("rtl", justify="right")
+        text.tag_configure("ltr", justify="left")
         self._lock_text(text)
+        self._bind_zoom(text)
         return text
 
     def _lock_text(self, w: tk.Text) -> None:
@@ -528,7 +573,9 @@ class App(tk.Tk):
             self.start()
 
     def _write_pane(self, widget, text: str):
-        widget.insert(tk.END, text, ("body",))
+        lang = self.src_var.get() if widget is self.heard else self.dst_var.get()
+        tag = "rtl" if is_rtl(lang) else "ltr"
+        widget.insert(tk.END, text, ("body", tag))
         widget.see(tk.END)
         if widget is self.trans and self._overlay is not None and self._overlay.winfo_exists():
             last = widget.get("end - 2 lines linestart", "end - 1 chars").strip()
@@ -540,14 +587,17 @@ class App(tk.Tk):
                 ]
                 last = lines[-1] if lines else ""
             if last:
-                self.overlay_label.configure(text=last)
+                self.overlay_label.configure(
+                    text=last,
+                    justify="right" if is_rtl(self.dst_var.get()) else "center",
+                )
                 self._fit_overlay()
-
     def _clear_pane(self, widget):
         widget.delete("1.0", tk.END)
+        if widget is self.heard:
+            self.detected_lbl.configure(text="")
         if widget is self.trans and self._overlay is not None and self._overlay.winfo_exists():
             self.overlay_label.configure(text="...")
-
     def _copy_pane(self, pane: tk.Text):
         content = pane.get("1.0", "end-1c").strip()
         if content:
@@ -584,10 +634,138 @@ class App(tk.Tk):
                 theme=getattr(self, "_theme", "dark"),
                 window_geom=self.geometry(),
                 overlay_geom=overlay_geom,
+                always_on_top=getattr(self, "always_on_top", False),
+                overlay_font_size=getattr(self, "overlay_font_size", 13),
+                overlay_alpha=getattr(self, "overlay_alpha", 0.92),
+                overlay_click_through=getattr(self, "overlay_click_through", False),
             )
         except OSError:
             pass
 
+    def toggle_pin(self) -> None:
+        self.always_on_top = not getattr(self, "always_on_top", False)
+        try:
+            self.attributes("-topmost", self.always_on_top)
+        except tk.TclError:
+            pass
+        if hasattr(self, "pin_btn"):
+            self.pin_btn.configure(fg=C.live if self.always_on_top else C.dim)
+        self._save_user_prefs()
+
+    def _toggle_key_mask(self) -> None:
+        if self.key_entry.cget("show") == "•":
+            self.key_entry.configure(show="")
+            self.mask_btn.configure(text="🙈")
+        else:
+            self.key_entry.configure(show="•")
+            self.mask_btn.configure(text="👁")
+
+    def _test_api_key(self) -> None:
+        key = self.key_var.get().strip()
+        if not key:
+            self._append("[hata] Test için önce bir API anahtarı girin.\n")
+            return
+        self._append("[bilgi] API anahtarı test ediliyor...\n")
+        def _bg():
+            try:
+                from google import genai
+                test_client = genai.Client(http_options={"api_version": "v1beta"}, api_key=key)
+                list(test_client.models.list(config={"page_size": 1}))
+                self.log_queue.put(("[bilgi] ✓ API Anahtarı geçerli ve çalışıyor!\n"))
+            except Exception as e:
+                err_msg = format_user_error(e)
+                self.log_queue.put((f"[hata] ✕ API Anahtarı geçersiz: {err_msg}\n"))
+        threading.Thread(target=_bg, daemon=True).start()
+
+    def _export_transcripts(self) -> None:
+        from tkinter import filedialog
+        from export import export_txt, export_srt, export_jsonl, TranscriptItem
+        items = list(getattr(self, "transcript_items", []))
+        if not items:
+            now = time.time()
+            heard_text = self.heard.get("1.0", "end-1c").strip()
+            trans_text = self.trans.get("1.0", "end-1c").strip()
+            if heard_text:
+                for line in heard_text.splitlines():
+                    if line.strip():
+                        items.append(TranscriptItem(timestamp=now, stream="heard", text=line.strip()))
+            if trans_text:
+                for line in trans_text.splitlines():
+                    if line.strip():
+                        items.append(TranscriptItem(timestamp=now + 1.0, stream="trans", text=line.strip()))
+        if not items:
+            self._append("[bilgi] Dışa aktarılacak transkript yok.\n")
+            return
+
+        file_path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Transkripti Dışa Aktar",
+            defaultextension=".txt",
+            filetypes=[
+                ("Metin Dosyası (*.txt)", "*.txt"),
+                ("Altyazı Dosyası (*.srt)", "*.srt"),
+                ("JSON Lines (*.jsonl)", "*.jsonl"),
+            ],
+        )
+        if not file_path:
+            return
+        try:
+            if file_path.lower().endswith(".srt"):
+                content = export_srt(items, session_start=getattr(self, "session_start_time", None))
+            elif file_path.lower().endswith(".jsonl"):
+                content = export_jsonl(items)
+            else:
+                content = export_txt(items)
+            Path(file_path).write_text(content, encoding="utf-8")
+            self._append(f"[bilgi] Transkript dışa aktarıldı: {file_path}\n")
+        except Exception as e:
+            self._append(f"[hata] Dışa aktarma başarısız: {e}\n")
+
+    def _bind_zoom(self, widget: tk.Text) -> None:
+        def _on_wheel(e):
+            if getattr(e, "state", 0) & 0x4:
+                if e.delta > 0:
+                    self._adjust_font_size(1)
+                elif e.delta < 0:
+                    self._adjust_font_size(-1)
+                return "break"
+        widget.bind("<MouseWheel>", _on_wheel)
+
+    def _adjust_font_size(self, delta: int) -> None:
+        family, size = self.font_body[0], self.font_body[1]
+        new_size = max(8, min(32, size + delta))
+        self.font_body = (family, new_size)
+        self.heard.configure(font=self.font_body)
+        self.trans.configure(font=self.font_body)
+
+    def _adjust_overlay_font(self, delta: int) -> None:
+        self.overlay_font_size = max(10, min(32, getattr(self, "overlay_font_size", 13) + delta))
+        if hasattr(self, "overlay_label") and self.overlay_label.winfo_exists():
+            self.overlay_label.configure(font=(self.font_brand[0], self.overlay_font_size, "bold"))
+            self._fit_overlay()
+        self._save_user_prefs()
+
+    def _toggle_overlay_click_through(self) -> None:
+        if self._overlay is None or not self._overlay.winfo_exists():
+            return
+        self.overlay_click_through = not getattr(self, "overlay_click_through", False)
+        if os.name == "nt":
+            import ctypes
+            hwnd = self._overlay.winfo_id()
+            GWL_EXSTYLE = -20
+            WS_EX_TRANSPARENT = 0x00000020
+            WS_EX_LAYERED = 0x00080000
+            try:
+                style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+                if self.overlay_click_through:
+                    ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_TRANSPARENT | WS_EX_LAYERED)
+                else:
+                    ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style & ~WS_EX_TRANSPARENT)
+            except Exception:
+                pass
+        if hasattr(self, "_overlay_thru_btn"):
+            self._overlay_thru_btn.configure(text="🎯" if self.overlay_click_through else "🖱")
+        self._save_user_prefs()
     def restart(self) -> None:
         """Çalışırken ayarları nazikçe yeniden başlatarak uygular."""
         if self.worker is not None and self.worker.is_alive():
@@ -761,12 +939,31 @@ class App(tk.Tk):
                         kind = msg[0]
                         payload = msg[1] if len(msg) > 1 else ""
                         if kind == "heard":
+                            self._curr_heard_buf += payload
                             self._write_pane(self.heard, payload)
                         elif kind == "trans":
+                            self._curr_trans_buf += payload
                             self._write_pane(self.trans, payload)
                         elif kind == "heard_end":
+                            if self._curr_heard_buf.strip():
+                                self.transcript_items.append(
+                                    TranscriptItem(timestamp=time.time(), stream="heard", text=self._curr_heard_buf.strip())
+                                )
+                                self._curr_heard_buf = ""
                             self._write_pane(self.heard, "\n")
                         elif kind == "trans_end":
+                            if self._curr_trans_buf.strip():
+                                text_trans = self._curr_trans_buf.strip()
+                                self.transcript_items.append(
+                                    TranscriptItem(timestamp=time.time(), stream="trans", text=text_trans)
+                                )
+                                append_history(
+                                    self.heard.get("end - 2 lines linestart", "end - 1 chars").strip(),
+                                    text_trans,
+                                    src=self.src_var.get(),
+                                    dst=self.dst_var.get(),
+                                )
+                                self._curr_trans_buf = ""
                             self._write_pane(self.trans, "\n")
                         elif kind == "log":
                             self._append(payload)
@@ -776,12 +973,24 @@ class App(tk.Tk):
                             status_text = payload
                             color = msg[2] if len(msg) > 2 else C.live
                             self._set_status(status_text, color)
-                        continue
+                        elif kind == "detected_src":
+                            detected_name = lang_code_to_name(payload, default=payload)
+                            self.detected_lbl.configure(text=f"[{detected_name}]")
+                        elif kind == "latency":
+                            if self.worker is not None and self.worker.is_alive():
+                                self._set_status(f"Çalışıyor ({int(payload)} ms)", C.live)
                 except Exception as e:
                     self._append(f"[hata] Arayüz kuyruk hatası: {e}\n")
         except queue.Empty:
             pass
         finally:
+            if self.worker is not None and self.worker.is_alive() and self.session_start_time:
+                elapsed = int(time.time() - self.session_start_time)
+                m, s = divmod(elapsed, 60)
+                if hasattr(self, "timer_lbl"):
+                    self.timer_lbl.configure(text=f"{m:02d}:{s:02d}")
+            elif hasattr(self, "timer_lbl"):
+                self.timer_lbl.configure(text="")
             if self.loop_obj is not None:
                 self._update_meter(getattr(self.loop_obj, "last_level", 0.0))
             elif not (self.worker is not None and self.worker.is_alive()):
@@ -823,6 +1032,10 @@ class App(tk.Tk):
         self._clear_pane(self.heard)
         self._clear_pane(self.trans)
         self._stopping.clear()
+        self.session_start_time = time.time()
+        self.transcript_items = []
+        self._curr_heard_buf = ""
+        self._curr_trans_buf = ""
         self._loop_kwargs = {
             "src": src,
             "dst": dst,
@@ -859,6 +1072,7 @@ class App(tk.Tk):
                 if isinstance(root_err, asyncio.CancelledError):
                     break
                 retries += 1
+                log_exception(root_err, "Worker loop error")
                 self.log_queue.put(f"\n[hata] {format_user_error(root_err)}\n")
                 if retries <= max_retries:
                     self.log_queue.put(("status", f"Yeniden bağlanılıyor ({retries}/{max_retries})", C.warn))
@@ -875,11 +1089,14 @@ class App(tk.Tk):
 
     def stop(self):
         self._stopping.set()
+        self.session_start_time = None
+        if hasattr(self, "timer_lbl"):
+            self.timer_lbl.configure(text="")
         if self.loop_obj is not None:
             self.loop_obj.request_stop()
-            self._set_status("Durduruluyor", C.warn)
-            self._paint(self.stop_btn, filled=False, enabled=False)
-    def _open_about(self) -> None:
+        self._set_status("Durduruluyor", C.warn)
+
+    def _open_about(self):
         if self._about is not None and self._about.winfo_exists():
             self._about.deiconify()
             self._about.lift()
@@ -1030,6 +1247,7 @@ class App(tk.Tk):
         pop.overrideredirect(True)
         try:
             pop.attributes("-topmost", True)
+            pop.attributes("-alpha", getattr(self, "overlay_alpha", 0.92))
         except tk.TclError:
             pass
         pop.configure(bg=C.overlay_bg)
@@ -1048,26 +1266,42 @@ class App(tk.Tk):
         wrap.pack(fill=tk.BOTH, expand=True)
         self._overlay_wrap = wrap
 
-        close_btn = tk.Label(wrap, text="✕", font=self.font_ui, fg=C.dim, bg=C.overlay_bg, cursor="hand2")
-        close_btn.pack(side=tk.RIGHT, padx=8, pady=4, anchor="ne")
+        hdr = tk.Frame(wrap, bg=C.overlay_bg)
+        hdr.pack(fill=tk.X, padx=6, pady=(3, 0))
+
+        close_btn = tk.Label(hdr, text="✕", font=self.font_ui, fg=C.dim, bg=C.overlay_bg, cursor="hand2")
+        close_btn.pack(side=tk.RIGHT, padx=(4, 0))
         self._overlay_close = close_btn
         close_btn.bind("<Button-1>", lambda _e: self.toggle_overlay())
         close_btn.bind("<Enter>", lambda _e: close_btn.configure(fg=C.text))
         close_btn.bind("<Leave>", lambda _e: close_btn.configure(fg=C.dim))
 
+        thru_sym = "🎯" if getattr(self, "overlay_click_through", False) else "🖱"
+        self._overlay_thru_btn = tk.Label(hdr, text=thru_sym, font=self.font_ui, fg=C.dim, bg=C.overlay_bg, cursor="hand2")
+        self._overlay_thru_btn.pack(side=tk.RIGHT, padx=(4, 0))
+        self._overlay_thru_btn.bind("<Button-1>", lambda _e: self._toggle_overlay_click_through())
+
+        fplus = tk.Label(hdr, text="A+", font=self.font_ui, fg=C.dim, bg=C.overlay_bg, cursor="hand2")
+        fplus.pack(side=tk.RIGHT, padx=(4, 0))
+        fplus.bind("<Button-1>", lambda _e: self._adjust_overlay_font(1))
+
+        fminus = tk.Label(hdr, text="A-", font=self.font_ui, fg=C.dim, bg=C.overlay_bg, cursor="hand2")
+        fminus.pack(side=tk.RIGHT, padx=(4, 0))
+        fminus.bind("<Button-1>", lambda _e: self._adjust_overlay_font(-1))
+
         lines = [l.strip() for l in self.trans.get("1.0", "end").splitlines() if l.strip()]
-        cur_text = lines[-1] if lines else "..."
+        cur_text = "\n".join(lines[-getattr(self, "overlay_history_lines", 2):]) if lines else "..."
 
         self.overlay_label = tk.Label(
             wrap,
             text=cur_text,
-            font=(self.font_brand[0], 12, "bold"),
+            font=(self.font_brand[0], getattr(self, "overlay_font_size", 13), "bold"),
             fg=C.text,
             bg=C.overlay_bg,
             wraplength=520,
             justify=tk.CENTER,
             padx=16,
-            pady=10,
+            pady=8,
         )
         self.overlay_label.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         for w in (pop, wrap, self.overlay_label):
