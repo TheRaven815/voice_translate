@@ -95,7 +95,7 @@ class App(tk.Tk):
         self._build()
         self.refresh_devices(async_scan=True)
         dark_titlebar(self, dark=(self._theme != "light"))
-        self.after(120, self._pump_log)
+        self._pump_after_id = self.after(120, self._pump_log)
 
     def _build(self):
         self.columnconfigure(2, weight=1)
@@ -995,7 +995,10 @@ class App(tk.Tk):
                 self._update_meter(getattr(self.loop_obj, "last_level", 0.0))
             elif not (self.worker is not None and self.worker.is_alive()):
                 self._update_meter(0.0)
-            self.after(120, self._pump_log)
+            try:
+                self._pump_after_id = self.after(120, self._pump_log)
+            except tk.TclError:
+                self._pump_after_id = None
 
     def save_key(self):
         key = self.key_var.get().strip()
@@ -1322,6 +1325,12 @@ class App(tk.Tk):
             w_widget.bind("<ButtonRelease-1>", lambda _e: self._save_user_prefs(), add="+")
         self._fit_overlay()
     def _on_close(self):
+        if getattr(self, "_pump_after_id", None) is not None:
+            try:
+                self.after_cancel(self._pump_after_id)
+            except Exception:
+                pass
+            self._pump_after_id = None
         self.stop()
         self._close_about()
         if self._overlay is not None and self._overlay.winfo_exists():
@@ -1342,3 +1351,12 @@ class App(tk.Tk):
                 pass
             self.worker.join(timeout=1.0)
         self.destroy()
+
+    def destroy(self):
+        if getattr(self, "_pump_after_id", None) is not None:
+            try:
+                self.after_cancel(self._pump_after_id)
+            except Exception:
+                pass
+            self._pump_after_id = None
+        super().destroy()

@@ -11,17 +11,25 @@ import time
 if sys.version_info < (3, 11):
     sys.exit("Ahenk Python 3.11 veya üzerini gerektirir (asyncio.TaskGroup).")
 
-from config import resolve_api_key
+from config import load as load_config, resolve_api_key
 from devices import default_microphone, default_speaker, list_devices, pick_loopback, pick_speaker
-from languages import LANGS
+from languages import LANGS, dest_code, source_code
 from gui.app import format_user_error
 from loop import SystemAudioLoop
 from meta import APP_TITLE, __version__
 def main() -> None:
+    try:
+        cfg = load_config()
+        default_src = source_code(cfg.src_lang) or "auto"
+        default_dst = dest_code(cfg.dst_lang, default="tr")
+    except Exception:
+        default_src = "auto"
+        default_dst = "tr"
+
     parser = argparse.ArgumentParser(description=f"{APP_TITLE} - PC sistem sesini veya mikrofonu canlı çevir")
     parser.add_argument("--version", action="version", version=f"{APP_TITLE} {__version__}")
-    parser.add_argument("--src", default="auto", help="kaynak dil kodu veya auto (varsayılan: auto)")
-    parser.add_argument("--dst", default="tr", help="hedef dil kodu (varsayılan: tr)")
+    parser.add_argument("--src", default=default_src, help=f"kaynak dil kodu veya auto (varsayılan: {default_src})")
+    parser.add_argument("--dst", default=default_dst, help=f"hedef dil kodu (varsayılan: {default_dst})")
     parser.add_argument("--device", default=None, help="loopback cihaz adı filtresi")
     parser.add_argument("--output", default=None, help="çıkış hoparlör cihaz adı filtresi")
     parser.add_argument("--mic", action="store_true", help="sistem sesi yerine mikrofon")

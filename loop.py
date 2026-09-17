@@ -24,7 +24,6 @@ from audio import (
     to_16k_mono,
 )
 DEFAULT_MODEL = "models/gemini-3.5-live-translate-preview"
-MODEL = os.environ.get("GEMINI_LIVE_MODEL") or DEFAULT_MODEL
 
 
 def build_config(
@@ -129,10 +128,8 @@ class SystemAudioLoop:
         self._user_stop = threading.Event()
         self._play_q: queue.Queue | None = None
         self._bufs = {"heard": "", "trans": ""}
-        self._open = {"heard": False, "trans": False}
         self._active_stream: str | None = None
         self.last_level: float = 0.0
-        self._last_level_emit: float = 0.0
         self._playback_until: float = 0.0
 
     def pause(self) -> None:
@@ -228,8 +225,9 @@ class SystemAudioLoop:
         """
         is_loopback = getattr(self.source_mic, "isloopback", False)
         conv = AudioConverter(in_rate=CAPTURE_RATE, out_rate=SEND_SAMPLE_RATE)
+        ch = 1 if getattr(self.source_mic, "channels", 2) == 1 else 2
         with self.source_mic.recorder(
-            samplerate=CAPTURE_RATE, channels=2, blocksize=CAPTURE_BLOCK
+            samplerate=CAPTURE_RATE, channels=ch, blocksize=CAPTURE_BLOCK
         ) as mic:
             while not self._cap_stop.is_set():
                 frame = mic.record(numframes=CAPTURE_BLOCK)
@@ -348,7 +346,6 @@ class SystemAudioLoop:
                 self._emit((stream, delta))
         if getattr(tr, "finished", False):
             self._bufs[stream] = ""
-            self._open[stream] = False
             self._emit((f"{stream}_end",))
 
     async def receive(self):

@@ -129,15 +129,14 @@ class FakeSession:
     def __init__(self):
         self.send_realtime_input = AsyncMock()
         self.send_client_content = AsyncMock()
+        self.stop_event = asyncio.Event()
 
     def receive(self):
         return self._gen()
-
     async def _gen(self):
         yield _canned_response("Bir, iki")
         yield _canned_response(", üç.", finished=True)
-        await asyncio.sleep(3600)  # stop ile iptal edilir
-
+        await asyncio.Event().wait()
 
 class FakeConnect:
     def __init__(self, session):
@@ -282,6 +281,7 @@ def test_none_speaker_skips_playback_keeps_text():
 
 
 
+@pytest.mark.device
 def test_duplex_with_real_devices_stays_alive():
     """Gerçek aygıtlarla yakalama+oynatma: çökmeden (AV) akmalı.
 

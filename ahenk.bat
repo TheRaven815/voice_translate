@@ -53,9 +53,14 @@ goto menu
 
 :cli
 echo.
+echo Konsol modu baslatiliyor... (Secenekler icin: %VPY% cli.py --help)
 "%VPY%" cli.py
+if errorlevel 1 (
+  echo.
+  echo Hata veya eksik anahtar. Ayrintili secenekler icin: "%VPY%" cli.py --help
+  pause
+)
 goto menu
-
 :build
 echo.
 call build.bat

@@ -1,6 +1,7 @@
-# Ahenk (Voice Translate) - Geliştirme, Optimizasyon ve İyileştirme Yol Haritası
+# [ARŞİVLENDİ / TAMAMLANDI] Ahenk - Geliştirme Yol Haritası
 
-Bu liste, kod tabanının tamamı (çekirdek döngü, ses boru hattı, UI/UX, CLI, yapılandırma, derleme ve testler) derinlemesine incelenerek önem sırasına (P0: Kritik, P1: Yüksek, P2: Orta, P3: Düşük/Temizlik) göre derlenmiştir.
+> **NOT:** Bu belgedeki tüm kritik (P0) ve öncelikli (P1) teknik borçlar tamamlanmış olup arşivlenmiştir.
+> Güncel ürün ve özellik yol haritası için tek kaynak olarak [ONCELIKLI_ONERILER.md](ONCELIKLI_ONERILER.md) dosyasını referans alınız.
 
 ---
 

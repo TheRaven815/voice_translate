@@ -253,12 +253,16 @@ class Select(tk.Frame):
         text_w = max((font_obj.measure(str(v)) for v in self._values), default=0) + 24
         w = max(self.winfo_width(), text_w)
         screen_w = self.winfo_screenwidth()
-        if x + w > screen_w:
-            x = max(0, screen_w - w)
+        if screen_w > 0 and x + w > screen_w and self.winfo_rootx() >= 0:
+            x = self.winfo_rootx() + self.winfo_width() - w
+        elif self.winfo_rootx() < 0 and (x + w) > 0:
+            x = self.winfo_rootx() + self.winfo_width() - w
         h = row_h * visible + 2
         screen_h = self.winfo_screenheight()
-        if y + h > screen_h:
-            y = max(0, self.winfo_rooty() - h + 1)
+        if screen_h > 0 and y + h > screen_h and self.winfo_rooty() >= 0:
+            y = self.winfo_rooty() - h + 1
+        elif self.winfo_rooty() < 0 and (y + h) > 0:
+            y = self.winfo_rooty() - h + 1
         pop.geometry(f"{w}x{h}+{x}+{y}")
         pop.bind("<Escape>", lambda _e: self._close())
         pop.bind("<Up>", self._on_key_up)

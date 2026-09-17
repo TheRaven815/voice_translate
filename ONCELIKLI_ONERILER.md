@@ -268,37 +268,37 @@ Sıra: sık kullanılan → farklılaştırıcı.
 
 ## P3 — Ölü kod, fazlalık, küçük temizlik
 
-- [ ] **`loop.py` `MODEL` modül sabiti ölü**
+- [x] **`loop.py` `MODEL` modül sabiti ölü**
   - Örnek `self.model = model or env or DEFAULT_MODEL`. `MODEL` import edilmiyor. Tek kaynak `DEFAULT_MODEL`.
 
-- [ ] **`self._open` sözlüğü yaz-only**
+- [x] **`self._open` sözlüğü yaz-only**
   - `_handle_tr` `self._open[stream] = False`; kimse okumuyor. Konsol `_active_stream` kullanıyor. Sil.
 
-- [ ] **`self._rail_seps` hiç doldurulmuyor**
+- [x] **`self._rail_seps` hiç doldurulmuyor**
   - Tema döngüsü no-op. Ya bağla ya alanı sil.
 
-- [ ] **`last_level` yazılıp GUI’de okunmuyor**
+- [x] **`last_level` yazılıp GUI’de okunmuyor**
   - Ya kuyruk `level`’ı kaldır ya alanı kaldır. İkisini birden bırakma.
 
-- [ ] **Salt yazılan widget referansları**
+- [x] **Salt yazılan widget referansları**
   - `brand`, `version_lbl`, `info_btn`, `about_*` testler ve tema için lazım olabilir; tema/test kullanmayanları lokale indir.
 
-- [ ] **`config.py` biçim**
+- [x] **`config.py` biçim**
   - `Settings` ile `config_dir` arasında boş satır yok; XOR yorumu ASCII (`Basitce acikta…`).
 
-- [ ] **Legacy config okunuyor, taşınmıyor**
+- [x] **Legacy config okunuyor, taşınmıyor**
   - `LEGACY_APP_NAME = "voice_translate"` eski dosyayı okur, yeni yere yazmaz. Bir kez migrate et.
 
-- [ ] **CLI kayıtlı dilleri okumuyor**
+- [x] **CLI kayıtlı dilleri okumuyor**
   - GUI `src_lang`/`dst_lang` yazar; `cli.py` bunları hiç okumaz. BCP-47’ye geçince CLI varsayılanı config’den gelsin.
 
-- [ ] **`_pump_log` kapanışta iptal edilmiyor**
+- [x] **`_pump_log` kapanışta iptal edilmiyor**
   - `after(120)` sonsuz; `destroy` sonrası TclError riski. `after_cancel`.
 
-- [ ] **`Select` popup çoklu monitör `max(0, screen_w - w)`**
+- [x] **`Select` popup çoklu monitör `max(0, screen_w - w)`**
   - Yatay düzeltme negatif koordinatı keser (dikey kısmen düzelmiş).
 
-- [ ] **Test boşlukları**
+- [x] **Test boşlukları**
   - Donanım kopması, BCP-47 roundtrip, CLI `None` speaker, `build_config` text-only, tema ayırıcı rengi, overlay geometri, `input()` / `--no-interactive` yok.
   - `test_duplex_with_real_devices_stays_alive` gerçek aygıt + 15 sn; CI’da skip doğru, işaretle `pytest.mark.device`.
   - `FakeSession.receive` `sleep(3600)` — kırılgan; Event ile iptal daha sıkı.
@@ -306,16 +306,16 @@ Sıra: sık kullanılan → farklılaştırıcı.
 - [ ] **`context_window_compression` `trigger_tokens=0` / `target_tokens=0`**
   - Agresif; uzun oturumda bağlam uçabilir. Değerleri ölç, config’e al.
 
-- [ ] **Stereo zorlaması**
+- [x] **Stereo zorlaması**
   - Recorder `channels=2`. Mono mic gereksiz kopya. Aygıta göre 1/2.
 
-- [ ] **`ahenk.bat` menü 2 = çıplak `cli.py`**
+- [x] **`ahenk.bat` menü 2 = çıplak `cli.py`**
   - Anahtarsız traceback/exit. En az `--help` ipucu.
 
-- [ ] **`.gitattributes` / satır sonu**
+- [x] **`.gitattributes` / satır sonu**
   - `.bat` `crlf` belirtilmemiş; Linux checkout’ta launcher bozulabilir.
 
-- [ ] **Eski öneri dosyasını arşivle**
+- [x] **Eski öneri dosyasını arşivle**
   - `GELISTIRME_ONERILERI.md` çoğunlukla [x]; bu backlog ile çakışıyor. Ya “yapıldı” diye dondur ya sil; tek kaynak bu dosya kalsın.
 
 ---

@@ -15,9 +15,8 @@ from pathlib import Path
 APP_NAME = "Ahenk"
 LEGACY_APP_NAME = "voice_translate"
 
-# Geriye donuk uyumluluk (eski XOR anahtarlari cozebilmek icin)
+# Windows harici ortamlarda geriye dönük uyumluluk için gömülü anahtar
 _SECRET_KEY = b"Ahenk_Gemini_Secret_Key_v1"
-
 if os.name == "nt":
     import ctypes
     from ctypes import wintypes
@@ -119,6 +118,8 @@ class Settings:
     overlay_alpha: float = 0.92
     overlay_click_through: bool = False
     ui_lang: str = "tr"
+
+
 def config_dir() -> Path:
     if os.name == "nt":
         root = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
@@ -141,9 +142,18 @@ def _read_raw() -> dict:
     if not path.is_file():
         legacy = path.parent.parent / LEGACY_APP_NAME / path.name
         if legacy.is_file():
-            path = legacy
-        else:
-            return {}
+            try:
+                data = json.loads(legacy.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    # Eski dosyayı yeni Ahenk konumuna otomatik taşı
+                    try:
+                        _write_raw(data)
+                    except OSError:
+                        pass
+                    return data
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+                return {}
+        return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):

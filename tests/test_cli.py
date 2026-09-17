@@ -55,6 +55,27 @@ def test_cli_runs_loop_with_args(monkeypatch):
         assert kwargs["console_input"] is True
         mock_run.assert_called_once()
 
+def test_cli_uses_default_languages_from_config(monkeypatch):
+    from config import Settings
+    monkeypatch.setattr("cli.load_config", lambda: Settings(src_lang="Fransızca", dst_lang="Almanca"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["cli.py", "--api-key", "test_key", "--text-only", "--mic"],
+    )
+    fake_source = MagicMock(name="FakeMic")
+    fake_source.name = "FakeMic"
+    monkeypatch.setattr("cli.default_microphone", lambda: fake_source)
+    mock_loop_cls = MagicMock()
+    monkeypatch.setattr("cli.SystemAudioLoop", mock_loop_cls)
+
+    with patch("asyncio.run"):
+        cli.main()
+        mock_loop_cls.assert_called_once()
+        args_called = mock_loop_cls.call_args.args
+        assert args_called[0] == "fr"
+        assert args_called[1] == "de"
+
 def test_cli_text_only_flag(monkeypatch):
     monkeypatch.setattr(
         sys,

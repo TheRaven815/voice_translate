@@ -37,10 +37,16 @@ def is_rtl(code_or_name: str | None) -> bool:
     code = LANGS.get(code_or_name, code_or_name).lower()
     return any(code == rtl or code.startswith(f"{rtl}-") for rtl in RTL_CODES)
 
-def source_code(name: str) -> str | None:
-    if name == AUTO_SRC:
+def source_code(name: str | None) -> str | None:
+    if not name or name in (AUTO_SRC, "auto", ""):
         return None
-    return LANGS[name]
+    return LANGS.get(name, name)
+
+
+def dest_code(name: str | None, default: str = "tr") -> str:
+    if not name:
+        return default
+    return LANGS.get(name, name)
 
 
 def source_names() -> list[str]:
