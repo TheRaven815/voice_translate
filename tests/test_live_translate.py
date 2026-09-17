@@ -30,6 +30,11 @@ def test_resample_48k_stereo_to_16k_mono():
     assert len(pcm) == 320 * 2  # 20 ms @16k mono int16
     assert to_16k_mono(np.zeros((960, 2), dtype=np.float32)) == bytes(640)
 
+def test_resample_1d_mono():
+    mono_1d = np.zeros(960, dtype=np.float32)
+    pcm = to_16k_mono(mono_1d)
+    assert len(pcm) == 640
+
 
 def test_pcm16_to_float_stays_in_unit_range():
     pcm = np.array([0, 32767, -32768, 16384], dtype=np.int16).tobytes()
@@ -37,6 +42,13 @@ def test_pcm16_to_float_stays_in_unit_range():
     assert f.dtype == np.float32
     assert abs(float(f[3]) - 0.5) < 1e-4
     assert float(np.max(np.abs(f))) <= 1.0 + 1e-6
+def test_pcm16_to_float_handles_odd_and_short_bytes():
+    assert pcm16_to_float(b"").size == 0
+    assert pcm16_to_float(b"\x00").size == 0
+    # 5 bytes -> truncated to 4 bytes (2 int16 samples) without crash
+    f = pcm16_to_float(b"\x00\x00\x00\x40\xff")
+    assert f.size == 2
+
 
 
 def test_build_config_matches_installed_sdk():

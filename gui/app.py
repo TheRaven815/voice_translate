@@ -457,6 +457,7 @@ class App(tk.Tk):
             lines = [l.strip() for l in widget.get("1.0", "end").splitlines() if l.strip()]
             if lines:
                 self.overlay_label.configure(text=lines[-1])
+                self._fit_overlay()
 
     def _clear_pane(self, widget):
         widget.delete("1.0", tk.END)
@@ -489,32 +490,36 @@ class App(tk.Tk):
         try:
             while True:
                 msg = self.log_queue.get_nowait()
-                if msg == "__stopped__":
-                    self._set_running(False)
-                    self._set_status("Durdu", C.dim)
-                    self.worker = None
-                    self.loop_obj = None
-                    continue
-                if isinstance(msg, tuple):
-                    kind = msg[0]
-                    payload = msg[1] if len(msg) > 1 else ""
-                    if kind == "heard":
-                        self._write_pane(self.heard, payload)
-                    elif kind == "trans":
-                        self._write_pane(self.trans, payload)
-                    elif kind == "heard_end":
-                        self._write_pane(self.heard, "\n")
-                    elif kind == "trans_end":
-                        self._write_pane(self.trans, "\n")
-                    elif kind == "log":
-                        self._append(payload)
-                    elif kind == "level":
-                        self._update_meter(float(payload))
-                    continue
-                self._append(str(msg))
+                try:
+                    if msg == "__stopped__":
+                        self._set_running(False)
+                        self._set_status("Durdu", C.dim)
+                        self.worker = None
+                        self.loop_obj = None
+                        continue
+                    if isinstance(msg, tuple):
+                        kind = msg[0]
+                        payload = msg[1] if len(msg) > 1 else ""
+                        if kind == "heard":
+                            self._write_pane(self.heard, payload)
+                        elif kind == "trans":
+                            self._write_pane(self.trans, payload)
+                        elif kind == "heard_end":
+                            self._write_pane(self.heard, "\n")
+                        elif kind == "trans_end":
+                            self._write_pane(self.trans, "\n")
+                        elif kind == "log":
+                            self._append(payload)
+                        elif kind == "level":
+                            self._update_meter(float(payload))
+                        continue
+                    self._append(str(msg))
+                except Exception as e:
+                    self._append(f"[hata] Arayüz kuyruk hatası: {e}\n")
         except queue.Empty:
             pass
-        self.after(120, self._pump_log)
+        finally:
+            self.after(120, self._pump_log)
 
     def save_key(self):
         key = self.key_var.get().strip()
@@ -725,6 +730,18 @@ class App(tk.Tk):
         self._about.destroy()
         self._about = None
 
+    def _fit_overlay(self) -> None:
+        pop = self._overlay
+        if pop is None or not pop.winfo_exists():
+            return
+        pop.update_idletasks()
+        width = pop.winfo_width()
+        height = min(max(56, pop.winfo_reqheight()), pop.winfo_screenheight())
+        x = pop.winfo_x()
+        bottom = pop.winfo_y() + pop.winfo_height()
+        y = min(max(0, bottom - height), pop.winfo_screenheight() - height)
+        pop.geometry(f"{width}x{height}{x:+d}{y:+d}")
+
     def toggle_overlay(self) -> None:
         if self._overlay is not None and self._overlay.winfo_exists():
             self._overlay.destroy()
@@ -787,6 +804,7 @@ class App(tk.Tk):
         x = max(0, (sw - w) // 2)
         y = max(0, sh - h - 100)
         pop.geometry(f"{w}x{h}+{x}+{y}")
+        self._fit_overlay()
     def _on_close(self):
         self.stop()
         self._close_about()

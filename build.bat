@@ -38,7 +38,11 @@ echo   Ahenk Derleniyor...
 echo ========================================
 echo.
 
-"%VPY%" -m PyInstaller --noconfirm --clean Ahenk.spec
+if exist "Ahenk.spec" (
+    "%VPY%" -m PyInstaller --noconfirm --clean Ahenk.spec
+) else (
+    "%VPY%" -m PyInstaller --noconfirm --clean --onefile --windowed --name Ahenk --icon assets\ahenk.ico --add-data "assets;assets" --hidden-import soundcard --hidden-import google.genai --collect-submodules google.genai main.py
+)
 
 if errorlevel 1 (
     echo.

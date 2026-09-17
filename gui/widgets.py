@@ -166,14 +166,17 @@ class Select(tk.Frame):
     def _arm_dismiss(self) -> None:
         if self._pop is None:
             return
-        self.bind_all("<Button-1>", self._on_global_click, add="+")
-        self.bind_all("<Escape>", self._on_escape, add="+")
         top = self.winfo_toplevel()
         self._last_top_geom = (top.winfo_x(), top.winfo_y(), top.winfo_width(), top.winfo_height())
-        for seq in ("<FocusOut>", "<Unmap>", "<Configure>"):
-            bid = top.bind(seq, self._on_top_event, add="+")
+        for seq, cb in (
+            ("<Button-1>", self._on_global_click),
+            ("<Escape>", self._on_escape),
+            ("<FocusOut>", self._on_top_event),
+            ("<Unmap>", self._on_top_event),
+            ("<Configure>", self._on_top_event),
+        ):
+            bid = top.bind(seq, cb, add="+")
             self._top_bindings.append((top, seq, bid))
-
     def _inside_pop_rect(self) -> bool:
         if self._pop is None:
             return False
@@ -241,11 +244,6 @@ class Select(tk.Frame):
     def _close(self):
         if self._pop is None:
             return
-        try:
-            self.unbind_all("<Button-1>")
-            self.unbind_all("<Escape>")
-        except tk.TclError:
-            pass
         for top, seq, bid in self._top_bindings:
             try:
                 top.unbind(seq, bid)

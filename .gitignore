@@ -7,6 +7,7 @@ venv/
 dist/
 build/
 *.spec
+!Ahenk.spec
 .env.*
 config.json
 *.exe

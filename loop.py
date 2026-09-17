@@ -168,7 +168,14 @@ class SystemAudioLoop:
                     pass
 
         threading.Thread(target=_wrapper, daemon=True).start()
-        await done.wait()
+        try:
+            await done.wait()
+        finally:
+            self._cap_stop.set()
+            try:
+                await asyncio.shield(done.wait())
+            except asyncio.CancelledError:
+                pass
 
     def _console_emit(self, msg):
         if not isinstance(msg, tuple):
@@ -226,12 +233,17 @@ class SystemAudioLoop:
         pending_n = 0
         started = False
         with speaker.player(
-            samplerate=RECEIVE_SAMPLE_RATE, channels=1, blocksize=4096
+            samplerate=RECEIVE_SAMPLE_RATE, channels=1, blocksize=2048
         ) as sp:
             while not self._play_stop.is_set():
                 try:
                     pcm = self._play_q.get(timeout=0.05)
                 except queue.Empty:
+                    if pending:
+                        sp.play(np.concatenate(pending))
+                        pending.clear()
+                        pending_n = 0
+                    started = False
                     continue
                 if pcm is None:
                     break
@@ -248,6 +260,9 @@ class SystemAudioLoop:
                     pending_n = 0
                     started = True
                 sp.play(audio)
+            if pending:
+                sp.play(np.concatenate(pending))
+                pending.clear()
 
     async def play(self):
         self._play_q = queue.Queue(maxsize=200)

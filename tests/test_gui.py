@@ -2,11 +2,39 @@
 
 import tkinter as tk
 
+import pytest
+
 from devices import NONE_OUTPUT
 from gui.app import App
 from gui.theme import C, ICON_ICO, ICON_PNG
 from languages import AUTO_SRC, source_code
 from meta import APP_AUTHOR, APP_TITLE, __version__
+
+
+@pytest.fixture(autouse=True)
+def hide_test_windows(monkeypatch):
+    tk_init = tk.Tk.__init__
+    app_init = App.__init__
+    toplevel_init = tk.Toplevel.__init__
+
+    def hidden_tk_init(self, *args, **kwargs):
+        tk_init(self, *args, **kwargs)
+        self.withdraw()
+
+    def hidden_app_init(self, *args, **kwargs):
+        app_init(self, *args, **kwargs)
+        self.attributes("-alpha", 0.0)
+        self.deiconify()
+
+    def hidden_toplevel_init(self, *args, **kwargs):
+        toplevel_init(self, *args, **kwargs)
+        self.withdraw()
+        self.attributes("-alpha", 0.0)
+        self.deiconify()
+
+    monkeypatch.setattr(tk.Tk, "__init__", hidden_tk_init)
+    monkeypatch.setattr(App, "__init__", hidden_app_init)
+    monkeypatch.setattr(tk.Toplevel, "__init__", hidden_toplevel_init)
 
 
 def test_app_name_version_and_about():
@@ -176,6 +204,24 @@ def test_select_pick_preserves_choice_when_focus_inside_popup():
     finally:
         app.destroy()
 
+def test_select_close_does_not_wipe_global_bindings():
+    app = App()
+    try:
+        triggered = []
+        bid = app.bind_all("<Escape>", lambda _e: triggered.append(True), add="+")
+        app.in_box._toggle()
+        app.update()
+        assert app.in_box._pop is not None
+        app.in_box._close()
+        app.update()
+        assert app.in_box._pop is None
+        # Global Escape binding must still be intact
+        app.event_generate("<Escape>")
+        app.update()
+        assert triggered == [True]
+    finally:
+        app.destroy()
+
 
 def test_running_paints_status_dot_green():
     app = App()
@@ -227,8 +273,14 @@ def test_overlay_toggle_and_live_update():
         assert app._overlay is not None
         assert app._overlay.winfo_exists()
 
-        app._write_pane(app.trans, "İlk canlı altyazı\n")
-        assert app.overlay_label.cget("text") == "İlk canlı altyazı"
+        long_text = (
+            "Bu uzun altyazı iki satıra taşsa da hiçbir bölümü kesilmeden "
+            "okunabilir kalmalı ve pencere yukarı doğru büyümeli."
+        )
+        app._write_pane(app.trans, long_text + "\n")
+        app.update_idletasks()
+        assert app.overlay_label.cget("text") == long_text
+        assert app._overlay.winfo_height() >= app._overlay.winfo_reqheight()
 
         app.toggle_overlay()
         assert app._overlay is None
