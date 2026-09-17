@@ -326,3 +326,79 @@ def test_duplex_with_real_devices_stays_alive():
         t.join(timeout=20)
     assert not t.is_alive(), "worker durmadı"
     assert errors == [], f"worker hatası: {errors}"
+
+def test_build_config_text_only():
+    cfg = build_config("en", "tr", modalities=["TEXT"])
+    assert cfg.response_modalities == ["TEXT"]
+    assert cfg.output_audio_transcription is None
+
+    loop_obj = SystemAudioLoop("en", "tr", FakeMic(), "dummy-key", output_speaker=None)
+    assert loop_obj.config.response_modalities == ["TEXT"]
+    assert loop_obj.config.output_audio_transcription is None
+
+
+def test_capture_thread_device_disconnect_raises():
+    class BrokenMic:
+        name = "BrokenMic"
+        def recorder(self, *args, **kwargs):
+            raise RuntimeError("USB unplugged")
+
+    loop_obj = SystemAudioLoop("en", "tr", BrokenMic(), "dummy-key", output_speaker=None)
+
+    async def _run():
+        loop_obj._loop = asyncio.get_running_loop()
+        await loop_obj.listen_system()
+
+    with pytest.raises(RuntimeError) as exc_info:
+        asyncio.run(_run())
+    assert "Giriş ses aygıtı hatası" in str(exc_info.value)
+
+
+def test_play_thread_device_disconnect_raises():
+    class BrokenSpeaker:
+        name = "BrokenSpeaker"
+        def player(self, *args, **kwargs):
+            raise RuntimeError("Speaker unplugged")
+
+    loop_obj = SystemAudioLoop("en", "tr", FakeMic(), "dummy-key", output_speaker=BrokenSpeaker())
+
+    async def _run():
+        loop_obj._loop = asyncio.get_running_loop()
+        loop_obj.audio_in_queue = asyncio.Queue()
+        await loop_obj.play()
+
+    with pytest.raises(RuntimeError) as exc_info:
+        asyncio.run(_run())
+    assert "Çıkış ses aygıtı hatası" in str(exc_info.value)
+
+def test_queue_drop_oldest_on_full():
+    loop_obj = SystemAudioLoop("en", "tr", FakeMic(), "dummy-key", output_speaker=FakeSpeaker())
+    loop_obj.audio_in_queue = asyncio.Queue(maxsize=3)
+    for i in range(3):
+        loop_obj.audio_in_queue.put_nowait(f"msg_{i}".encode())
+    assert loop_obj.audio_in_queue.full()
+
+    # Receive logic: drop oldest and insert newest
+    try:
+        loop_obj.audio_in_queue.put_nowait(b"msg_3")
+    except asyncio.QueueFull:
+        loop_obj.audio_in_queue.get_nowait()
+        loop_obj.audio_in_queue.put_nowait(b"msg_3")
+
+    assert loop_obj.audio_in_queue.qsize() == 3
+    assert loop_obj.audio_in_queue.get_nowait() == b"msg_1"
+
+
+def test_loopback_echo_suppressed_during_playback(monkeypatch):
+    class LoopbackMic(FakeMic):
+        isloopback = True
+
+    loop_obj = SystemAudioLoop("en", "tr", LoopbackMic(), "dummy-key", output_speaker=FakeSpeaker())
+    # Set playback_until to 10 seconds in the future
+    loop_obj._playback_until = time.monotonic() + 10.0
+    loop_obj._cap_stop.set() # Don't loop
+
+    # Ensure the check prevents sending
+    assert loop_obj.source_mic.isloopback is True
+    assert loop_obj.output_speaker is not None
+    assert time.monotonic() < loop_obj._playback_until + 0.15

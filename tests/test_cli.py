@@ -54,3 +54,65 @@ def test_cli_runs_loop_with_args(monkeypatch):
             model="custom-model",
         )
         mock_run.assert_called_once()
+
+def test_cli_text_only_flag(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["cli.py", "--src", "auto", "--dst", "tr", "--api-key", "test_key", "--text-only", "--mic"],
+    )
+    fake_source = MagicMock(name="FakeMic")
+    fake_source.name = "FakeMic"
+    monkeypatch.setattr("cli.default_microphone", lambda: fake_source)
+
+    mock_loop_cls = MagicMock()
+    monkeypatch.setattr("cli.SystemAudioLoop", mock_loop_cls)
+
+    with patch("asyncio.run"):
+        cli.main()
+        mock_loop_cls.assert_called_once()
+        assert mock_loop_cls.call_args.kwargs["output_speaker"] is None
+
+
+def test_cli_speaker_none_falls_back_to_text_only(monkeypatch, capsys):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["cli.py", "--api-key", "test_key", "--mic"],
+    )
+    fake_source = MagicMock(name="FakeMic")
+    fake_source.name = "FakeMic"
+    monkeypatch.setattr("cli.default_microphone", lambda: fake_source)
+    monkeypatch.setattr("cli.default_speaker", lambda: None)
+
+    mock_loop_cls = MagicMock()
+    monkeypatch.setattr("cli.SystemAudioLoop", mock_loop_cls)
+
+    with patch("asyncio.run"):
+        cli.main()
+        mock_loop_cls.assert_called_once()
+        assert mock_loop_cls.call_args.kwargs["output_speaker"] is None
+    out = capsys.readouterr().out
+    assert "Hoparlör bulunamadı; metin-only moda geçiliyor." in out
+
+
+def test_cli_mic_none_exits(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["cli.py", "--api-key", "test_key", "--mic"])
+    monkeypatch.setattr("cli.default_microphone", lambda: None)
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "Mikrofon bulunamadı" in err
+
+
+def test_cli_loopback_error_exits(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["cli.py", "--api-key", "test_key"])
+    def _fail(_dev):
+        raise RuntimeError("Loopback cihaz bulunamadı.")
+    monkeypatch.setattr("cli.pick_loopback", _fail)
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "Loopback cihaz bulunamadı" in err

@@ -12,7 +12,9 @@ from meta import APP_AUTHOR, APP_TITLE, __version__
 
 
 @pytest.fixture(autouse=True)
-def hide_test_windows(monkeypatch):
+def hide_test_windows(tmp_path, monkeypatch):
+    monkeypatch.setenv("VOICE_TRANSLATE_CONFIG", str(tmp_path / "config.json"))
+    monkeypatch.setattr("config.load_dotenv", lambda: None)
     tk_init = tk.Tk.__init__
     app_init = App.__init__
     toplevel_init = tk.Toplevel.__init__
@@ -27,19 +29,32 @@ def hide_test_windows(monkeypatch):
                     raise
                 import time
                 time.sleep(0.05)
-        self.withdraw()
+        try:
+            self.attributes("-toolwindow", True)
+            self.attributes("-alpha", 0.0)
+            self.geometry("+25000+25000")
+        except tk.TclError:
+            pass
 
     def hidden_app_init(self, *args, **kwargs):
         app_init(self, *args, **kwargs)
-        self.attributes("-alpha", 0.0)
+        try:
+            self.attributes("-toolwindow", True)
+            self.attributes("-alpha", 0.0)
+            self.geometry("+25000+25000")
+        except tk.TclError:
+            pass
         self.deiconify()
 
     def hidden_toplevel_init(self, *args, **kwargs):
         toplevel_init(self, *args, **kwargs)
+        try:
+            self.attributes("-toolwindow", True)
+            self.attributes("-alpha", 0.0)
+        except tk.TclError:
+            pass
         self.withdraw()
-        self.attributes("-alpha", 0.0)
         self.deiconify()
-
     monkeypatch.setattr(tk.Tk, "__init__", hidden_tk_init)
     monkeypatch.setattr(App, "__init__", hidden_app_init)
     monkeypatch.setattr(tk.Toplevel, "__init__", hidden_toplevel_init)
@@ -398,6 +413,115 @@ def test_theme_toggle_and_persistence(tmp_path, monkeypatch):
         assert app.theme_btn.cget("text") == "☀️"
         assert app.cget("bg") == "#111111"
         assert config.load().theme == "dark"
+    finally:
+        app.destroy()
+
+def test_stop_during_retry_breaks_worker(monkeypatch):
+    import time
+    import threading
+    from unittest.mock import MagicMock
+
+    app = App()
+    try:
+        app.key_var.set("test_key")
+        app.inputs = [type("MockDev", (), {"name": "Mic"})()]
+        app.in_box["values"] = ["Mic"]
+        app.in_var.set("Mic")
+
+        created = []
+        def mock_loop(**kwargs):
+            created.append(kwargs)
+            m = MagicMock()
+            m._user_stop = threading.Event()
+            async def _fail_run():
+                raise RuntimeError("Network error")
+            m.run = _fail_run
+            m.request_stop = m._user_stop.set
+            return m
+
+        monkeypatch.setattr("gui.app.SystemAudioLoop", mock_loop)
+        app.start()
+        time.sleep(0.05)
+        app.stop()
+        app.worker.join(timeout=1.0)
+        assert not app.worker.is_alive()
+        assert len(created) == 1
+    finally:
+        app.destroy()
+
+def test_status_state_machine():
+    app = App()
+    try:
+        app.key_var.set("test_key")
+        app.inputs = [type("MockDev", (), {"name": "Mic"})()]
+        app.in_box["values"] = ["Mic"]
+        app.in_var.set("Mic")
+
+        # Test status message pump
+        app.log_queue.put(("status", "Bağlanıyor", C.warn))
+        app.log_queue.put(("status", "Dinleniyor", C.live))
+        app._pump_log()
+        assert app.status.cget("text") == "Dinleniyor"
+        assert app._dot.itemcget(app._dot_id, "fill") == C.live
+
+        app.log_queue.put(("status", "Yeniden bağlanılıyor (1/3)", C.warn))
+        app._pump_log()
+        assert "Yeniden bağlanılıyor" in app.status.cget("text")
+        assert app._dot.itemcget(app._dot_id, "fill") == C.warn
+
+        app.log_queue.put(("status", "Hata", C.err))
+        app._pump_log()
+        assert app.status.cget("text") == "Hata"
+        assert app._dot.itemcget(app._dot_id, "fill") == C.err
+    finally:
+        app.destroy()
+
+def test_rail_separators_and_overlay_update_on_theme_toggle():
+    app = App()
+    try:
+        assert len(app._rail_seps) >= 3
+        app.toggle_overlay()
+        assert app._overlay is not None
+
+        app.set_theme("light")
+        for sep in app._rail_seps:
+            assert sep.cget("bg") == C.line
+        assert app.overlay_label.cget("fg") == C.text
+        assert app._overlay.cget("bg") == C.overlay_bg
+
+        app.set_theme("dark")
+        for sep in app._rail_seps:
+            assert sep.cget("bg") == C.line
+        assert app.overlay_label.cget("fg") == C.text
+        assert app._overlay.cget("bg") == C.overlay_bg
+    finally:
+        app.destroy()
+
+def test_start_btn_hover_palette_in_light_theme():
+    app = App()
+    try:
+        app.set_theme("light")
+        assert app.start_btn._hover_bg == C.fill_hover == "#32383f"
+        assert app.start_btn.cget("bg") == C.fill == "#1f2328"
+        assert app.start_btn.cget("fg") == C.fill_fg == "#ffffff"
+    finally:
+        app.destroy()
+
+def test_user_prefs_debounce(monkeypatch):
+    saves = []
+    monkeypatch.setattr("gui.app.save_preferences", lambda **kw: saves.append(kw))
+
+    app = App()
+    try:
+        app.src_var.set("İngilizce")
+        app.dst_var.set("Almanca")
+        # Right after setting, debounced timer is active, disk save not yet called
+        assert len(saves) == 0
+        # Flush timer manually
+        app._do_save_user_prefs()
+        assert len(saves) == 1
+        assert saves[0]["src_lang"] == "İngilizce"
+        assert saves[0]["dst_lang"] == "Almanca"
     finally:
         app.destroy()
 

@@ -17,23 +17,29 @@ from audio import (
     CAPTURE_BLOCK,
     CAPTURE_RATE,
     RECEIVE_SAMPLE_RATE,
+    SEND_SAMPLE_RATE,
     pcm16_to_float,
     to_16k_mono,
 )
-
 DEFAULT_MODEL = "models/gemini-3.5-live-translate-preview"
 MODEL = os.environ.get("GEMINI_LIVE_MODEL") or DEFAULT_MODEL
 
 
-def build_config(src: str | None, dst: str) -> types.LiveConnectConfig:
+def build_config(
+    src: str | None,
+    dst: str,
+    modalities: list[str] | None = None,
+) -> types.LiveConnectConfig:
     if src:
         input_tr = types.AudioTranscriptionConfig(language_codes=[src])
     else:
         input_tr = types.AudioTranscriptionConfig()
+    mods = modalities or ["AUDIO"]
+    out_tr = types.AudioTranscriptionConfig() if "AUDIO" in mods else None
     return types.LiveConnectConfig(
-        response_modalities=["AUDIO"],
+        response_modalities=mods,
         input_audio_transcription=input_tr,
-        output_audio_transcription=types.AudioTranscriptionConfig(),
+        output_audio_transcription=out_tr,
         context_window_compression=types.ContextWindowCompressionConfig(
             trigger_tokens=0,
             sliding_window=types.SlidingWindow(target_tokens=0),
@@ -70,9 +76,10 @@ class SystemAudioLoop:
             http_options={"api_version": "v1beta"},
             api_key=api_key,
         )
-        self.config = build_config(src, dst)
         self.source_mic = source_mic
         self.output_speaker = output_speaker
+        modalities = ["TEXT"] if self.output_speaker is None else ["AUDIO"]
+        self.config = build_config(src, dst, modalities=modalities)
         self._emit = on_text or self._console_emit
         self.console_input = console_input
         self.session = None
@@ -89,7 +96,7 @@ class SystemAudioLoop:
         self._active_stream: str | None = None
         self.last_level: float = 0.0
         self._last_level_emit: float = 0.0
-
+        self._playback_until: float = 0.0
     def request_stop(self):
         """GUI'den thread-safe durdurma; worker zaten ölmüşse sessiz geç."""
         if hasattr(self, "_user_stop"):
@@ -143,6 +150,7 @@ class SystemAudioLoop:
         soundcard COM nesneleri thread'ler arası paylaşılamaz; her
         chunk'ta ayrı to_thread kullanmak erişim ihlaline yol açar.
         """
+        is_loopback = getattr(self.source_mic, "isloopback", False)
         with self.source_mic.recorder(
             samplerate=CAPTURE_RATE, channels=2, blocksize=CAPTURE_BLOCK
         ) as mic:
@@ -150,6 +158,9 @@ class SystemAudioLoop:
                 frame = mic.record(numframes=CAPTURE_BLOCK)
                 if frame is None or len(frame) == 0:
                     continue
+                if is_loopback and self.output_speaker is not None:
+                    if time.monotonic() < self._playback_until + 0.15:
+                        continue
                 arr = np.asarray(frame, dtype=np.float32)
                 pcm = to_16k_mono(arr)
                 if self._emit is not None and self._loop is not None:
@@ -172,7 +183,7 @@ class SystemAudioLoop:
                             pass
                 try:
                     self._loop.call_soon_threadsafe(
-                        self._post, {"data": pcm, "mime_type": "audio/pcm"}
+                        self._post, {"data": pcm, "mime_type": f"audio/pcm;rate={SEND_SAMPLE_RATE}"}
                     )
                 except RuntimeError:
                     break
@@ -182,10 +193,13 @@ class SystemAudioLoop:
         # çağrısı proses çıkışını asabilir. Daemon thread + done olayı
         # ile kapanış garanti altında.
         done = asyncio.Event()
+        err: list[BaseException] = []
 
         def _wrapper():
             try:
                 self._capture_thread()
+            except BaseException as e:
+                err.append(e)
             finally:
                 try:
                     self._loop.call_soon_threadsafe(done.set)
@@ -195,13 +209,16 @@ class SystemAudioLoop:
         threading.Thread(target=_wrapper, daemon=True).start()
         try:
             await done.wait()
+            if err and not self._cap_stop.is_set():
+                raise RuntimeError(f"Giriş ses aygıtı hatası (bağlantı koptu mu?): {err[0]}") from err[0]
+            if not self._cap_stop.is_set():
+                raise RuntimeError("Giriş ses aygıtı beklenmedik şekilde durdu.")
         finally:
             self._cap_stop.set()
             try:
-                await asyncio.shield(done.wait())
-            except asyncio.CancelledError:
+                await asyncio.wait_for(done.wait(), timeout=0.8)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
                 pass
-
     def _console_emit(self, msg):
         if not isinstance(msg, tuple):
             print(msg, end="", flush=True)
@@ -241,7 +258,17 @@ class SystemAudioLoop:
             async for response in turn:
                 if data := response.data:
                     if self.audio_in_queue is not None:
-                        self.audio_in_queue.put_nowait(data)
+                        try:
+                            self.audio_in_queue.put_nowait(data)
+                        except asyncio.QueueFull:
+                            try:
+                                self.audio_in_queue.get_nowait()
+                            except asyncio.QueueEmpty:
+                                pass
+                            try:
+                                self.audio_in_queue.put_nowait(data)
+                            except asyncio.QueueFull:
+                                pass
                     continue
                 content = getattr(response, "server_content", None)
                 if content is not None:
@@ -249,8 +276,11 @@ class SystemAudioLoop:
                     out_tr = getattr(content, "output_transcription", None)
                     if out_tr is not None:
                         self._handle_tr("trans", out_tr)
-                    elif response.text:
-                        self._handle_tr("trans", SimpleNamespace(text=response.text, finished=False))
+                    else:
+                        text = response.text or ""
+                        turn_done = bool(getattr(content, "turn_complete", False))
+                        if text or (turn_done and self._bufs["trans"]):
+                            self._handle_tr("trans", SimpleNamespace(text=text, finished=turn_done))
             # Çeviride turn_complete kuyruğu boşaltmaz: her cümle bir turn,
             # kuyruk silinince ses kesik kesik kalır.
 
@@ -270,7 +300,9 @@ class SystemAudioLoop:
                     pcm = self._play_q.get(timeout=0.05)
                 except queue.Empty:
                     if pending:
-                        sp.play(np.concatenate(pending))
+                        audio = np.concatenate(pending)
+                        self._playback_until = time.monotonic() + len(audio) / RECEIVE_SAMPLE_RATE
+                        sp.play(audio)
                         pending.clear()
                         pending_n = 0
                     started = False
@@ -289,18 +321,24 @@ class SystemAudioLoop:
                     pending.clear()
                     pending_n = 0
                     started = True
+                self._playback_until = time.monotonic() + len(audio) / RECEIVE_SAMPLE_RATE
                 sp.play(audio)
             if pending:
-                sp.play(np.concatenate(pending))
+                audio = np.concatenate(pending)
+                self._playback_until = time.monotonic() + len(audio) / RECEIVE_SAMPLE_RATE
+                sp.play(audio)
                 pending.clear()
 
     async def play(self):
         self._play_q = queue.Queue(maxsize=200)
         done = asyncio.Event()
+        err: list[BaseException] = []
 
         def _wrapper():
             try:
                 self._play_thread()
+            except BaseException as e:
+                err.append(e)
             finally:
                 try:
                     self._loop.call_soon_threadsafe(done.set)
@@ -308,9 +346,22 @@ class SystemAudioLoop:
                     pass
 
         threading.Thread(target=_wrapper, daemon=True).start()
+        done_task = asyncio.create_task(done.wait())
         try:
             while True:
-                bytestream = await self.audio_in_queue.get()
+                get_task = asyncio.create_task(self.audio_in_queue.get())
+                finished, _ = await asyncio.wait(
+                    [get_task, done_task],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if done_task in finished:
+                    get_task.cancel()
+                    if err and not self._play_stop.is_set():
+                        raise RuntimeError(f"Çıkış ses aygıtı hatası (bağlantı koptu mu?): {err[0]}") from err[0]
+                    if not self._play_stop.is_set():
+                        raise RuntimeError("Çıkış ses aygıtı beklenmedik şekilde durdu.")
+                    break
+                bytestream = get_task.result()
                 try:
                     self._play_q.put_nowait(bytestream)
                 except queue.Full:
@@ -321,12 +372,25 @@ class SystemAudioLoop:
                     self._play_q.put_nowait(bytestream)
         finally:
             self._play_stop.set()
+            if not done_task.done():
+                done_task.cancel()
             try:
                 self._play_q.put_nowait(None)
             except queue.Full:
+                try:
+                    self._play_q.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    self._play_q.put_nowait(None)
+                except queue.Full:
+                    pass
+            try:
+                await asyncio.wait_for(done.wait(), timeout=0.8)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
                 pass
-            await done.wait()
-
+            if err and not self._user_stop.is_set():
+                raise RuntimeError(f"Çıkış ses aygıtı hatası: {err[0]}") from err[0]
     async def run(self):
         async with (
             self.client.aio.live.connect(model=self.model, config=self.config) as session,
@@ -334,11 +398,13 @@ class SystemAudioLoop:
         ):
             self.session = session
             self._loop = asyncio.get_running_loop()
+            if self._emit is not None:
+                self._emit(("status", "Dinleniyor"))
             self._stop = asyncio.Event()
             self._cap_stop.clear()
             self._play_stop.clear()
             self.audio_in_queue = (
-                asyncio.Queue() if self.output_speaker is not None else None
+                asyncio.Queue(maxsize=200) if self.output_speaker is not None else None
             )
             self.out_queue = asyncio.Queue(maxsize=50)
             stopper = self.send_text() if self.console_input else self.watch_stop()

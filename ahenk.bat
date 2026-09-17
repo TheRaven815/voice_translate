@@ -4,7 +4,10 @@ title Ahenk
 cd /d "%~dp0"
 chcp 65001 >nul
 
-set "VPY=.venv\Scripts\python.exe"
+set "VPY="
+if exist ".venv\Scripts\python.exe" set "VPY=.venv\Scripts\python.exe"
+if not defined VPY if exist "venv\Scripts\python.exe" set "VPY=venv\Scripts\python.exe"
+if not defined VPY set "VPY=.venv\Scripts\python.exe"
 
 call :ensure_python
 if errorlevel 1 goto :fail
@@ -69,15 +72,26 @@ exit /b 1
 :ensure_python
 where py >nul 2>&1
 if not errorlevel 1 (
-  set "SYSPY=py -3"
-  exit /b 0
+  py -3.11 -c "import sys" >nul 2>&1
+  if not errorlevel 1 (
+    set "SYSPY=py -3.11"
+    exit /b 0
+  )
+  py -3 -c "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)" >nul 2>&1
+  if not errorlevel 1 (
+    set "SYSPY=py -3"
+    exit /b 0
+  )
 )
 where python >nul 2>&1
 if not errorlevel 1 (
-  set "SYSPY=python"
-  exit /b 0
+  python -c "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)" >nul 2>&1
+  if not errorlevel 1 (
+    set "SYSPY=python"
+    exit /b 0
+  )
 )
-echo  Python bulunamadi. https://www.python.org/downloads/
+echo  Python 3.11 veya uzeri bulunamadi. https://www.python.org/downloads/
 exit /b 1
 
 :ensure_venv

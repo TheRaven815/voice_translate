@@ -22,6 +22,7 @@ class App(tk.Tk):
     def __init__(self):
         prepare_app_id()
         cfg = load_config()
+        self._cfg = cfg
         self._theme = getattr(cfg, "theme", "dark") or "dark"
         C.apply_theme(self._theme)
         super().__init__()
@@ -33,6 +34,7 @@ class App(tk.Tk):
         self.log_queue: queue.Queue = queue.Queue()
         self.worker: threading.Thread | None = None
         self.loop_obj: SystemAudioLoop | None = None
+        self._stopping = threading.Event()
         self.inputs: list = []
         self.outputs: list = []
         self._about: tk.Toplevel | None = None
@@ -44,7 +46,7 @@ class App(tk.Tk):
         self.font_body = fonts["body"]
         self.font_log = fonts["log"]
         self._build()
-        self.refresh_devices()
+        self.refresh_devices(async_scan=True)
         dark_titlebar(self, dark=(self._theme != "light"))
         self.after(120, self._pump_log)
 
@@ -133,14 +135,14 @@ class App(tk.Tk):
             row=0, column=0, sticky="w"
         )
         self.in_var = tk.StringVar()
-        self.in_box = Select(self._fields_frame, textvariable=self.in_var, font=self.font_ui)
+        self.in_box = Select(self._fields_frame, textvariable=self.in_var, values=["[Sistem]"], font=self.font_ui)
         self.in_box.grid(row=1, column=0, sticky="ew", pady=(3, 10))
 
         tk.Label(self._fields_frame, text="Çıkış", font=self.font_ui, fg=C.muted, bg=C.rail).grid(
             row=2, column=0, sticky="w"
         )
         self.out_var = tk.StringVar()
-        self.out_box = Select(self._fields_frame, textvariable=self.out_var, font=self.font_ui)
+        self.out_box = Select(self._fields_frame, textvariable=self.out_var, values=[NONE_OUTPUT], font=self.font_ui)
         self.out_box.grid(row=3, column=0, sticky="ew", pady=(3, 0))
 
         self._rail_sep(rail, 4)
@@ -154,10 +156,9 @@ class App(tk.Tk):
         self._langs_frame.columnconfigure(0, weight=1)
         self._langs_frame.columnconfigure(2, weight=1)
 
-        cfg = load_config()
+        cfg = getattr(self, "_cfg", None) or load_config()
         src_val = cfg.src_lang if cfg.src_lang in source_names() else AUTO_SRC
         dst_val = cfg.dst_lang if cfg.dst_lang in LANGS else "Türkçe"
-
         self.src_var = tk.StringVar(value=src_val)
         self.src_box = Select(
             self._langs_frame, textvariable=self.src_var, values=source_names(), font=self.font_ui
@@ -325,10 +326,9 @@ class App(tk.Tk):
         w.bind("<Button-2>", lambda _e: "break")
 
     def _rail_sep(self, parent: tk.Frame, row: int) -> None:
-        tk.Frame(parent, bg=C.line, height=1, bd=0, highlightthickness=0).grid(
-            row=row, column=0, sticky="ew", padx=16, pady=(12, 0)
-        )
-
+        sep = tk.Frame(parent, bg=C.line, height=1, bd=0, highlightthickness=0)
+        sep.grid(row=row, column=0, sticky="ew", padx=16, pady=(12, 0))
+        self._rail_seps.append(sep)
     def _text_btn(self, parent, label: str, command, bg: str | None = None) -> tk.Label:
         color_bg = bg or (parent["bg"] if "bg" in parent.keys() else C.rail)
         w = tk.Label(parent, text=label, font=self.font_ui, fg=C.dim, bg=color_bg, cursor="hand2")
@@ -376,7 +376,7 @@ class App(tk.Tk):
 
     def _paint(self, btn: tk.Button, *, filled: bool, enabled: bool) -> None:
         if filled and enabled:
-            bg, fg, edge, hover = C.fill, C.fill_fg, C.fill, "#ffffff"
+            bg, fg, edge, hover = C.fill, C.fill_fg, C.fill, getattr(C, "fill_hover", "#ffffff")
         elif enabled:
             bg, fg, edge, hover = C.panel, C.text, C.line, C.hover
         else:
@@ -419,16 +419,23 @@ class App(tk.Tk):
         self.src_var.set(b)
         self.dst_var.set(a)
 
-    def refresh_devices(self, async_scan: bool = False):
+    def refresh_devices(self, async_scan: bool = True):
         stopping = self.worker is not None and self.worker.is_alive()
         if async_scan:
             def _scan():
                 try:
                     ins = all_inputs()
                     outs = all_outputs()
-                    self.after(0, lambda: self._apply_devices(ins, outs, stopping))
+                    try:
+                        self.after(0, lambda i=ins, o=outs, s=stopping: self._apply_devices(i, o, s) if self.winfo_exists() else None)
+                    except (tk.TclError, RuntimeError):
+                        pass
                 except Exception as e:
-                    self.after(0, lambda: self._append(f"[hata] Aygıt tarama hatası: {e}\n"))
+                    err_msg = str(e)
+                    try:
+                        self.after(0, lambda msg=err_msg: self._append(f"[hata] Aygıt tarama hatası: {msg}\n") if self.winfo_exists() else None)
+                    except (tk.TclError, RuntimeError):
+                        pass
             threading.Thread(target=_scan, daemon=True).start()
             return
 
@@ -444,20 +451,31 @@ class App(tk.Tk):
         ]
         self.out_box["values"] = [NONE_OUTPUT] + [s.name for s in outs]
         if not stopping:
-            cfg = load_config()
+            cfg = getattr(self, "_cfg", None) or load_config()
             if cfg.input_device and cfg.input_device in self.in_box["values"]:
                 self.in_var.set(cfg.input_device)
             else:
-                try:
-                    default_in = pick_loopback(None)
+                loops = [m for m in ins if getattr(m, "isloopback", False)]
+                default_in = None
+                if loops:
+                    try:
+                        default_sp = default_speaker()
+                        if default_sp is not None:
+                            for m in loops:
+                                if default_sp.name in m.name or m.name in default_sp.name:
+                                    default_in = m
+                                    break
+                    except Exception:
+                        pass
+                    if default_in is None:
+                        default_in = loops[0]
+                elif ins:
+                    default_in = ins[0]
+
+                if default_in is not None:
                     self.in_var.set(
-                        ("[Sistem] " if default_in.isloopback else "[Mikrofon] ") + default_in.name
+                        ("[Sistem] " if getattr(default_in, "isloopback", False) else "[Mikrofon] ") + default_in.name
                     )
-                except RuntimeError:
-                    if ins:
-                        self.in_var.set(
-                            ("[Sistem] " if ins[0].isloopback else "[Mikrofon] ") + ins[0].name
-                        )
             if cfg.output_device and cfg.output_device in self.out_box["values"]:
                 self.out_var.set(cfg.output_device)
             else:
@@ -523,6 +541,15 @@ class App(tk.Tk):
         self.meter.coords(self._meter_bar, 0, 0, w, 4)
 
     def _save_user_prefs(self):
+        if getattr(self, "_save_prefs_timer", None) is not None:
+            try:
+                self.after_cancel(self._save_prefs_timer)
+            except Exception:
+                pass
+        self._save_prefs_timer = self.after(400, self._do_save_user_prefs)
+
+    def _do_save_user_prefs(self):
+        self._save_prefs_timer = None
         try:
             save_preferences(
                 input_device=self.in_var.get(),
@@ -650,7 +677,18 @@ class App(tk.Tk):
         self.log.tag_configure("body", foreground=C.dim)
         self.log.tag_configure("info", foreground=C.muted)
         self.log.tag_configure("err", foreground=C.err)
-
+        dark_titlebar(self, dark=(C.current != "light"))
+        if self._overlay is not None and self._overlay.winfo_exists():
+            self._overlay.configure(bg=C.overlay_bg)
+            if hasattr(self, "_overlay_wrap") and self._overlay_wrap.winfo_exists():
+                self._overlay_wrap.configure(bg=C.overlay_bg, highlightbackground=C.line)
+            if hasattr(self, "overlay_label") and self.overlay_label.winfo_exists():
+                self.overlay_label.configure(bg=C.overlay_bg, fg=C.text)
+            if hasattr(self, "_overlay_close") and self._overlay_close.winfo_exists():
+                self._overlay_close.configure(bg=C.overlay_bg, fg=C.dim)
+        if self._about is not None and self._about.winfo_exists():
+            self._about.configure(bg=C.panel)
+            dark_titlebar(self._about, dark=(C.current != "light"))
     def _pump_log(self):
         try:
             while True:
@@ -677,8 +715,11 @@ class App(tk.Tk):
                             self._append(payload)
                         elif kind == "level":
                             self._update_meter(float(payload))
+                        elif kind == "status":
+                            status_text = payload
+                            color = msg[2] if len(msg) > 2 else C.live
+                            self._set_status(status_text, color)
                         continue
-                    self._append(str(msg))
                 except Exception as e:
                     self._append(f"[hata] Arayüz kuyruk hatası: {e}\n")
         except queue.Empty:
@@ -720,6 +761,7 @@ class App(tk.Tk):
         src, dst = source_code(self.src_var.get()), LANGS[self.dst_var.get()]
         self._clear_pane(self.heard)
         self._clear_pane(self.trans)
+        self._stopping.clear()
         self._loop_kwargs = {
             "src": src,
             "dst": dst,
@@ -736,45 +778,46 @@ class App(tk.Tk):
         self.worker = threading.Thread(target=self._run, daemon=True)
         self.worker.start()
         self._set_running(True)
-        self._set_status("Çalışıyor", C.live)
+        self._set_status("Bağlanıyor", C.warn)
 
     def _run(self):
         retries = 0
         max_retries = 3
-        while self.loop_obj and not getattr(self.loop_obj, "_user_stop", threading.Event()).is_set():
+        while not self._stopping.is_set():
             try:
                 asyncio.run(self.loop_obj.run())
                 break
             except asyncio.CancelledError:
                 break
             except BaseException as e:
-                user_stop = getattr(self.loop_obj, "_user_stop", None)
-                if user_stop and user_stop.is_set():
+                if self._stopping.is_set():
                     break
-                retries += 1
                 root_err = e
                 if hasattr(e, "exceptions") and getattr(e, "exceptions"):
                     root_err = getattr(e, "exceptions")[0]
+                if isinstance(root_err, asyncio.CancelledError):
+                    break
+                retries += 1
                 self.log_queue.put(f"\n[hata] {type(root_err).__name__}: {root_err}\n")
                 if retries <= max_retries:
+                    self.log_queue.put(("status", f"Yeniden bağlanılıyor ({retries}/{max_retries})", C.warn))
                     self.log_queue.put(f"[bilgi] Yeniden bağlanılıyor ({retries}/{max_retries})...\n")
-                    if user_stop:
-                        user_stop.wait(2)
-                    else:
-                        time.sleep(2)
-                    if hasattr(self, "_loop_kwargs"):
+                    if self._stopping.wait(2) or self._stopping.is_set():
+                        break
+                    if hasattr(self, "_loop_kwargs") and not self._stopping.is_set():
                         self.loop_obj = SystemAudioLoop(**self._loop_kwargs)
                 else:
+                    self.log_queue.put(("status", "Hata", C.err))
                     self.log_queue.put("[hata] Bağlantı kurulamadı.\n")
                     break
         self.log_queue.put("__stopped__")
 
     def stop(self):
+        self._stopping.set()
         if self.loop_obj is not None:
             self.loop_obj.request_stop()
             self._set_status("Durduruluyor", C.warn)
             self._paint(self.stop_btn, filled=False, enabled=False)
-
     def _open_about(self) -> None:
         if self._about is not None and self._about.winfo_exists():
             self._about.deiconify()
@@ -788,7 +831,7 @@ class App(tk.Tk):
         pop.resizable(False, False)
         pop.transient(self)
         apply_icon(pop)
-        dark_titlebar(pop)
+        dark_titlebar(pop, dark=(self._theme != "light"))
         pop.protocol("WM_DELETE_WINDOW", self._close_about)
         for key in ("<Escape>", "<Return>", "<KP_Enter>", "<space>"):
             pop.bind(key, lambda _e: self._close_about())
@@ -942,9 +985,11 @@ class App(tk.Tk):
 
         wrap = tk.Frame(pop, bg=C.overlay_bg, highlightthickness=1, highlightbackground=C.line, bd=0)
         wrap.pack(fill=tk.BOTH, expand=True)
+        self._overlay_wrap = wrap
 
         close_btn = tk.Label(wrap, text="✕", font=self.font_ui, fg=C.dim, bg=C.overlay_bg, cursor="hand2")
         close_btn.pack(side=tk.RIGHT, padx=8, pady=4, anchor="ne")
+        self._overlay_close = close_btn
         close_btn.bind("<Button-1>", lambda _e: self.toggle_overlay())
         close_btn.bind("<Enter>", lambda _e: close_btn.configure(fg=C.text))
         close_btn.bind("<Leave>", lambda _e: close_btn.configure(fg=C.dim))
@@ -956,7 +1001,7 @@ class App(tk.Tk):
             wrap,
             text=cur_text,
             font=(self.font_brand[0], 12, "bold"),
-            fg="#ffffff",
+            fg=C.text,
             bg=C.overlay_bg,
             wraplength=520,
             justify=tk.CENTER,
@@ -964,7 +1009,6 @@ class App(tk.Tk):
             pady=10,
         )
         self.overlay_label.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
         for w in (pop, wrap, self.overlay_label):
             w.bind("<ButtonPress-1>", start_move)
             w.bind("<B1-Motion>", do_move)
@@ -984,10 +1028,16 @@ class App(tk.Tk):
             self._overlay = None
         for box in (self.in_box, self.out_box, self.src_box, self.dst_box):
             box._close()
+        if getattr(self, "_save_prefs_timer", None) is not None:
+            try:
+                self.after_cancel(self._save_prefs_timer)
+            except Exception:
+                pass
+            self._do_save_user_prefs()
         if self.worker is not None and self.worker.is_alive():
             try:
                 self.withdraw()
             except tk.TclError:
                 pass
-            self.worker.join(timeout=0.3)
+            self.worker.join(timeout=1.0)
         self.destroy()

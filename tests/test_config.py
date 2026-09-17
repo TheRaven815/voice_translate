@@ -71,6 +71,17 @@ def test_legacy_unencrypted_key_load(tmp_path, monkeypatch):
     assert config.load().api_key == "AIzaSyLegacyKey"
 
 
+def test_legacy_xor_key_load(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    import base64
+    plain = "AIzaSyLegacySecretKey"
+    data = plain.encode("utf-8")
+    sec = config._SECRET_KEY
+    xor_b64 = base64.b64encode(bytes(b ^ sec[i % len(sec)] for i, b in enumerate(data))).decode("ascii")
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"api_key": xor_b64}), encoding="utf-8")
+    assert config.load().api_key == plain
+
 def test_save_preferences(tmp_path, monkeypatch):
     _isolate(tmp_path, monkeypatch)
     config.save_preferences(

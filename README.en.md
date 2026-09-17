@@ -4,7 +4,7 @@
 
 Live-translates whatever is playing on the PC (system loopback) or the microphone via [Gemini Live Translate](https://ai.google.dev/). You get both text and speech; text-only is available.
 
-Version **0.1.0**. Author: Enes Eliağır. Windows-first (WASAPI loopback). Python **3.10+**.
+Version **0.1.0**. Author: Enes Eliağır. Windows-first (WASAPI loopback). Python **3.11+**.
 
 Turkish is the source README ([README.md](README.md)). This file is the English option.
 
@@ -73,7 +73,7 @@ Speaker (~80 ms preroll)          Heard / Translation panes
 | | |
 | --- | --- |
 | OS | Windows 10/11 (loopback). Mic path may work elsewhere; the launcher is `.bat`. |
-| Python | 3.10+ (`py -3` or `python`) |
+| Python | 3.11+ (`py -3` or `python`) |
 | Network | Gemini API |
 | Key | [Google AI Studio](https://aistudio.google.com/apikey) |
 | Audio | WASAPI loopback of a speaker (usually the `[Sistem]` entry for the default device) |
@@ -130,6 +130,8 @@ python3 -m venv .venv
 **Altyazı:** small, always on top, drag, ✕ to close. Shows the last translation line.
 
 First launch (no saved prefs): default loopback in, default speaker out, source Auto, target Turkish.
+
+> **Tip (Echo Prevention):** When capturing system audio (loopback), routing translation playback to a separate device (such as headphones) or selecting "None" (text-only) produces the cleanest audio. If using the same speaker, Ahenk automatically ducks loopback capture while playing translation audio to avoid echo loops.
 
 ## CLI
 
@@ -205,7 +207,7 @@ Not in git. Tests override the path with `VOICE_TRANSLATE_CONFIG`.
 | Windows | `%APPDATA%\Ahenk\config.json` |
 | Linux / macOS | `$XDG_CONFIG_HOME/Ahenk/config.json` or `~/.config/Ahenk/config.json` |
 
-Mode `0600` on Unix. Fields: `api_key`, `input_device`, `output_device`, `src_lang`, `dst_lang`. Unknown fields are kept.
+On Windows, the API key is encrypted using Windows DPAPI (`CryptProtectData`, user-tied local OS encryption); on Unix, the file is saved with `0600` permissions. Fields: `api_key`, `input_device`, `output_device`, `src_lang`, `dst_lang`. Unknown fields are kept.
 
 ## Privacy and security
 

@@ -15,29 +15,94 @@ from pathlib import Path
 APP_NAME = "Ahenk"
 LEGACY_APP_NAME = "voice_translate"
 
-# Basitce acikta okunmayi onlemek icin gomulu anahtar
+# Geriye donuk uyumluluk (eski XOR anahtarlari cozebilmek icin)
 _SECRET_KEY = b"Ahenk_Gemini_Secret_Key_v1"
+
+if os.name == "nt":
+    import ctypes
+    from ctypes import wintypes
+
+    class _DATA_BLOB(ctypes.Structure):
+        _fields_ = [
+            ("cbData", wintypes.DWORD),
+            ("pbData", ctypes.POINTER(ctypes.c_byte)),
+        ]
+
+    _CryptProtectData = ctypes.windll.crypt32.CryptProtectData
+    _CryptProtectData.argtypes = [
+        ctypes.POINTER(_DATA_BLOB),
+        wintypes.LPCWSTR,
+        ctypes.POINTER(_DATA_BLOB),
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(_DATA_BLOB),
+    ]
+    _CryptProtectData.restype = wintypes.BOOL
+
+    _CryptUnprotectData = ctypes.windll.crypt32.CryptUnprotectData
+    _CryptUnprotectData.argtypes = [
+        ctypes.POINTER(_DATA_BLOB),
+        ctypes.POINTER(wintypes.LPWSTR),
+        ctypes.POINTER(_DATA_BLOB),
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(_DATA_BLOB),
+    ]
+    _CryptUnprotectData.restype = wintypes.BOOL
+
+    def _dpapi_protect(data: bytes) -> bytes:
+        in_blob = _DATA_BLOB(len(data), ctypes.cast(ctypes.create_string_buffer(data), ctypes.POINTER(ctypes.c_byte)))
+        out_blob = _DATA_BLOB()
+        if not _CryptProtectData(ctypes.byref(in_blob), "AhenkKey", None, None, None, 0, ctypes.byref(out_blob)):
+            raise ctypes.WinError()
+        try:
+            return ctypes.string_at(out_blob.pbData, out_blob.cbData)
+        finally:
+            ctypes.windll.kernel32.LocalFree(out_blob.pbData)
+
+    def _dpapi_unprotect(cipher: bytes) -> bytes:
+        in_blob = _DATA_BLOB(len(cipher), ctypes.cast(ctypes.create_string_buffer(cipher), ctypes.POINTER(ctypes.c_byte)))
+        out_blob = _DATA_BLOB()
+        if not _CryptUnprotectData(ctypes.byref(in_blob), None, None, None, None, 0, ctypes.byref(out_blob)):
+            raise ctypes.WinError()
+        try:
+            return ctypes.string_at(out_blob.pbData, out_blob.cbData)
+        finally:
+            ctypes.windll.kernel32.LocalFree(out_blob.pbData)
 
 
 def _encrypt_key(plain: str) -> str:
     if not plain:
         return ""
-    data = plain.encode("utf-8")
-    xor_bytes = bytes(b ^ _SECRET_KEY[i % len(_SECRET_KEY)] for i, b in enumerate(data))
-    return base64.b64encode(xor_bytes).decode("ascii")
+    if os.name == "nt":
+        try:
+            enc = _dpapi_protect(plain.encode("utf-8"))
+            return "dpapi:" + base64.b64encode(enc).decode("ascii")
+        except Exception:
+            pass
+    # Windows harici veya DPAPI basarisiz ise duz metin (0600 izni ile)
+    return plain
 
 
-def _decrypt_key(cipher: str) -> str:
-    if not cipher:
+def _decrypt_key(stored: str) -> str:
+    if not stored:
         return ""
-    if cipher.startswith("AIza"):
-        return cipher
+    if stored.startswith("dpapi:") and os.name == "nt":
+        try:
+            raw = base64.b64decode(stored[6:].encode("ascii"), validate=True)
+            return _dpapi_unprotect(raw).decode("utf-8")
+        except Exception:
+            return ""
+    if stored.startswith("AIza"):
+        return stored
+    # Eski XOR sifreli kayitlar icin geriye donuk cozumleme
     try:
-        data = base64.b64decode(cipher.encode("ascii"), validate=True)
+        data = base64.b64decode(stored.encode("ascii"), validate=True)
         return bytes(b ^ _SECRET_KEY[i % len(_SECRET_KEY)] for i, b in enumerate(data)).decode("utf-8")
     except Exception:
-        return cipher
-
+        return stored
 
 @dataclass
 class Settings:

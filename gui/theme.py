@@ -32,6 +32,7 @@ DARK = {
     "hover": "#222222",
     "fill": "#ececec",
     "fill_fg": "#111111",
+    "fill_hover": "#ffffff",
     "live": "#7aaf6a",
     "warn": "#c4a35a",
     "err": "#c97878",
@@ -51,6 +52,7 @@ LIGHT = {
     "hover": "#dfe4ea",
     "fill": "#1f2328",
     "fill_fg": "#ffffff",
+    "fill_hover": "#32383f",
     "live": "#2da44e",
     "warn": "#9a6700",
     "err": "#cf222e",
@@ -72,6 +74,7 @@ class C:
     hover = DARK["hover"]
     fill = DARK["fill"]
     fill_fg = DARK["fill_fg"]
+    fill_hover = DARK["fill_hover"]
     live = DARK["live"]
     warn = DARK["warn"]
     err = DARK["err"]

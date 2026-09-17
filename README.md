@@ -4,7 +4,7 @@
 
 PC’de çalan sesi (sistem hoparlörü / loopback) veya mikrofonu [Gemini Live Translate](https://ai.google.dev/) ile canlı çevirir. Çeviri hem metin hem ses olarak gelir; metin-only mod da vardır.
 
-Sürüm **0.1.0**. Yazar: Enes Eliağır. Windows odaklı (WASAPI loopback). Python **3.10+**.
+Sürüm **0.1.0**. Yazar: Enes Eliağır. Windows odaklı (WASAPI loopback). Python **3.11+**.
 
 ## İçindekiler
 
@@ -71,7 +71,7 @@ Hoparlör (≈80 ms ön tampon)     Duyulan / Çeviri panelleri
 | | |
 | --- | --- |
 | OS | Windows 10/11 (loopback). Mikrofon yolu başka OS’ta da denenebilir; başlatıcı `.bat`. |
-| Python | 3.10+ (`py -3` veya `python`) |
+| Python | 3.11+ (`py -3` veya `python`) |
 | Ağ | Gemini API |
 | Anahtar | [Google AI Studio](https://aistudio.google.com/apikey) |
 | Ses | WASAPI loopback hoparlör (çoğu PC’de varsayılan cihazın `[Sistem]` kaydı) |
@@ -128,6 +128,8 @@ python3 -m venv .venv
 **Altyazı:** küçük, `always on top`, sürükle, ✕ ile kapat. Son çeviri satırını gösterir.
 
 İlk açılışta giriş varsayılan loopback, çıkış varsayılan hoparlör, kaynak Otomatik, hedef Türkçe (kayıt yoksa).
+
+> **İpucu (Yankı Önleme):** Sistem sesi (loopback) dinlerken çeviri çıkışını kulaklık gibi farklı bir aygıta yönlendirmek veya "Hiçbiri" (yalnızca metin) seçmek en temiz sonucu verir. Aynı hoparlör kullanıldığında Ahenk, çeviri çalarken loopback yakalamasını otomatik bastırarak yankı döngüsünü engeller.
 
 ## Konsol
 
@@ -203,7 +205,7 @@ Git’e düşmez. Testte `VOICE_TRANSLATE_CONFIG` ile yol değiştirilir.
 | Windows | `%APPDATA%\Ahenk\config.json` |
 | Linux / macOS | `$XDG_CONFIG_HOME/Ahenk/config.json` veya `~/.config/Ahenk/config.json` |
 
-Unix’te dosya `0600`. Alanlar: `api_key`, `input_device`, `output_device`, `src_lang`, `dst_lang`. Bilinmeyen alanlar korunur.
+Windows’ta API anahtarı Windows DPAPI (`CryptProtectData`, kullanıcı oturumuna bağlı yerel şifreleme) ile şifrelenir; Unix’te dosya `0600` izinleriyle saklanır. Alanlar: `api_key`, `input_device`, `output_device`, `src_lang`, `dst_lang`. Bilinmeyen alanlar korunur.
 
 ## Gizlilik ve güvenlik
 
