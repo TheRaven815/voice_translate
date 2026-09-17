@@ -258,9 +258,9 @@ class App(tk.Tk):
             bg=C.bg,
             fg=C.dim,
             insertbackground=C.dim,
-            selectbackground="#2c2c2c",
+            selectbackground=C.select,
             selectforeground=C.muted,
-            inactiveselectbackground="#2c2c2c",
+            inactiveselectbackground=C.select,
             relief="flat",
             bd=0,
             highlightthickness=0,
@@ -283,9 +283,9 @@ class App(tk.Tk):
             bg=C.bg,
             fg=C.text,
             insertbackground=C.text,
-            selectbackground="#2c2c2c",
+            selectbackground=C.select,
             selectforeground=C.text,
-            inactiveselectbackground="#2c2c2c",
+            inactiveselectbackground=C.select,
             relief="flat",
             bd=0,
             highlightthickness=0,
@@ -367,7 +367,7 @@ class App(tk.Tk):
         elif enabled:
             bg, fg, edge, hover = C.panel, C.text, C.line, C.hover
         else:
-            bg, fg, edge, hover = "#1a1a1a", C.dim, C.line, "#1a1a1a"
+            bg, fg, edge, hover = C.disabled_bg, C.dim, C.line, C.disabled_bg
         btn._rest_bg = bg
         btn._hover_bg = hover
         btn.configure(
@@ -797,7 +797,7 @@ class App(tk.Tk):
             pop.attributes("-topmost", True)
         except tk.TclError:
             pass
-        pop.configure(bg="#0c0c0c")
+        pop.configure(bg=C.overlay_bg)
         self.overlay_btn.configure(fg=C.live)
 
         def start_move(e):
@@ -809,10 +809,10 @@ class App(tk.Tk):
             y = e.y_root - pop._drag_y
             pop.geometry(f"+{x}+{y}")
 
-        wrap = tk.Frame(pop, bg="#0c0c0c", highlightthickness=1, highlightbackground=C.line, bd=0)
+        wrap = tk.Frame(pop, bg=C.overlay_bg, highlightthickness=1, highlightbackground=C.line, bd=0)
         wrap.pack(fill=tk.BOTH, expand=True)
 
-        close_btn = tk.Label(wrap, text="✕", font=self.font_ui, fg=C.dim, bg="#0c0c0c", cursor="hand2")
+        close_btn = tk.Label(wrap, text="✕", font=self.font_ui, fg=C.dim, bg=C.overlay_bg, cursor="hand2")
         close_btn.pack(side=tk.RIGHT, padx=8, pady=4, anchor="ne")
         close_btn.bind("<Button-1>", lambda _e: self.toggle_overlay())
         close_btn.bind("<Enter>", lambda _e: close_btn.configure(fg=C.text))
@@ -826,7 +826,7 @@ class App(tk.Tk):
             text=cur_text,
             font=(self.font_brand[0], 12, "bold"),
             fg="#ffffff",
-            bg="#0c0c0c",
+            bg=C.overlay_bg,
             wraplength=520,
             justify=tk.CENTER,
             padx=16,
@@ -853,4 +853,10 @@ class App(tk.Tk):
             self._overlay = None
         for box in (self.in_box, self.out_box, self.src_box, self.dst_box):
             box._close()
+        if self.worker is not None and self.worker.is_alive():
+            try:
+                self.withdraw()
+            except tk.TclError:
+                pass
+            self.worker.join(timeout=0.3)
         self.destroy()

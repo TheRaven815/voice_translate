@@ -35,6 +35,9 @@ class C:
     live = "#7aaf6a"
     warn = "#c4a35a"
     err = "#c97878"
+    select = "#2c2c2c"
+    overlay_bg = "#0c0c0c"
+    disabled_bg = "#1a1a1a"
 
 
 def dark_titlebar(win: tk.Tk) -> None:

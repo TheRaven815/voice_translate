@@ -166,7 +166,7 @@ Bu liste, kod tabanının tamamı (çekirdek döngü, ses boru hattı, UI/UX, CL
   - *Sorun:* `MODEL = "models/gemini-3.5-live-translate-preview"` kod içine gömülü. Google model adını güncellediğinde kod değiştirilmeden program çalışmaz.
   - *Çözüm:* `os.environ.get("GEMINI_LIVE_MODEL")` ve `--model` CLI parametresi ile ezilebilir yap.
 
-- [ ] **[gui/app.py:804-812] Pencere kapatılırken iş parçacıkları kapanmadan Tcl yorumlayıcısının yok edilmesi**
+- [x] **[gui/app.py:804-812] Pencere kapatılırken iş parçacıkları kapanmadan Tcl yorumlayıcısının yok edilmesi**
   - *Sorun:* `_on_close` çağrıldığında `self.destroy()` hemen çalışıyor; arkada WASAPI okuyan iş parçacıkları kapanmakta olan nesnelere erişmeye çalışırken erişim ihlali oluşturabiliyor.
   - *Çözüm:* Önce pencereyi gizle (`withdraw`), worker iş parçacığının bitmesini kısa bir timeout (`0.3s`) ile bekle, ardından `destroy()` çağır.
 
@@ -194,7 +194,7 @@ Bu liste, kod tabanının tamamı (çekirdek döngü, ses boru hattı, UI/UX, CL
   - *Sorun:* `audio.py` içinde tanımlı fakat modül içinde hiçbir yerde kullanılmıyor, sadece `loop.py` dışarıdan import ediyor.
   - *Çözüm:* Sabiti mantıksal olarak doğru yere taşı veya modül içinde dokümante et.
 
-- [ ] **[gui/widgets.py:43-50] Asimetrik `Select.__getitem__` ve `__setitem__`**
+- [x] **[gui/widgets.py:43-50] Asimetrik `Select.__getitem__` ve `__setitem__`**
   - *Sorun:* `__getitem__` içinde `"state"` destekleniyor ancak `__setitem__` içine `"state"` yazıldığında `KeyError` patlıyor. Ayrıca `Select.configure(values=[...])` çağrısı `TclError` veriyor.
   - *Çözüm:* `__setitem__` ve `configure` metotlarında `"state"` ve `"values"` desteğini standart Tkinter arayüzüne tam uyumlu hale getir.
 
@@ -202,7 +202,7 @@ Bu liste, kod tabanının tamamı (çekirdek döngü, ses boru hattı, UI/UX, CL
   - *Sorun:* Linux/macOS kolunda hata alındığında aynı başarısız kod satırı `except` içinde bir kez daha çalıştırılıyor.
   - *Çözüm:* İç içe try-except bloklarını tekilleştir.
 
-- [ ] **[config.py:108-114, 124-144] Ayar kaydederken çift disk okuması ve gereksiz şifreleme**
+- [x] **[config.py:108-114, 124-144] Ayar kaydederken çift disk okuması ve gereksiz şifreleme**
   - *Sorun:* `save_api_key` önce `load()` ile diskten okuyup şifreyi çözüyor, sonra `save()` çağırarak diskten tekrar okuyup şifreyi yeniden kriptoluyor.
   - *Çözüm:* Ham ayar sözlüğünü doğrudan güncelleyerek çift disk I/O ve gereksiz şifreleme turunu kaldır.
 
@@ -214,7 +214,7 @@ Bu liste, kod tabanının tamamı (çekirdek döngü, ses boru hattı, UI/UX, CL
   - *Sorun:* `self.brand`, `self.version_lbl`, `self.info_btn`, `self.refresh_btn`, `self.about_name` gibi bileşenler `self` üzerine atanıyor fakat sınıf içinde bir daha asla okunmuyor.
   - *Çözüm:* Testlerin veya dinamik güncellemelerin ihtiyaç duymadığı statik etiketleri yerel değişkene dönüştür.
 
-- [ ] **[gui/app.py & gui/theme.py] Temadan bağımsız sabit renk kodları (Hardcoded Hex Colors)**
+- [x] **[gui/app.py & gui/theme.py] Temadan bağımsız sabit renk kodları (Hardcoded Hex Colors)**
   - *Sorun:* `app.py` içinde `"#1a1a1a"`, `"#2c2c2c"`, `"#0c0c0c"`, `"#ffffff"` gibi renkler `theme.C` yerine doğrudan yazılmış.
   - *Çözüm:* Bu renkleri `theme.C` paletine taşı (`C.select`, `C.overlay_bg`, `C.disabled_bg`).
 
@@ -244,10 +244,10 @@ Bu liste, kod tabanının tamamı (çekirdek döngü, ses boru hattı, UI/UX, CL
   - *Sorun:* CLI argümanları (`--src`, `--dst`, `--device`, `--list-devices`, `--api-key`), eksik anahtarda `sys.exit(1)` davranışı ve döngü parametreleri hiç test edilmiyor.
   - *Çözüm:* `tests/test_cli.py` dosyasını oluştur ve CLI bayraklarını, hata durumlarını test et.
 
-- [ ] **[tests/test_gui.py:284-307] Worker döngü testinin iş yapmadan sonlanması**
+- [x] **[tests/test_gui.py:284-307] Worker döngü testinin iş yapmadan sonlanması**
   - *Sorun:* `DummyLoop` içindeki `_user_stop` önceden `True` yapıldığı için `gui/app.py:529` döngüsüne hiç girilmiyor; hata ve retry mekanizması test edilmemiş kalıyor.
   - *Çözüm:* Mock loop'un en az 1 kez hata verip retry mekanizmasını tetiklemesini sağlayan senaryo ekle.
 
-- [ ] **[tests/test_live_translate.py:293] Testlerdeki yapay `time.sleep(4)` gecikmesi**
+- [x] **[tests/test_live_translate.py:293] Testlerdeki yapay `time.sleep(4)` gecikmesi**
   - *Sorun:* Testler gereksiz yere her çalıştırmada 4 saniye bekliyor.
   - *Çözüm:* `time.sleep` yerine `asyncio.Event` veya durum tabanlı bekleme kullan.

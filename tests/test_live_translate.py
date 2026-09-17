@@ -317,7 +317,9 @@ def test_duplex_with_real_devices_stays_alive():
         for _ in range(5):
             loop_obj._loop.call_soon_threadsafe(
                 loop_obj.audio_in_queue.put_nowait, tone.tobytes())
-        time.sleep(4)  # yakalama + oynatma birlikte çalışsın
+        deadline = time.time() + 4.0
+        while session.send_realtime_input.await_count == 0 and time.time() < deadline:
+            time.sleep(0.05)
         assert session.send_realtime_input.await_count > 0, "yakalama akmadı"
     finally:
         loop_obj.request_stop()

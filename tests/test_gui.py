@@ -341,3 +341,35 @@ def test_worker_run_stops_cleanly_without_attribute_error():
     finally:
         app.destroy()
 
+def test_worker_run_retries_on_error_and_logs(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+    app = App()
+    try:
+        attempts = 0
+
+        class FailingLoop:
+            def __init__(self, **_kwargs):
+                self._user_stop = __import__("threading").Event()
+
+            async def run(self):
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise RuntimeError("Transient network drop")
+                self._user_stop.set()
+
+        app.loop_obj = FailingLoop()
+        app._loop_kwargs = {}
+        monkeypatch.setattr("gui.app.SystemAudioLoop", FailingLoop)
+        app._run()
+
+        messages = []
+        while not app.log_queue.empty():
+            messages.append(app.log_queue.get_nowait())
+
+        assert attempts == 2
+        assert any("Yeniden bağlanılıyor (1/3)" in str(m) for m in messages)
+        assert "__stopped__" in messages
+    finally:
+        app.destroy()
+

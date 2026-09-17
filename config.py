@@ -115,9 +115,9 @@ def save(settings: Settings) -> Path:
     return _write_raw(raw)
 
 def save_api_key(key: str) -> Path:
-    settings = load()
-    settings.api_key = key.strip()
-    return save(settings)
+    raw = _read_raw()
+    raw["api_key"] = _encrypt_key(key.strip())
+    return _write_raw(raw)
 
 
 def save_preferences(
@@ -127,16 +127,16 @@ def save_preferences(
     src_lang: str | None = None,
     dst_lang: str | None = None,
 ) -> Path:
-    settings = load()
+    raw = _read_raw()
     if input_device is not None:
-        settings.input_device = input_device
+        raw["input_device"] = input_device
     if output_device is not None:
-        settings.output_device = output_device
+        raw["output_device"] = output_device
     if src_lang is not None:
-        settings.src_lang = src_lang
+        raw["src_lang"] = src_lang
     if dst_lang is not None:
-        settings.dst_lang = dst_lang
-    return save(settings)
+        raw["dst_lang"] = dst_lang
+    return _write_raw(raw)
 
 
 def load_dotenv() -> None:

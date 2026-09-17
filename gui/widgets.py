@@ -53,7 +53,10 @@ class Select(tk.Frame):
         if key == "values":
             self._values = list(value)
             return
-        raise KeyError(key)
+        if key == "state":
+            self.configure(state=value)
+            return
+        super().__setitem__(key, value)
 
     def __getitem__(self, key):
         if key == "state":
@@ -65,6 +68,8 @@ class Select(tk.Frame):
     def configure(self, cnf=None, **kw):  # noqa: A003
         if isinstance(cnf, dict):
             kw = {**cnf, **kw}
+        if "values" in kw:
+            self._values = list(kw.pop("values"))
         if "state" in kw:
             self._state = kw.pop("state")
             off = self._state == "disabled"
