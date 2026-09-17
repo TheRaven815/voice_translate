@@ -373,3 +373,31 @@ def test_worker_run_retries_on_error_and_logs(monkeypatch):
     finally:
         app.destroy()
 
+def test_theme_toggle_and_persistence(tmp_path, monkeypatch):
+    monkeypatch.setattr("config.load_dotenv", lambda: None)
+    cfg_file = tmp_path / "config.json"
+    monkeypatch.setenv("VOICE_TRANSLATE_CONFIG", str(cfg_file))
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+    app = App()
+    try:
+        assert C.current == "dark"
+        assert app.theme_btn.cget("text") == "☀️"
+        assert app.cget("bg") == "#111111"
+
+        app.toggle_theme()
+        assert C.current == "light"
+        assert app.theme_btn.cget("text") == "🌙"
+        assert app.cget("bg") == "#f5f6f8"
+
+        import config
+        assert config.load().theme == "light"
+
+        app.toggle_theme()
+        assert C.current == "dark"
+        assert app.theme_btn.cget("text") == "☀️"
+        assert app.cget("bg") == "#111111"
+        assert config.load().theme == "dark"
+    finally:
+        app.destroy()
+

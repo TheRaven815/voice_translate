@@ -83,6 +83,15 @@ class Select(tk.Frame):
         if kw:
             super().configure(**kw)
 
+    def update_theme(self) -> None:
+        super().configure(bg=C.line)
+        off = self._state == "disabled"
+        bg = C.rail if off else C.panel
+        fg = C.dim if off else C.text
+        self._inner.configure(bg=bg)
+        self._lbl.configure(bg=bg, fg=fg)
+        self._arr.configure(bg=bg, fg=C.dim)
+
     def _pick(self, val: str) -> None:
         self.var.set(val)
         self._close()

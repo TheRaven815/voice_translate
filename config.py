@@ -46,7 +46,7 @@ class Settings:
     output_device: str = ""
     src_lang: str = ""
     dst_lang: str = ""
-
+    theme: str = "dark"
 def config_dir() -> Path:
     if os.name == "nt":
         root = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
@@ -102,6 +102,7 @@ def load() -> Settings:
         output_device=str(raw.get("output_device") or ""),
         src_lang=str(raw.get("src_lang") or ""),
         dst_lang=str(raw.get("dst_lang") or ""),
+        theme=str(raw.get("theme") or "dark"),
     )
 
 
@@ -112,6 +113,7 @@ def save(settings: Settings) -> Path:
     raw["output_device"] = settings.output_device
     raw["src_lang"] = settings.src_lang
     raw["dst_lang"] = settings.dst_lang
+    raw["theme"] = settings.theme
     return _write_raw(raw)
 
 def save_api_key(key: str) -> Path:
@@ -126,6 +128,7 @@ def save_preferences(
     output_device: str | None = None,
     src_lang: str | None = None,
     dst_lang: str | None = None,
+    theme: str | None = None,
 ) -> Path:
     raw = _read_raw()
     if input_device is not None:
@@ -136,6 +139,8 @@ def save_preferences(
         raw["src_lang"] = src_lang
     if dst_lang is not None:
         raw["dst_lang"] = dst_lang
+    if theme is not None:
+        raw["theme"] = theme
     return _write_raw(raw)
 
 

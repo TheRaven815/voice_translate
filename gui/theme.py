@@ -21,26 +21,74 @@ ICON_PNG = _ASSETS / "ahenk.png"
 APP_ID = "eneseliagir.ahenk"
 
 
+DARK = {
+    "bg": "#111111",
+    "rail": "#141414",
+    "panel": "#171717",
+    "text": "#e8e8e8",
+    "muted": "#8d8d8d",
+    "dim": "#5c5c5c",
+    "line": "#2b2b2b",
+    "hover": "#222222",
+    "fill": "#ececec",
+    "fill_fg": "#111111",
+    "live": "#7aaf6a",
+    "warn": "#c4a35a",
+    "err": "#c97878",
+    "select": "#2c2c2c",
+    "overlay_bg": "#0c0c0c",
+    "disabled_bg": "#1a1a1a",
+}
+
+LIGHT = {
+    "bg": "#f5f6f8",
+    "rail": "#ebedf2",
+    "panel": "#ffffff",
+    "text": "#1a1d20",
+    "muted": "#57606a",
+    "dim": "#8c959f",
+    "line": "#d5dbe2",
+    "hover": "#dfe4ea",
+    "fill": "#1f2328",
+    "fill_fg": "#ffffff",
+    "live": "#2da44e",
+    "warn": "#9a6700",
+    "err": "#cf222e",
+    "select": "#d0d7de",
+    "overlay_bg": "#1f2328",
+    "disabled_bg": "#e9edf2",
+}
+
+
 class C:
-    bg = "#111111"
-    rail = "#141414"
-    panel = "#171717"
-    text = "#e8e8e8"
-    muted = "#8d8d8d"
-    dim = "#5c5c5c"
-    line = "#2b2b2b"
-    hover = "#222222"
-    fill = "#ececec"
-    fill_fg = "#111111"
-    live = "#7aaf6a"
-    warn = "#c4a35a"
-    err = "#c97878"
-    select = "#2c2c2c"
-    overlay_bg = "#0c0c0c"
-    disabled_bg = "#1a1a1a"
+    current = "dark"
+    bg = DARK["bg"]
+    rail = DARK["rail"]
+    panel = DARK["panel"]
+    text = DARK["text"]
+    muted = DARK["muted"]
+    dim = DARK["dim"]
+    line = DARK["line"]
+    hover = DARK["hover"]
+    fill = DARK["fill"]
+    fill_fg = DARK["fill_fg"]
+    live = DARK["live"]
+    warn = DARK["warn"]
+    err = DARK["err"]
+    select = DARK["select"]
+    overlay_bg = DARK["overlay_bg"]
+    disabled_bg = DARK["disabled_bg"]
+
+    @classmethod
+    def apply_theme(cls, name: str = "dark"):
+        theme_name = "light" if name == "light" else "dark"
+        cls.current = theme_name
+        palette = LIGHT if theme_name == "light" else DARK
+        for k, v in palette.items():
+            setattr(cls, k, v)
 
 
-def dark_titlebar(win: tk.Tk) -> None:
+def dark_titlebar(win: tk.Tk, dark: bool = True) -> None:
     if os.name != "nt":
         return
     try:
@@ -50,7 +98,7 @@ def dark_titlebar(win: tk.Tk) -> None:
         hwnd = ctypes.windll.user32.GetParent(win.winfo_id())
         if not hwnd:
             hwnd = win.winfo_id()
-        val = ctypes.c_int(1)
+        val = ctypes.c_int(1 if dark else 0)
         dwm = ctypes.windll.dwmapi.DwmSetWindowAttribute
         for attr in (20, 19):
             dwm(hwnd, attr, ctypes.byref(val), ctypes.sizeof(val))

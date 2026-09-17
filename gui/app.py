@@ -21,6 +21,9 @@ from .widgets import Select
 class App(tk.Tk):
     def __init__(self):
         prepare_app_id()
+        cfg = load_config()
+        self._theme = getattr(cfg, "theme", "dark") or "dark"
+        C.apply_theme(self._theme)
         super().__init__()
         self.title(APP_TITLE)
         apply_icon(self)
@@ -34,6 +37,7 @@ class App(tk.Tk):
         self.outputs: list = []
         self._about: tk.Toplevel | None = None
         self._overlay: tk.Toplevel | None = None
+        self._rail_seps: list[tk.Frame] = []
         fonts = pick_fonts(self)
         self.font_ui = fonts["ui"]
         self.font_brand = fonts["brand"]
@@ -41,109 +45,114 @@ class App(tk.Tk):
         self.font_log = fonts["log"]
         self._build()
         self.refresh_devices()
-        dark_titlebar(self)
+        dark_titlebar(self, dark=(self._theme != "light"))
         self.after(120, self._pump_log)
 
     def _build(self):
         self.columnconfigure(2, weight=1)
         self.rowconfigure(0, weight=1)
 
-        rail = tk.Frame(self, bg=C.rail, width=280, bd=0, highlightthickness=0)
-        rail.grid(row=0, column=0, sticky="nsw")
-        rail.grid_propagate(False)
-        rail.columnconfigure(0, weight=1)
-        rail.rowconfigure(8, weight=1)
+        self.rail = tk.Frame(self, bg=C.rail, width=280, bd=0, highlightthickness=0)
+        self.rail.grid(row=0, column=0, sticky="nsw")
+        self.rail.grid_propagate(False)
+        self.rail.columnconfigure(0, weight=1)
+        self.rail.rowconfigure(8, weight=1)
 
-        tk.Frame(self, bg=C.line, width=1, bd=0, highlightthickness=0).grid(
-            row=0, column=1, sticky="ns"
-        )
+        self._v_sep = tk.Frame(self, bg=C.line, width=1, bd=0, highlightthickness=0)
+        self._v_sep.grid(row=0, column=1, sticky="ns")
 
-        main = tk.Frame(self, bg=C.bg, bd=0, highlightthickness=0)
-        main.grid(row=0, column=2, sticky="nsew")
-        main.columnconfigure(0, weight=1)
-        main.columnconfigure(1, weight=1)
-        main.rowconfigure(1, weight=1)
+        self.main = tk.Frame(self, bg=C.bg, bd=0, highlightthickness=0)
+        self.main.grid(row=0, column=2, sticky="nsew")
+        self.main.columnconfigure(0, weight=1)
+        self.main.columnconfigure(1, weight=1)
+        self.main.rowconfigure(1, weight=1)
 
-        self._build_rail(rail)
-        self._build_main(main)
+        self._build_rail(self.rail)
+        self._build_main(self.main)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.bind("<Control-Return>", lambda _e: self._toggle_start_stop())
         self.bind("<F5>", lambda _e: self._toggle_start_stop())
         self.bind("<Control-o>", lambda _e: self.toggle_overlay())
         self.bind("<Control-O>", lambda _e: self.toggle_overlay())
         self.bind("<F2>", lambda _e: self.toggle_overlay())
-
+        self.bind("<Control-t>", lambda _e: self.toggle_theme())
+        self.bind("<Control-T>", lambda _e: self.toggle_theme())
+        self.bind("<F6>", lambda _e: self.toggle_theme())
     def _build_rail(self, rail: tk.Frame):
-        head = tk.Frame(rail, bg=C.rail)
-        head.grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 12))
+        self._rail_head = tk.Frame(rail, bg=C.rail)
+        self._rail_head.grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 12))
 
-        title = tk.Frame(head, bg=C.rail)
-        title.pack(fill=tk.X)
+        self._rail_title = tk.Frame(self._rail_head, bg=C.rail)
+        self._rail_title.pack(fill=tk.X)
         self.brand = tk.Label(
-            title, text=APP_TITLE, font=self.font_brand, fg=C.text, bg=C.rail
+            self._rail_title, text=APP_TITLE, font=self.font_brand, fg=C.text, bg=C.rail
         )
         self.brand.pack(side=tk.LEFT)
         self.version_lbl = tk.Label(
-            title, text=f"v{__version__}", font=self.font_ui, fg=C.dim, bg=C.rail
+            self._rail_title, text=f"v{__version__}", font=self.font_ui, fg=C.dim, bg=C.rail
         )
         self.version_lbl.pack(side=tk.LEFT, padx=(8, 0))
-        self.info_btn = self._text_btn(title, "ⓘ", self._open_about)
+        self.info_btn = self._text_btn(self._rail_title, "ⓘ", self._open_about)
         self.info_btn.pack(side=tk.RIGHT)
-        self.overlay_btn = self._text_btn(title, "Altyazı", self.toggle_overlay)
-        self.overlay_btn.pack(side=tk.RIGHT, padx=(0, 8))
+        self.theme_btn = self._text_btn(
+            self._rail_title, "☀️" if C.current == "dark" else "🌙", self.toggle_theme
+        )
+        self.theme_btn.pack(side=tk.RIGHT, padx=(0, 6))
+        self.overlay_btn = self._text_btn(self._rail_title, "Altyazı", self.toggle_overlay)
+        self.overlay_btn.pack(side=tk.RIGHT, padx=(0, 6))
 
-        st = tk.Frame(head, bg=C.rail)
-        st.pack(anchor="w", pady=(6, 0), fill=tk.X)
-        self._dot = tk.Canvas(st, width=8, height=8, bg=C.rail, highlightthickness=0, bd=0)
+        self._rail_st = tk.Frame(self._rail_head, bg=C.rail)
+        self._rail_st.pack(anchor="w", pady=(6, 0), fill=tk.X)
+        self._dot = tk.Canvas(self._rail_st, width=8, height=8, bg=C.rail, highlightthickness=0, bd=0)
         self._dot.pack(side=tk.LEFT, pady=1)
         self._dot_id = self._dot.create_oval(1, 1, 7, 7, fill=C.dim, outline="")
-        self.status = tk.Label(st, text="Hazır", font=self.font_ui, fg=C.muted, bg=C.rail)
+        self.status = tk.Label(self._rail_st, text="Hazır", font=self.font_ui, fg=C.muted, bg=C.rail)
         self.status.pack(side=tk.LEFT, padx=(6, 0))
-        self.meter = tk.Canvas(st, width=36, height=4, bg=C.line, highlightthickness=0, bd=0)
+        self.meter = tk.Canvas(self._rail_st, width=36, height=4, bg=C.line, highlightthickness=0, bd=0)
         self.meter.pack(side=tk.RIGHT, padx=(0, 2), pady=3)
         self._meter_bar = self.meter.create_rectangle(0, 0, 0, 4, fill=C.live, outline="")
 
         self._rail_sep(rail, 1)
 
-        devices = tk.Frame(rail, bg=C.rail)
-        devices.grid(row=2, column=0, sticky="ew", padx=16, pady=(12, 0))
-        devices.columnconfigure(0, weight=1)
-        tk.Label(devices, text="Aygıt", font=self.font_ui, fg=C.muted, bg=C.rail).grid(
+        self._devices_frame = tk.Frame(rail, bg=C.rail)
+        self._devices_frame.grid(row=2, column=0, sticky="ew", padx=16, pady=(12, 0))
+        self._devices_frame.columnconfigure(0, weight=1)
+        tk.Label(self._devices_frame, text="Aygıt", font=self.font_ui, fg=C.muted, bg=C.rail).grid(
             row=0, column=0, sticky="w"
         )
         self.refresh_btn = self._text_btn(
-            devices, "Yenile", lambda: self.refresh_devices(async_scan=True)
+            self._devices_frame, "Yenile", lambda: self.refresh_devices(async_scan=True)
         )
         self.refresh_btn.grid(row=0, column=1, sticky="e")
 
-        fields = tk.Frame(rail, bg=C.rail)
-        fields.grid(row=3, column=0, sticky="ew", padx=16, pady=(8, 0))
-        fields.columnconfigure(0, weight=1)
+        self._fields_frame = tk.Frame(rail, bg=C.rail)
+        self._fields_frame.grid(row=3, column=0, sticky="ew", padx=16, pady=(8, 0))
+        self._fields_frame.columnconfigure(0, weight=1)
 
-        tk.Label(fields, text="Giriş", font=self.font_ui, fg=C.muted, bg=C.rail).grid(
+        tk.Label(self._fields_frame, text="Giriş", font=self.font_ui, fg=C.muted, bg=C.rail).grid(
             row=0, column=0, sticky="w"
         )
         self.in_var = tk.StringVar()
-        self.in_box = Select(fields, textvariable=self.in_var, font=self.font_ui)
+        self.in_box = Select(self._fields_frame, textvariable=self.in_var, font=self.font_ui)
         self.in_box.grid(row=1, column=0, sticky="ew", pady=(3, 10))
 
-        tk.Label(fields, text="Çıkış", font=self.font_ui, fg=C.muted, bg=C.rail).grid(
+        tk.Label(self._fields_frame, text="Çıkış", font=self.font_ui, fg=C.muted, bg=C.rail).grid(
             row=2, column=0, sticky="w"
         )
         self.out_var = tk.StringVar()
-        self.out_box = Select(fields, textvariable=self.out_var, font=self.font_ui)
+        self.out_box = Select(self._fields_frame, textvariable=self.out_var, font=self.font_ui)
         self.out_box.grid(row=3, column=0, sticky="ew", pady=(3, 0))
 
         self._rail_sep(rail, 4)
 
-        lang_h = tk.Frame(rail, bg=C.rail)
-        lang_h.grid(row=5, column=0, sticky="ew", padx=16, pady=(12, 0))
-        tk.Label(lang_h, text="Dil", font=self.font_ui, fg=C.muted, bg=C.rail).pack(side=tk.LEFT)
+        self._lang_h = tk.Frame(rail, bg=C.rail)
+        self._lang_h.grid(row=5, column=0, sticky="ew", padx=16, pady=(12, 0))
+        tk.Label(self._lang_h, text="Dil", font=self.font_ui, fg=C.muted, bg=C.rail).pack(side=tk.LEFT)
 
-        langs = tk.Frame(rail, bg=C.rail)
-        langs.grid(row=6, column=0, sticky="ew", padx=16, pady=(8, 0))
-        langs.columnconfigure(0, weight=1)
-        langs.columnconfigure(2, weight=1)
+        self._langs_frame = tk.Frame(rail, bg=C.rail)
+        self._langs_frame.grid(row=6, column=0, sticky="ew", padx=16, pady=(8, 0))
+        self._langs_frame.columnconfigure(0, weight=1)
+        self._langs_frame.columnconfigure(2, weight=1)
 
         cfg = load_config()
         src_val = cfg.src_lang if cfg.src_lang in source_names() else AUTO_SRC
@@ -151,21 +160,21 @@ class App(tk.Tk):
 
         self.src_var = tk.StringVar(value=src_val)
         self.src_box = Select(
-            langs, textvariable=self.src_var, values=source_names(), font=self.font_ui
+            self._langs_frame, textvariable=self.src_var, values=source_names(), font=self.font_ui
         )
         self.src_box.grid(row=0, column=0, sticky="ew")
 
-        swap = tk.Label(
-            langs, text="→", font=self.font_ui, fg=C.dim, bg=C.rail, cursor="hand2", padx=6
+        self.swap_btn = tk.Label(
+            self._langs_frame, text="→", font=self.font_ui, fg=C.dim, bg=C.rail, cursor="hand2", padx=6
         )
-        swap.grid(row=0, column=1)
-        swap.bind("<Button-1>", lambda _e: self._swap_langs())
-        swap.bind("<Enter>", lambda _e: swap.configure(fg=C.text))
-        swap.bind("<Leave>", lambda _e: swap.configure(fg=C.dim))
+        self.swap_btn.grid(row=0, column=1)
+        self.swap_btn.bind("<Button-1>", lambda _e: self._swap_langs())
+        self.swap_btn.bind("<Enter>", lambda _e: self.swap_btn.configure(fg=C.text))
+        self.swap_btn.bind("<Leave>", lambda _e: self.swap_btn.configure(fg=C.dim))
 
         self.dst_var = tk.StringVar(value=dst_val)
         self.dst_box = Select(
-            langs, textvariable=self.dst_var, values=list(LANGS), font=self.font_ui
+            self._langs_frame, textvariable=self.dst_var, values=list(LANGS), font=self.font_ui
         )
         self.dst_box.grid(row=0, column=2, sticky="ew")
 
@@ -174,19 +183,19 @@ class App(tk.Tk):
 
         self._rail_sep(rail, 7)
 
-        key = tk.Frame(rail, bg=C.rail)
-        key.grid(row=8, column=0, sticky="new", padx=16, pady=(12, 0))
-        key.columnconfigure(0, weight=1)
-        tk.Label(key, text="API anahtarı", font=self.font_ui, fg=C.muted, bg=C.rail).grid(
+        self._key_frame = tk.Frame(rail, bg=C.rail)
+        self._key_frame.grid(row=8, column=0, sticky="new", padx=16, pady=(12, 0))
+        self._key_frame.columnconfigure(0, weight=1)
+        tk.Label(self._key_frame, text="API anahtarı", font=self.font_ui, fg=C.muted, bg=C.rail).grid(
             row=0, column=0, sticky="w"
         )
-        self.save_key_btn = self._text_btn(key, "Kaydet", self.save_key)
+        self.save_key_btn = self._text_btn(self._key_frame, "Kaydet", self.save_key)
         self.save_key_btn.grid(row=0, column=1, sticky="e")
         self.key_var = tk.StringVar(value=resolve_api_key())
-        key_edge = tk.Frame(key, bg=C.line, bd=0, highlightthickness=0)
-        key_edge.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        self.key_edge = tk.Frame(self._key_frame, bg=C.line, bd=0, highlightthickness=0)
+        self.key_edge.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         self.key_entry = tk.Entry(
-            key_edge,
+            self.key_edge,
             textvariable=self.key_var,
             show="•",
             font=self.font_ui,
@@ -202,56 +211,60 @@ class App(tk.Tk):
         self.key_entry.pack(fill=tk.X, padx=1, pady=1, ipady=4)
         self.key_entry.bind("<Return>", lambda _e: self.save_key())
 
-        btns = tk.Frame(rail, bg=C.rail)
-        btns.grid(row=9, column=0, sticky="ew", padx=16, pady=16)
-        btns.columnconfigure(0, weight=1)
-        btns.columnconfigure(1, weight=1)
+        self._btns_frame = tk.Frame(rail, bg=C.rail)
+        self._btns_frame.grid(row=9, column=0, sticky="ew", padx=16, pady=16)
+        self._btns_frame.columnconfigure(0, weight=1)
+        self._btns_frame.columnconfigure(1, weight=1)
 
-        self.start_btn = self._btn(btns, "Başlat", self.start)
+        self.start_btn = self._btn(self._btns_frame, "Başlat", self.start)
         self.start_btn._edge.grid(row=0, column=0, sticky="ew", padx=(0, 4))
-        self.stop_btn = self._btn(btns, "Durdur", self.stop)
+        self.stop_btn = self._btn(self._btns_frame, "Durdur", self.stop)
         self.stop_btn._edge.grid(row=0, column=1, sticky="ew", padx=(4, 0))
         self._paint(self.start_btn, filled=True, enabled=True)
         self._paint(self.stop_btn, filled=False, enabled=False)
 
     def _build_main(self, main: tk.Frame):
-        heard_h = tk.Frame(main, bg=C.bg)
-        heard_h.grid(row=0, column=0, sticky="ew", padx=(16, 8), pady=(12, 6))
-        tk.Label(heard_h, text="Duyulan", font=self.font_ui, fg=C.muted, bg=C.bg).pack(side=tk.LEFT)
-        self._text_btn(heard_h, "Temizle", lambda: self._clear_pane(self.heard)).pack(side=tk.RIGHT)
-        self._text_btn(heard_h, "Kopyala", lambda: self._copy_pane(self.heard)).pack(side=tk.RIGHT, padx=(0, 8))
+        self.heard_h = tk.Frame(main, bg=C.bg)
+        self.heard_h.grid(row=0, column=0, sticky="ew", padx=(16, 8), pady=(12, 6))
+        self.heard_lbl = tk.Label(self.heard_h, text="Duyulan", font=self.font_ui, fg=C.muted, bg=C.bg)
+        self.heard_lbl.pack(side=tk.LEFT)
+        self.heard_clear = self._text_btn(self.heard_h, "Temizle", lambda: self._clear_pane(self.heard))
+        self.heard_clear.pack(side=tk.RIGHT)
+        self.heard_copy = self._text_btn(self.heard_h, "Kopyala", lambda: self._copy_pane(self.heard))
+        self.heard_copy.pack(side=tk.RIGHT, padx=(0, 8))
 
-        trans_h = tk.Frame(main, bg=C.bg)
-        trans_h.grid(row=0, column=1, sticky="ew", padx=(16, 16), pady=(12, 6))
-        tk.Label(trans_h, text="Çeviri", font=self.font_ui, fg=C.muted, bg=C.bg).pack(side=tk.LEFT)
-        self._text_btn(trans_h, "Temizle", lambda: self._clear_pane(self.trans)).pack(side=tk.RIGHT)
-        self._text_btn(trans_h, "Kopyala", lambda: self._copy_pane(self.trans)).pack(side=tk.RIGHT, padx=(0, 8))
+        self.trans_h = tk.Frame(main, bg=C.bg)
+        self.trans_h.grid(row=0, column=1, sticky="ew", padx=(16, 16), pady=(12, 6))
+        self.trans_lbl = tk.Label(self.trans_h, text="Çeviri", font=self.font_ui, fg=C.muted, bg=C.bg)
+        self.trans_lbl.pack(side=tk.LEFT)
+        self.trans_clear = self._text_btn(self.trans_h, "Temizle", lambda: self._clear_pane(self.trans))
+        self.trans_clear.pack(side=tk.RIGHT)
+        self.trans_copy = self._text_btn(self.trans_h, "Kopyala", lambda: self._copy_pane(self.trans))
+        self.trans_copy.pack(side=tk.RIGHT, padx=(0, 8))
 
-        heard_wrap = tk.Frame(main, bg=C.bg, bd=0, highlightthickness=0)
-        trans_wrap = tk.Frame(main, bg=C.bg, bd=0, highlightthickness=0)
-        heard_wrap.grid(row=1, column=0, sticky="nsew")
-        trans_wrap.grid(row=1, column=1, sticky="nsew")
-        for wrap in (heard_wrap, trans_wrap):
+        self.heard_wrap = tk.Frame(main, bg=C.bg, bd=0, highlightthickness=0)
+        self.trans_wrap = tk.Frame(main, bg=C.bg, bd=0, highlightthickness=0)
+        self.heard_wrap.grid(row=1, column=0, sticky="nsew")
+        self.trans_wrap.grid(row=1, column=1, sticky="nsew")
+        for wrap in (self.heard_wrap, self.trans_wrap):
             wrap.columnconfigure(0, weight=1)
             wrap.rowconfigure(0, weight=1)
 
-        tk.Frame(main, bg=C.line, width=1, bd=0, highlightthickness=0).grid(
-            row=0, column=0, rowspan=2, sticky="nse", pady=(12, 0)
-        )
+        self._main_v_sep = tk.Frame(main, bg=C.line, width=1, bd=0, highlightthickness=0)
+        self._main_v_sep.grid(row=0, column=0, rowspan=2, sticky="nse", pady=(12, 0))
 
-        self.heard = self._pane(heard_wrap)
-        self.trans = self._pane(trans_wrap)
+        self.heard = self._pane(self.heard_wrap)
+        self.trans = self._pane(self.trans_wrap)
 
-        tk.Frame(main, bg=C.line, height=1, bd=0, highlightthickness=0).grid(
-            row=2, column=0, columnspan=2, sticky="ew"
-        )
+        self._main_h_sep = tk.Frame(main, bg=C.line, height=1, bd=0, highlightthickness=0)
+        self._main_h_sep.grid(row=2, column=0, columnspan=2, sticky="ew")
 
-        log_wrap = tk.Frame(main, bg=C.bg, bd=0, highlightthickness=0)
-        log_wrap.grid(row=3, column=0, columnspan=2, sticky="ew")
-        log_wrap.columnconfigure(0, weight=1)
+        self.log_wrap = tk.Frame(main, bg=C.bg, bd=0, highlightthickness=0)
+        self.log_wrap.grid(row=3, column=0, columnspan=2, sticky="ew")
+        self.log_wrap.columnconfigure(0, weight=1)
 
         self.log = tk.Text(
-            log_wrap,
+            self.log_wrap,
             wrap=tk.WORD,
             height=4,
             font=self.font_log,
@@ -516,9 +529,127 @@ class App(tk.Tk):
                 output_device=self.out_var.get(),
                 src_lang=self.src_var.get(),
                 dst_lang=self.dst_var.get(),
+                theme=getattr(self, "_theme", "dark"),
             )
         except OSError:
             pass
+
+    def toggle_theme(self) -> None:
+        new_theme = "light" if C.current == "dark" else "dark"
+        self.set_theme(new_theme)
+
+    def set_theme(self, name: str) -> None:
+        self._theme = name
+        C.apply_theme(name)
+        dark_titlebar(self, dark=(name != "light"))
+        try:
+            save_preferences(theme=name)
+        except OSError:
+            pass
+        self._refresh_theme()
+
+    def _refresh_theme(self) -> None:
+        self.configure(bg=C.bg)
+        self.rail.configure(bg=C.rail)
+        self._v_sep.configure(bg=C.line)
+        self.main.configure(bg=C.bg)
+
+        # Rail header
+        for f in (self._rail_head, self._rail_title, self._rail_st):
+            f.configure(bg=C.rail)
+        self.brand.configure(fg=C.text, bg=C.rail)
+        self.version_lbl.configure(fg=C.dim, bg=C.rail)
+        self.status.configure(fg=C.muted, bg=C.rail)
+        self._dot.configure(bg=C.rail)
+        running = self.worker is not None and self.worker.is_alive()
+        self._dot.itemconfigure(self._dot_id, fill=C.live if running else C.dim)
+        self.meter.configure(bg=C.line)
+        self.meter.itemconfigure(self._meter_bar, fill=C.live)
+        self.theme_btn.configure(text="☀️" if C.current == "dark" else "🌙")
+
+        # Rail text buttons
+        for btn in (
+            self.info_btn,
+            self.theme_btn,
+            self.overlay_btn,
+            self.refresh_btn,
+            self.save_key_btn,
+        ):
+            btn.configure(fg=C.dim, bg=C.rail)
+
+        # Rail frames and labels
+        for f in (
+            self._devices_frame,
+            self._fields_frame,
+            self._lang_h,
+            self._langs_frame,
+            self._key_frame,
+            self._btns_frame,
+        ):
+            f.configure(bg=C.rail)
+            for child in f.winfo_children():
+                if isinstance(child, tk.Label) and child is not self.swap_btn and child not in (
+                    self.refresh_btn,
+                    self.save_key_btn,
+                ):
+                    child.configure(fg=C.muted, bg=C.rail)
+
+        for sep in self._rail_seps:
+            sep.configure(bg=C.line)
+
+        # Dropdowns
+        for box in (self.in_box, self.out_box, self.src_box, self.dst_box):
+            box.update_theme()
+
+        # Swap button
+        self.swap_btn.configure(fg=C.dim, bg=C.rail)
+
+        # Key entry
+        self.key_edge.configure(bg=C.line)
+        self.key_entry.configure(
+            bg=C.panel,
+            fg=C.text,
+            insertbackground=C.text,
+            disabledbackground=C.rail,
+            disabledforeground=C.dim,
+        )
+
+        # Action buttons
+        self._paint(self.start_btn, filled=not running, enabled=not running)
+        self._paint(self.stop_btn, filled=running, enabled=running)
+
+        # Main panes
+        for f in (self.heard_h, self.trans_h, self.heard_wrap, self.trans_wrap, self.log_wrap):
+            f.configure(bg=C.bg)
+        for lbl in (self.heard_lbl, self.trans_lbl):
+            lbl.configure(fg=C.muted, bg=C.bg)
+        for btn in (self.heard_clear, self.heard_copy, self.trans_clear, self.trans_copy):
+            btn.configure(fg=C.dim, bg=C.bg)
+
+        for sep in (self._main_h_sep, self._main_v_sep):
+            sep.configure(bg=C.line)
+
+        for pane in (self.heard, self.trans):
+            pane.configure(
+                bg=C.bg,
+                fg=C.text,
+                insertbackground=C.text,
+                selectbackground=C.select,
+                selectforeground=C.text,
+                inactiveselectbackground=C.select,
+            )
+
+        self.log.configure(
+            bg=C.bg,
+            fg=C.dim,
+            insertbackground=C.dim,
+            selectbackground=C.select,
+            selectforeground=C.muted,
+            inactiveselectbackground=C.select,
+        )
+        self.log.tag_configure("body", foreground=C.dim)
+        self.log.tag_configure("info", foreground=C.muted)
+        self.log.tag_configure("err", foreground=C.err)
 
     def _pump_log(self):
         try:
