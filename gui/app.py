@@ -877,6 +877,8 @@ class App(tk.Tk):
             if self.overlay_click_through:
                 ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_TRANSPARENT | WS_EX_LAYERED)
             else:
+                # Yalnizca TRANSPARENT'i kaldir; LAYERED'a dokunma yoksa
+                # Tk'nin alfa compositing'i bozulup siyah dikdortgen cikar.
                 ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style & ~WS_EX_TRANSPARENT)
         except Exception:
             pass
@@ -1882,17 +1884,26 @@ class App(tk.Tk):
         sw = self.winfo_screenwidth()
         sh = self.winfo_screenheight()
         w, h = 580, 56
-        if geom:
+
+        def _valid_geom(g: str) -> bool:
             try:
-                pop.geometry(geom)
-            except tk.TclError:
-                pop.geometry(f"{w}x{h}+{(sw - w) // 2}+{sh - h - 100}")
-        elif getattr(self, "_cfg", None) and self._cfg.overlay_geom:
-            try:
-                pop.geometry(self._cfg.overlay_geom)
-            except tk.TclError:
-                pop.geometry(f"{w}x{h}+{(sw - w) // 2}+{sh - h - 100}")
-        else:
+                parts = g.replace("-", "+-").split("+")
+                size = parts[0].split("x")
+                gw, gh = int(size[0]), int(size[1])
+                return 220 <= gw <= sw and 56 <= gh <= sh
+            except Exception:
+                return False
+
+        applied = False
+        for cand in (geom, getattr(self._cfg, "overlay_geom", "") if getattr(self, "_cfg", None) else ""):
+            if cand and _valid_geom(cand):
+                try:
+                    pop.geometry(cand)
+                    applied = True
+                    break
+                except tk.TclError:
+                    pass
+        if not applied:
             pop.geometry(f"{w}x{h}+{(sw - w) // 2}+{sh - h - 100}")
         pop.update_idletasks()
         self.overlay_label.configure(wraplength=max(120, pop.winfo_width() - 44))
