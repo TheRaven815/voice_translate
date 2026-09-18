@@ -248,6 +248,76 @@ def test_request_stop_without_run_is_safe():
     assert loop_obj._user_stop.is_set()
 
 
+@pytest.mark.parametrize("console_input", [False, True])
+@pytest.mark.parametrize("stop_at", ["before_run", "connecting", "connected"])
+def test_stop_prevents_audio_start_during_connection(monkeypatch, stop_at, console_input):
+    async def scenario():
+        entered = asyncio.Event()
+        released = asyncio.Event()
+        closed = asyncio.Event()
+        events = []
+        session = FakeSession()
+
+        class DelayedConnect(FakeConnect):
+            async def __aenter__(self):
+                entered.set()
+                try:
+                    if stop_at == "connected":
+                        # Stop arrives from the GUI as connection entry completes.
+                        await asyncio.to_thread(loop_obj.request_stop)
+                    else:
+                        await released.wait()
+                    return self._session
+                except asyncio.CancelledError:
+                    closed.set()
+                    raise
+
+            async def __aexit__(self, *args):
+                closed.set()
+                return False
+
+        client = _stub_client(session)
+        client.aio.live.connect = lambda **kwargs: DelayedConnect(session)
+        monkeypatch.setattr("loop.genai.Client", lambda **kwargs: client)
+        loop_obj = SystemAudioLoop(
+            "en", "tr", FakeMic(), "dummy-key",
+            output_speaker=FakeSpeaker(), on_text=events.append,
+            console_input=console_input,
+        )
+        started = []
+
+        async def audio_started():
+            started.append(True)
+
+        monkeypatch.setattr(loop_obj, "listen_system", audio_started)
+        monkeypatch.setattr(loop_obj, "play", audio_started)
+        if stop_at == "before_run":
+            loop_obj.request_stop()
+        worker = asyncio.create_task(loop_obj.run())
+        try:
+            if stop_at != "before_run":
+                await asyncio.wait_for(entered.wait(), timeout=2)
+            if stop_at == "connecting":
+                await asyncio.to_thread(loop_obj.request_stop)
+            # wait() does not cancel the worker on timeout: stop must finish it.
+            done, _ = await asyncio.wait({worker}, timeout=2)
+            assert worker in done, "Durdur, bekleyen bağlantıyı iptal etmedi"
+            with pytest.raises(asyncio.CancelledError):
+                await worker
+            assert not started, "Durdur sonrasında ses aygıtları başlatıldı"
+            session.send_realtime_input.assert_not_awaited()
+            assert not events, "Durdur sonrasında oturum çıktısı üretildi"
+            if stop_at == "before_run":
+                assert not entered.is_set(), "Durdurulmuş oturum bağlantı açtı"
+            else:
+                assert closed.is_set(), "Bekleyen bağlantı temizlenmedi"
+        finally:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
 def test_none_speaker_skips_playback_keeps_text():
     heard: list = []
     session = FakeSession()

@@ -513,29 +513,46 @@ class SystemAudioLoop:
             if err and not self._user_stop.is_set():
                 raise RuntimeError(f"Çıkış ses aygıtı hatası: {err[0]}") from err[0]
     async def run(self):
-        async with (
-            self.client.aio.live.connect(model=self.model, config=self.config) as session,
-            asyncio.TaskGroup() as tg,
-        ):
-            self.session = session
-            self._loop = asyncio.get_running_loop()
-            if self._emit is not None:
-                self._emit(("status", "Dinleniyor"))
-            self._stop = asyncio.Event()
-            self._cap_stop.clear()
-            self._play_stop.clear()
-            self.audio_in_queue = (
-                asyncio.Queue(maxsize=200) if self.output_speaker is not None else None
-            )
-            self.out_queue = asyncio.Queue(maxsize=50)
-            stopper = self.send_text() if self.console_input else self.watch_stop()
-            stop_task = tg.create_task(stopper)
-            tg.create_task(self.send_realtime())
-            tg.create_task(self.listen_system())
-            tg.create_task(self.receive())
-            if self.output_speaker is not None:
-                tg.create_task(self.play())
-            await stop_task
+        self._loop = asyncio.get_running_loop()
+        self._stop = asyncio.Event()
+        run_task = asyncio.current_task()
+
+        async def cancel_on_stop():
+            await self._stop.wait()
+            run_task.cancel()
+
+        stop_task = asyncio.create_task(cancel_on_stop())
+        try:
+            # request_stop() may have run before the event loop was available.
+            if self._user_stop.is_set():
+                raise asyncio.CancelledError("Kullanıcı çıkışı")
+            async with (
+                self.client.aio.live.connect(model=self.model, config=self.config) as session,
+                asyncio.TaskGroup() as tg,
+            ):
+                # Connection entry can finish before the queued stop callback runs.
+                if self._user_stop.is_set():
+                    raise asyncio.CancelledError("Kullanıcı çıkışı")
+                self.session = session
+                if self._emit is not None:
+                    self._emit(("status", "Dinleniyor"))
+                self.audio_in_queue = (
+                    asyncio.Queue(maxsize=200) if self.output_speaker is not None else None
+                )
+                self.out_queue = asyncio.Queue(maxsize=50)
+                tg.create_task(self.send_realtime())
+                tg.create_task(self.listen_system())
+                tg.create_task(self.receive())
+                if self.output_speaker is not None:
+                    tg.create_task(self.play())
+                if self.console_input:
+                    await self.send_text()
+                else:
+                    await self.watch_stop()
+                raise asyncio.CancelledError("Kullanıcı çıkışı")
+        finally:
             self._cap_stop.set()
             self._play_stop.set()
-            raise asyncio.CancelledError("Kullanıcı çıkışı")
+            stop_task.cancel()
+            await asyncio.gather(stop_task, return_exceptions=True)
+            self.session = None

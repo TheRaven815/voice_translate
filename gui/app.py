@@ -103,6 +103,8 @@ class App(tk.Tk):
         self.worker: threading.Thread | None = None
         self.loop_obj: SystemAudioLoop | None = None
         self._stopping = threading.Event()
+        self._session_id: int = 0
+        self._pending_restart: bool = False
         self.inputs: list = []
         self.outputs: list = []
         self._about: tk.Toplevel | None = None
@@ -809,16 +811,10 @@ class App(tk.Tk):
     def restart(self) -> None:
         """Çalışırken ayarları nazikçe yeniden başlatarak uygular."""
         if self.worker is not None and self.worker.is_alive():
-            self.stop()
-            def _wait_and_start():
-                if self.worker is not None:
-                    self.worker.join(timeout=1.2)
-                try:
-                    self.after(50, self.start)
-                except tk.TclError:
-                    pass
-            threading.Thread(target=_wait_and_start, daemon=True).start()
+            self._pending_restart = True
+            self.stop(cancel_restart=False)
         else:
+            self._pending_restart = False
             self.start()
 
     def _on_runtime_pref_change(self, *args):
@@ -971,12 +967,19 @@ class App(tk.Tk):
             while True:
                 msg = self.log_queue.get_nowait()
                 try:
-                    if msg == "__stopped__":
+                    if msg == "__stopped__" or (isinstance(msg, tuple) and len(msg) > 0 and msg[0] == "__stopped__"):
+                        sid = msg[1] if isinstance(msg, tuple) and len(msg) > 1 else None
+                        if sid is not None and sid != self._session_id:
+                            continue
                         self._set_running(False)
-                        if self.status.cget("text") != "Hata":
-                            self._set_status("Durdu", C.dim)
                         self.worker = None
                         self.loop_obj = None
+                        if getattr(self, "_pending_restart", False):
+                            self._pending_restart = False
+                            self.start()
+                        else:
+                            if self.status.cget("text") != "Hata":
+                                self._set_status("Durdu", C.dim)
                         continue
                     if isinstance(msg, tuple):
                         kind = msg[0]
@@ -1167,14 +1170,19 @@ class App(tk.Tk):
     def start(self):
         if self.worker is not None and self.worker.is_alive():
             return
+        self._pending_restart = False
         api_key = self.key_var.get().strip()
         if not api_key:
             self._append("[hata] API anahtarı girin (Ayarlar veya https://aistudio.google.com/apikey)\n")
             self._open_settings()
+            if self.status.cget("text") != "Hata":
+                self._set_status("Durdu", C.dim)
             return
         idx = self.in_box.current()
         if idx < 0 or idx >= len(self.inputs):
             self._append("[hata] Geçerli giriş aygıtı seçin.\n")
+            if self.status.cget("text") != "Hata":
+                self._set_status("Durdu", C.dim)
             return
         source = self.inputs[idx]
         speaker = self._selected_speaker()
@@ -1190,6 +1198,8 @@ class App(tk.Tk):
         self.transcript_items = []
         self._curr_heard_buf = ""
         self._curr_trans_buf = ""
+        self._session_id += 1
+        current_session_id = self._session_id
         self._loop_kwargs = {
             "src": src,
             "dst": dst,
@@ -1203,12 +1213,13 @@ class App(tk.Tk):
         dest = speaker.name if speaker is not None else NONE_OUTPUT
         src_disp = "auto" if src is None else src
         self._append(f"[bilgi] {source.name} -> {dest} ({src_disp}>{dst})\n")
-        self.worker = threading.Thread(target=self._run, daemon=True)
+        self.worker = threading.Thread(target=self._run, args=(current_session_id,), daemon=True)
         self.worker.start()
         self._set_running(True)
         self._set_status("Bağlanıyor", C.warn)
-
-    def _run(self):
+    def _run(self, session_id: int | None = None):
+        if session_id is None:
+            session_id = getattr(self, "_session_id", 0)
         retries = 0
         max_retries = 3
         while not self._stopping.is_set():
@@ -1243,17 +1254,27 @@ class App(tk.Tk):
                     self.log_queue.put(("status", "Hata", C.err))
                     self.log_queue.put("[hata] Bağlantı kurulamadı.\n")
                     break
-        self.log_queue.put("__stopped__")
+        self.log_queue.put(("__stopped__", session_id))
 
-    def stop(self):
+    def stop(self, *args, cancel_restart: bool = True):
+        if cancel_restart:
+            self._pending_restart = False
+        if getattr(self, "_restart_timer", None) is not None:
+            try:
+                self.after_cancel(self._restart_timer)
+            except Exception:
+                pass
+            self._restart_timer = None
         self._stopping.set()
         self.session_start_time = None
         if hasattr(self, "timer_lbl"):
             self.timer_lbl.configure(text="")
         if self.loop_obj is not None:
             self.loop_obj.request_stop()
-        self._set_status("Durduruluyor", C.warn)
-
+        if getattr(self, "_pending_restart", False):
+            self._set_status("Yeniden başlatılıyor", C.warn)
+        else:
+            self._set_status("Durduruluyor", C.warn)
     def _open_about(self):
         if self._about is not None and self._about.winfo_exists():
             self._about.deiconify()

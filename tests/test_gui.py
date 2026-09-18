@@ -357,7 +357,7 @@ def test_worker_run_stops_cleanly_without_attribute_error():
         app.loop_obj = DummyLoop()
         app._run()
         msg = app.log_queue.get_nowait()
-        assert msg == "__stopped__"
+        assert msg == ("__stopped__", 0) or msg == "__stopped__"
     finally:
         app.destroy()
 
@@ -389,7 +389,7 @@ def test_worker_run_retries_on_error_and_logs(monkeypatch):
 
         assert attempts == 2
         assert any("Yeniden bağlanılıyor (1/3)" in str(m) for m in messages)
-        assert "__stopped__" in messages
+        assert any(m == "__stopped__" or (isinstance(m, tuple) and m[0] == "__stopped__") for m in messages)
     finally:
         app.destroy()
 
@@ -773,6 +773,87 @@ def test_gui_overlay_studio_and_export(tmp_path, monkeypatch):
         app._export_transcripts()
         assert out_file.is_file()
         assert "Hello world translation" in out_file.read_text(encoding="utf-8")
+    finally:
+        app.destroy()
+
+def test_stale_stopped_message_does_not_clear_new_session():
+    """H02: Eski oturumun __stopped__ mesajı yeni oturum referanslarını silmemeli."""
+    app = App()
+    try:
+        mock_worker = type("MockWorker", (), {"is_alive": lambda self: True})()
+        mock_loop = type("MockLoop", (), {})()
+        app._session_id = 2
+        app.worker = mock_worker
+        app.loop_obj = mock_loop
+        app._set_status("Çalışıyor", C.live)
+
+        # Eski oturuma (session 1) ait kapanış mesajı kuyrukta
+        app.log_queue.put(("__stopped__", 1))
+        app._pump_log()
+
+        # Yeni oturum referansları korunmalı, durum Durdu olmamalı
+        assert app.worker is mock_worker
+        assert app.loop_obj is mock_loop
+        assert app.status.cget("text") == "Çalışıyor"
+
+        # Güncel oturuma (session 2) ait kapanış mesajı gelince referanslar temizlenmeli
+        app.log_queue.put(("__stopped__", 2))
+        app._pump_log()
+
+        assert app.worker is None
+        assert app.loop_obj is None
+        assert app.status.cget("text") == "Durdu"
+    finally:
+        app.destroy()
+
+
+def test_restart_lifecycle_and_user_stop_cancellation(monkeypatch):
+    """H02: restart() kapanışı bekleyip start() çağırmalı; stop() restart'ı iptal edebilmeli."""
+    app = App()
+    try:
+        started_sessions = []
+        stopped_loops = []
+
+        class MockLoop:
+            def request_stop(self):
+                stopped_loops.append(True)
+
+        app.worker = type("MockWorker", (), {"is_alive": lambda self: True})()
+        app.loop_obj = MockLoop()
+        app._session_id = 1
+
+        monkeypatch.setattr(app, "start", lambda: started_sessions.append(app._session_id + 1))
+
+        # 1. restart() çağrısı pending_restart işaretler ve stop(cancel_restart=False) tetikler
+        app.restart()
+        assert app._pending_restart is True
+        assert len(stopped_loops) == 1
+        assert app.status.cget("text") == "Yeniden başlatılıyor"
+        assert len(started_sessions) == 0  # Henüz worker kapanmadı, start() çağrılmamalı
+
+        # Kapanış mesajı işlenince start() otomatik tetiklenmeli
+        app.log_queue.put(("__stopped__", 1))
+        app._pump_log()
+        assert app._pending_restart is False
+        assert len(started_sessions) == 1
+
+        # 2. Kullanıcı açık stop() çağrısı bekleyen restart'ı iptal etmeli
+        app.worker = type("MockWorker", (), {"is_alive": lambda self: True})()
+        app.loop_obj = MockLoop()
+        app.restart()
+        assert app._pending_restart is True
+
+        # Kullanıcı 'Durdur' bastı
+        app.stop()
+        assert app._pending_restart is False
+        assert app.status.cget("text") == "Durduruluyor"
+
+        # Worker durdu
+        app.log_queue.put(("__stopped__", 1))
+        app._pump_log()
+        # İkinci bir start çağrılmamış olmalı (uzunluk hala 1)
+        assert len(started_sessions) == 1
+        assert app.status.cget("text") == "Durdu"
     finally:
         app.destroy()
 
