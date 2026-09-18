@@ -666,6 +666,9 @@ class App(tk.Tk):
         self._fit_overlay()
 
     def _write_pane(self, widget, text: str):
+        # Akış sırasında eski bir seçim gri blok gibi görünmesin diye kaldır.
+        if widget.tag_ranges("sel"):
+            widget.tag_remove("sel", "1.0", tk.END)
         lang = self.src_var.get() if widget is self.heard else self.dst_var.get()
         tag = "rtl" if is_rtl(lang) else "ltr"
         widget.insert(tk.END, text, ("body", tag))
