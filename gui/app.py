@@ -11,6 +11,7 @@ import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox
+import webbrowser
 
 from config import load as load_config, resolve_api_key, save_api_key, save_preferences
 from devices import NONE_OUTPUT, all_inputs, all_outputs, default_speaker, pick_loopback
@@ -105,6 +106,13 @@ class App(tk.Tk):
         self.inputs: list = []
         self.outputs: list = []
         self._about: tk.Toplevel | None = None
+        self._settings: tk.Toplevel | None = None
+        self.key_var: tk.StringVar = tk.StringVar(value=resolve_api_key())
+        self.key_entry: tk.Entry | None = None
+        self.mask_btn: tk.Label | None = None
+        self.key_edge: tk.Frame | None = None
+        self._settings_status: tk.Label | None = None
+        self._settings_close_btn: tk.Button | None = None
         self._update_info: UpdateInfo | None = None
         self._update_check_running = False
         self._update_installing = False
@@ -172,6 +180,7 @@ class App(tk.Tk):
         self.bind("<Control-t>", lambda _e: self.toggle_theme())
         self.bind("<Control-T>", lambda _e: self.toggle_theme())
         self.bind("<F6>", lambda _e: self.toggle_theme())
+        self.bind("<Control-comma>", lambda _e: self._open_settings())
     def _build_rail(self, rail: tk.Frame):
         self._rail_head = tk.Frame(rail, bg=C.rail)
         self._rail_head.grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 12))
@@ -188,8 +197,13 @@ class App(tk.Tk):
         self.version_lbl.pack(side=tk.LEFT, padx=(8, 0))
         self.info_btn = self._text_btn(self._rail_title, "ⓘ", self._open_about)
         self.info_btn.pack(side=tk.RIGHT)
+        settings_symbol = "\ue713" if os.name == "nt" else "⚙"
+        self.settings_btn = self._text_btn(self._rail_title, settings_symbol, self._open_settings)
+        if os.name == "nt":
+            self.settings_btn.configure(font=("Segoe MDL2 Assets", 10))
+        self.settings_btn.pack(side=tk.RIGHT, padx=(0, 6))
         self.theme_btn = self._text_btn(
-            self._rail_title, "☀️" if C.current == "dark" else "🌙", self.toggle_theme
+            self._rail_title, "☀" if C.current == "dark" else "🌙", self.toggle_theme
         )
         self.theme_btn.configure(width=2)
         self.theme_btn.pack(side=tk.RIGHT, padx=(0, 6))
@@ -287,43 +301,8 @@ class App(tk.Tk):
 
         self._rail_sep(rail, 7)
 
-        self._key_frame = tk.Frame(rail, bg=C.rail)
-        self._key_frame.grid(row=8, column=0, sticky="new", padx=16, pady=(12, 0))
-        self._key_frame.columnconfigure(0, weight=1)
-        tk.Label(self._key_frame, text="API anahtarı", font=self.font_ui, fg=C.muted, bg=C.rail).grid(
-            row=0, column=0, sticky="w"
-        )
-        btn_box = tk.Frame(self._key_frame, bg=C.rail)
-        btn_box.grid(row=0, column=1, sticky="e")
-        self.test_key_btn = self._text_btn(btn_box, "Test", self._test_api_key)
-        self.test_key_btn.pack(side=tk.LEFT, padx=(0, 6))
-        self.save_key_btn = self._text_btn(btn_box, "Kaydet", self.save_key)
-        self.save_key_btn.pack(side=tk.LEFT)
-        self.key_var = tk.StringVar(value=resolve_api_key())
-        self.key_edge = tk.Frame(self._key_frame, bg=C.line, bd=0, highlightthickness=0)
-        self.key_edge.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
-        self.key_entry = tk.Entry(
-            self.key_edge,
-            textvariable=self.key_var,
-            show="•",
-            font=self.font_ui,
-            bg=C.panel,
-            fg=C.text,
-            insertbackground=C.text,
-            disabledbackground=C.rail,
-            disabledforeground=C.dim,
-            relief="flat",
-            highlightthickness=0,
-            bd=0,
-        )
-        self.key_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(1, 0), pady=1, ipady=4)
-        self.key_entry.bind("<Return>", lambda _e: self.save_key())
-        self.mask_btn = tk.Label(self.key_edge, text="👁", font=self.font_ui, fg=C.dim, bg=C.panel, cursor="hand2", padx=6)
-        self.mask_btn.pack(side=tk.RIGHT, fill=tk.Y, pady=1, padx=(0, 1))
-        self.mask_btn.bind("<Button-1>", lambda _e: self._toggle_key_mask())
-
         self._btns_frame = tk.Frame(rail, bg=C.rail)
-        self._btns_frame.grid(row=9, column=0, sticky="ew", padx=16, pady=16)
+        self._btns_frame.grid(row=8, column=0, sticky="ew", padx=16, pady=16)
         self._btns_frame.columnconfigure(0, weight=1)
         self._btns_frame.columnconfigure(1, weight=1)
 
@@ -518,7 +497,8 @@ class App(tk.Tk):
         self._dot.itemconfigure(self._dot_id, fill=color)
 
     def _set_running(self, running: bool) -> None:
-        self.key_entry.configure(state=tk.DISABLED if running else tk.NORMAL)
+        if self.key_entry is not None and self.key_entry.winfo_exists():
+            self.key_entry.configure(state=tk.DISABLED if running else tk.NORMAL)
         self._paint(self.start_btn, filled=not running, enabled=not running)
         self._paint(self.stop_btn, filled=running, enabled=running)
         self._dot.itemconfigure(self._dot_id, fill=C.live if running else C.dim)
@@ -703,26 +683,38 @@ class App(tk.Tk):
         self._save_user_prefs()
 
     def _toggle_key_mask(self) -> None:
+        if self.key_entry is None or not self.key_entry.winfo_exists():
+            return
         if self.key_entry.cget("show") == "•":
             self.key_entry.configure(show="")
-            self.mask_btn.configure(text="🙈")
+            if self.mask_btn is not None and self.mask_btn.winfo_exists():
+                self.mask_btn.configure(text="🙈")
         else:
             self.key_entry.configure(show="•")
-            self.mask_btn.configure(text="👁")
+            if self.mask_btn is not None and self.mask_btn.winfo_exists():
+                self.mask_btn.configure(text="👁")
 
     def _test_api_key(self) -> None:
         key = self.key_var.get().strip()
         if not key:
             self._append("[hata] Test için önce bir API anahtarı girin.\n")
+            if self._settings_status is not None and self._settings_status.winfo_exists():
+                self._settings_status.configure(text="Test için önce bir anahtar girin.", fg=C.warn)
             return
         self._append("[bilgi] API anahtarı test ediliyor...\n")
+        if self._settings_status is not None and self._settings_status.winfo_exists():
+            self._settings_status.configure(text="API anahtarı test ediliyor...", fg=C.dim)
         def _bg():
             try:
                 asyncio.run(validate_live_api_key(key))
                 self.log_queue.put("[bilgi] ✓ API anahtarı geçerli; Gemini Live erişimi açık.\n")
+                if self._settings_status is not None and self._settings_status.winfo_exists():
+                    self.after(0, lambda: self._settings_status.configure(text="✓ API anahtarı geçerli; Gemini Live açık.", fg=C.live) if self._settings_status and self._settings_status.winfo_exists() else None)
             except Exception as e:
                 err_msg = format_user_error(e)
                 self.log_queue.put(f"[hata] ✕ Gemini Live erişim testi başarısız: {err_msg}\n")
+                if self._settings_status is not None and self._settings_status.winfo_exists():
+                    self.after(0, lambda: self._settings_status.configure(text=f"✕ Test başarısız: {err_msg}", fg=C.warn) if self._settings_status and self._settings_status.winfo_exists() else None)
         threading.Thread(target=_bg, daemon=True).start()
 
     def _export_transcripts(self) -> None:
@@ -875,17 +867,16 @@ class App(tk.Tk):
         self._dot.itemconfigure(self._dot_id, fill=C.live if running else C.dim)
         self.meter.configure(bg=C.line)
         self.meter.itemconfigure(self._meter_bar, fill=C.live)
-        self.theme_btn.configure(text="☀️" if C.current == "dark" else "🌙")
+        self.theme_btn.configure(text="☀" if C.current == "dark" else "🌙")
 
         # Rail text buttons
         for btn in (
             self.info_btn,
+            self.settings_btn,
             self.theme_btn,
             self.pin_btn,
             self.overlay_btn,
             self.refresh_btn,
-            self.test_key_btn,
-            self.save_key_btn,
         ):
             btn._rest_fg = C.dim
             btn.configure(fg=C.dim, bg=C.rail)
@@ -898,15 +889,11 @@ class App(tk.Tk):
             self._fields_frame,
             self._lang_h,
             self._langs_frame,
-            self._key_frame,
             self._btns_frame,
         ):
             f.configure(bg=C.rail)
             for child in f.winfo_children():
-                if isinstance(child, tk.Label) and child is not self.swap_btn and child not in (
-                    self.refresh_btn,
-                    self.save_key_btn,
-                ):
+                if isinstance(child, tk.Label) and child is not self.swap_btn and child is not self.refresh_btn:
                     child.configure(fg=C.muted, bg=C.rail)
 
         for sep in self._rail_seps:
@@ -918,17 +905,6 @@ class App(tk.Tk):
 
         # Swap button
         self.swap_btn.configure(fg=C.dim, bg=C.rail)
-
-        # Key entry
-        self.key_edge.configure(bg=C.line)
-        self.key_entry.configure(
-            bg=C.panel,
-            fg=C.text,
-            insertbackground=C.text,
-            disabledbackground=C.rail,
-            disabledforeground=C.dim,
-        )
-
         # Action buttons
         self._paint(self.start_btn, filled=not running, enabled=not running)
         self._paint(self.stop_btn, filled=running, enabled=running)
@@ -964,6 +940,19 @@ class App(tk.Tk):
         )
         self.log.tag_configure("body", foreground=C.dim)
         self.log.tag_configure("info", foreground=C.muted)
+        if self._settings is not None and self._settings.winfo_exists():
+            self._settings.configure(bg=C.panel)
+            dark_titlebar(self._settings, dark=(C.current != "light"))
+            if self.key_edge is not None and self.key_edge.winfo_exists():
+                self.key_edge.configure(bg=C.line)
+            if self.key_entry is not None and self.key_entry.winfo_exists():
+                self.key_entry.configure(
+                    bg=C.panel,
+                    fg=C.text,
+                    insertbackground=C.text,
+                    disabledbackground=C.rail,
+                    disabledforeground=C.dim,
+                )
         self.log.tag_configure("err", foreground=C.err)
         dark_titlebar(self, dark=(C.current != "light"))
         if self._overlay is not None and self._overlay.winfo_exists():
@@ -1157,20 +1146,31 @@ class App(tk.Tk):
             save_api_key(key)
         except OSError as e:
             self._append(f"[hata] Anahtar kaydedilemedi: {e}\n")
+            if self._settings_status is not None and self._settings_status.winfo_exists():
+                self._settings_status.configure(text=f"Kaydedilemedi: {e}", fg=C.warn)
             return
         if key:
             self._append("[bilgi] API anahtarı kaydedildi.\n")
+            if self._settings_status is not None and self._settings_status.winfo_exists():
+                self._settings_status.configure(text="✓ API anahtarı kaydedildi.", fg=C.live)
         else:
             self._append("[bilgi] Kayıtlı anahtar silindi.\n")
-        self.key_entry.selection_clear()
-        self.focus_set()
+            if self._settings_status is not None and self._settings_status.winfo_exists():
+                self._settings_status.configure(text="Kayıtlı anahtar silindi.", fg=C.dim)
+        if self.key_entry is not None and self.key_entry.winfo_exists():
+            self.key_entry.selection_clear()
+        if self._settings is not None and self._settings.winfo_exists():
+            self._settings.focus_set()
+        else:
+            self.focus_set()
 
     def start(self):
         if self.worker is not None and self.worker.is_alive():
             return
         api_key = self.key_var.get().strip()
         if not api_key:
-            self._append("[hata] API anahtarı girin (https://aistudio.google.com/apikey)\n")
+            self._append("[hata] API anahtarı girin (Ayarlar veya https://aistudio.google.com/apikey)\n")
+            self._open_settings()
             return
         idx = self.in_box.current()
         if idx < 0 or idx >= len(self.inputs):
@@ -1405,6 +1405,194 @@ class App(tk.Tk):
         self._about.destroy()
         self._about = None
 
+    def _open_settings(self):
+        if self._settings is not None and self._settings.winfo_exists():
+            self._settings.deiconify()
+            self._settings.lift()
+            self._settings.focus_set()
+            return
+        pop = tk.Toplevel(self)
+        self._settings = pop
+        pop.title("Ayarlar")
+        pop.configure(bg=C.panel)
+        pop.resizable(False, False)
+        pop.transient(self)
+        apply_icon(pop)
+        dark_titlebar(pop, dark=(self._theme != "light"))
+        pop.protocol("WM_DELETE_WINDOW", self._close_settings)
+        pop.bind("<Escape>", lambda _e: self._close_settings())
+
+        main = tk.Frame(pop, bg=C.panel, padx=20, pady=16)
+        main.pack(fill=tk.BOTH, expand=True)
+
+        title_lbl = tk.Label(
+            main, text="Ayarlar", font=(self.font_brand[0], 12, "bold"), fg=C.text, bg=C.panel
+        )
+        title_lbl.pack(anchor="w")
+
+        sep = tk.Frame(main, bg=C.line, height=1)
+        sep.pack(fill=tk.X, pady=(8, 14))
+
+        sec_h = tk.Frame(main, bg=C.panel)
+        sec_h.pack(fill=tk.X)
+        tk.Label(
+            sec_h,
+            text="Gemini API Anahtarı",
+            font=(self.font_ui[0], self.font_ui[1], "bold"),
+            fg=C.text,
+            bg=C.panel,
+        ).pack(side=tk.LEFT)
+
+        link_lbl = tk.Label(
+            sec_h, text="Anahtar Al ↗", font=self.font_ui, fg=C.dim, bg=C.panel, cursor="hand2"
+        )
+        link_lbl.pack(side=tk.RIGHT)
+        link_lbl.bind("<Button-1>", lambda _e: webbrowser.open("https://aistudio.google.com/apikey"))
+        link_lbl.bind("<Enter>", lambda _e: link_lbl.configure(fg=C.text))
+        link_lbl.bind("<Leave>", lambda _e: link_lbl.configure(fg=C.dim))
+
+        desc_lbl = tk.Label(
+            main,
+            text="Canlı ses çevirisi için Gemini Live erişimine sahip bir API anahtarı gereklidir.",
+            font=self.font_ui,
+            fg=C.dim,
+            bg=C.panel,
+            anchor="w",
+            justify="left",
+        )
+        desc_lbl.pack(anchor="w", pady=(4, 8))
+
+        self.key_edge = tk.Frame(main, bg=C.line, bd=0, highlightthickness=0)
+        self.key_edge.pack(fill=tk.X)
+
+        self.key_entry = tk.Entry(
+            self.key_edge,
+            textvariable=self.key_var,
+            show="•",
+            font=self.font_ui,
+            bg=C.panel,
+            fg=C.text,
+            insertbackground=C.text,
+            disabledbackground=C.rail,
+            disabledforeground=C.dim,
+            relief="flat",
+            highlightthickness=0,
+            bd=0,
+        )
+        self.key_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(1, 0), pady=1, ipady=4)
+        self.key_entry.bind("<Return>", lambda _e: self.save_key())
+
+        self.mask_btn = tk.Label(
+            self.key_edge, text="👁", font=self.font_ui, fg=C.dim, bg=C.panel, cursor="hand2", padx=6
+        )
+        self.mask_btn.pack(side=tk.RIGHT, fill=tk.Y, pady=1, padx=(0, 1))
+        self.mask_btn.bind("<Button-1>", lambda _e: self._toggle_key_mask())
+
+        running = self.worker is not None and self.worker.is_alive()
+        if running:
+            self.key_entry.configure(state=tk.DISABLED)
+
+        self._settings_status = tk.Label(
+            main, text="", font=self.font_ui, fg=C.dim, bg=C.panel, anchor="w"
+        )
+        self._settings_status.pack(anchor="w", pady=(6, 0))
+
+        btn_row = tk.Frame(main, bg=C.panel)
+        btn_row.pack(fill=tk.X, pady=(14, 0))
+
+        test_wrap = tk.Frame(btn_row, bg=C.line, bd=0, highlightthickness=0)
+        test_wrap.pack(side=tk.LEFT)
+        self.test_key_btn = tk.Button(
+            test_wrap,
+            text="Test Et",
+            font=self.font_ui,
+            bg=C.panel,
+            fg=C.text,
+            activebackground=C.hover,
+            activeforeground=C.text,
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+            padx=12,
+            pady=3,
+            cursor="hand2",
+            command=self._test_api_key,
+        )
+        self.test_key_btn.pack(padx=1, pady=1)
+        self.test_key_btn.bind("<Enter>", lambda _e: self.test_key_btn.configure(bg=C.hover))
+        self.test_key_btn.bind("<Leave>", lambda _e: self.test_key_btn.configure(bg=C.panel))
+
+        save_wrap = tk.Frame(btn_row, bg=C.line, bd=0, highlightthickness=0)
+        save_wrap.pack(side=tk.LEFT, padx=(8, 0))
+        self.save_key_btn = tk.Button(
+            save_wrap,
+            text="Kaydet",
+            font=self.font_ui,
+            bg=C.panel,
+            fg=C.text,
+            activebackground=C.hover,
+            activeforeground=C.text,
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+            padx=12,
+            pady=3,
+            cursor="hand2",
+            command=self.save_key,
+        )
+        self.save_key_btn.pack(padx=1, pady=1)
+        self.save_key_btn.bind("<Enter>", lambda _e: self.save_key_btn.configure(bg=C.hover))
+        self.save_key_btn.bind("<Leave>", lambda _e: self.save_key_btn.configure(bg=C.panel))
+
+        close_wrap = tk.Frame(btn_row, bg=C.line, bd=0, highlightthickness=0)
+        close_wrap.pack(side=tk.RIGHT)
+        self._settings_close_btn = tk.Button(
+            close_wrap,
+            text="Kapat",
+            font=self.font_ui,
+            bg=C.panel,
+            fg=C.text,
+            activebackground=C.hover,
+            activeforeground=C.text,
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+            padx=14,
+            pady=3,
+            cursor="hand2",
+            command=self._close_settings,
+        )
+        self._settings_close_btn.pack(padx=1, pady=1)
+        self._settings_close_btn.bind("<Enter>", lambda _e: self._settings_close_btn.configure(bg=C.hover))
+        self._settings_close_btn.bind("<Leave>", lambda _e: self._settings_close_btn.configure(bg=C.panel))
+
+        pop.update_idletasks()
+        w = max(420, pop.winfo_reqwidth())
+        h = pop.winfo_reqheight()
+        x = self.winfo_rootx() + (self.winfo_width() - w) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - h) // 2
+        pop.geometry(f"{w}x{h}+{x}+{y}")
+        try:
+            pop.grab_set()
+        except tk.TclError:
+            pass
+        self.key_entry.focus_set()
+
+    def _close_settings(self) -> None:
+        if self._settings is None:
+            return
+        try:
+            self._settings.grab_release()
+        except tk.TclError:
+            pass
+        self._settings.destroy()
+        self._settings = None
+        self.key_entry = None
+        self.mask_btn = None
+        self.key_edge = None
+        self._settings_status = None
+        self._settings_close_btn = None
+
     def _fit_overlay(self) -> None:
         pop = self._overlay
         if pop is None or not pop.winfo_exists():
@@ -1513,6 +1701,7 @@ class App(tk.Tk):
             self._pump_after_id = None
         self.stop()
         self._close_about()
+        self._close_settings()
         if self._overlay is not None and self._overlay.winfo_exists():
             self._overlay.destroy()
             self._overlay = None

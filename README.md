@@ -4,7 +4,7 @@
 
 PC’de çalan sesi (sistem hoparlörü / loopback) veya mikrofonu [Gemini Live Translate](https://ai.google.dev/) ile canlı çevirir. Çeviri hem metin hem ses olarak gelir; metin-only mod da vardır.
 
-Sürüm **0.6.0**. Yazar: Enes Eliağır. Windows odaklı (WASAPI loopback). Python **3.11+**.
+Sürüm **0.6.1**. Yazar: Enes Eliağır. Windows odaklı (WASAPI loopback). Python **3.11+**.
 
 ## İçindekiler
 
@@ -275,8 +275,8 @@ Otomatik güncelleme yalnız Windows onefile `Ahenk.exe` dağıtımında etkindi
 İstemciler GitHub API’ye anahtarsız eriştiği için depo **public** olmalı. Yayın oluşturmak için `meta.py`, `pyproject.toml` ve `version_info.txt` sürümlerini aynı değere getirip `vMAJOR.MINOR.PATCH` etiketi gönderin:
 
 ```bat
-git tag v0.6.0
-git push origin v0.6.0
+git tag v0.6.1
+git push origin v0.6.1
 ```
 
 `.github/workflows/release.yml` testleri çalıştırır, onefile exe’yi derler, SHA-256 dosyasını üretir ve ikisini GitHub Release’e yükler. Taslak ve prerelease sürümler istemcilere sunulmaz.

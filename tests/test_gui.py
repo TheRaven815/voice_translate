@@ -67,7 +67,7 @@ def test_app_name_version_and_about():
     try:
         assert app.title() == APP_TITLE == "Ahenk"
         assert app.brand["text"] == "Ahenk"
-        assert app.version_lbl["text"] == "v0.6.0"
+        assert app.version_lbl["text"] == "v0.6.1"
         assert ICON_ICO.is_file()
         assert ICON_PNG.is_file()
         assert getattr(app, "_ahenk_icon", None) is not None
@@ -77,7 +77,7 @@ def test_app_name_version_and_about():
         assert app._about is not None
         assert app._about.title() == "Hakkında"
         assert app.about_name["text"] == "Ahenk"
-        assert app.about_version["text"] == "v0.6.0"
+        assert app.about_version["text"] == "v0.6.1"
         assert app.about_author["text"] == APP_AUTHOR == "Enes Eliağır"
         assert app.about_update_status["text"] == "Kaynak kod modu"
         assert app.about_update_btn["text"] == "Güncellemeleri denetle"
@@ -164,6 +164,7 @@ def test_save_key_clears_selection_and_focus(tmp_path, monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     app = App()
     try:
+        app._open_settings()
         app.key_var.set("sk-test")
         app.key_entry.focus_force()
         app.key_entry.selection_range(0, tk.END)
@@ -401,7 +402,7 @@ def test_theme_toggle_and_persistence(tmp_path, monkeypatch):
     app = App()
     try:
         assert C.current == "dark"
-        assert app.theme_btn.cget("text") == "☀️"
+        assert app.theme_btn.cget("text") == "☀"
         assert app.cget("bg") == "#111111"
         app.update_idletasks()
         theme_btn_geometry = (app.theme_btn.winfo_x(), app.theme_btn.winfo_width())
@@ -419,7 +420,7 @@ def test_theme_toggle_and_persistence(tmp_path, monkeypatch):
 
         app.toggle_theme()
         assert C.current == "dark"
-        assert app.theme_btn.cget("text") == "☀️"
+        assert app.theme_btn.cget("text") == "☀"
         assert app.cget("bg") == "#111111"
         assert config.load().theme == "dark"
     finally:
@@ -722,6 +723,7 @@ def test_gui_pin_and_zoom():
 def test_gui_key_mask_toggle():
     app = App()
     try:
+        app._open_settings()
         assert app.key_entry.cget("show") == "•"
         app._toggle_key_mask()
         assert app.key_entry.cget("show") == ""
@@ -732,6 +734,24 @@ def test_gui_key_mask_toggle():
     finally:
         app.destroy()
 
+
+def test_settings_dialog_open_and_close():
+    app = App()
+    try:
+        assert app.settings_btn is not None
+        assert app._settings is None
+        app._open_settings()
+        assert app._settings is not None
+        assert app._settings.title() == "Ayarlar"
+        assert app.key_entry is not None
+        first = app._settings
+        app._open_settings()
+        assert app._settings is first
+        app._close_settings()
+        assert app._settings is None
+        assert app.key_entry is None
+    finally:
+        app.destroy()
 
 def test_gui_overlay_studio_and_export(tmp_path, monkeypatch):
     app = App()
