@@ -598,3 +598,136 @@ def test_receive_latency_and_detected_language():
     assert loop_obj.detected_src == "fr"
     assert ("detected_src", "fr") in emitted
     assert any(item[0] == "latency" and item[1] >= 200 for item in emitted if isinstance(item, tuple))
+
+def test_capture_does_not_drop_when_output_speaker_is_different_device():
+    """H05: Çıkış aygıtı farklı olduğunda loopback kaynak ses bastırılmamalı."""
+    from loop import _is_same_endpoint
+
+    class Device:
+        def __init__(self, id, name, isloopback=False):
+            self.id = id
+            self.name = name
+            self.isloopback = isloopback
+
+    spk_a = Device(id="dev_A", name="Hoparlör A")
+    spk_b = Device(id="dev_B", name="Kulaklık B")
+    mic_a_loop = Device(id="dev_A", name="Hoparlör A", isloopback=True)
+    mic_b_loop = Device(id="dev_B", name="Kulaklık B", isloopback=True)
+
+    assert _is_same_endpoint(mic_a_loop, spk_a) is True
+    assert _is_same_endpoint(mic_a_loop, spk_b) is False
+    assert _is_same_endpoint(mic_b_loop, spk_b) is True
+    assert _is_same_endpoint(mic_b_loop, spk_a) is False
+
+    frames_recorded = []
+
+    class MockRecorder:
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+        def record(self, numframes):
+            frames_recorded.append(True)
+            return np.ones((numframes, 2), dtype=np.float32) * 0.1
+
+    class TestMic:
+        id = "dev_A"
+        name = "Hoparlör A"
+        isloopback = True
+        channels = 2
+        def recorder(self, **kwargs):
+            return MockRecorder()
+
+    posted = []
+    loop_obj = SystemAudioLoop("en", "tr", TestMic(), "dummy-key", output_speaker=spk_b)
+    loop_obj._post = lambda msg: posted.append(msg)
+    loop_obj._playback_until = time.monotonic() + 10.0  # Aktif çalma var ama farklı cihaz
+
+    import threading
+    t = threading.Thread(target=loop_obj._capture_thread, daemon=True)
+    t.start()
+    time.sleep(0.05)
+    loop_obj._cap_stop.set()
+    t.join(timeout=1.0)
+
+    assert len(frames_recorded) > 0
+    assert len(posted) > 0
+
+    # Aynı cihaz senaryosu: playback_until aktifken frame atılmalı (echo loop önleme)
+    posted_same = []
+    loop_obj_same = SystemAudioLoop("en", "tr", TestMic(), "dummy-key", output_speaker=spk_a)
+    loop_obj_same._post = lambda msg: posted_same.append(msg)
+    loop_obj_same._playback_until = time.monotonic() + 10.0
+
+    t_same = threading.Thread(target=loop_obj_same._capture_thread, daemon=True)
+    t_same.start()
+    time.sleep(0.05)
+    loop_obj_same._cap_stop.set()
+    t_same.join(timeout=1.0)
+
+    assert len(posted_same) == 0
+
+def test_h13_audio_converter_anti_aliasing():
+    """H13: 48 kHz -> 16 kHz dönüşümünde 8 kHz üstü frekanslar (örn 12 kHz) filtrelenmeli."""
+    from audio import AudioConverter
+    conv = AudioConverter(in_rate=48000, out_rate=16000)
+    t = np.arange(48000) / 48000.0
+    # 12 kHz sinyal
+    sig_12k = (0.7 * np.sin(2 * np.pi * 12000.0 * t)).astype(np.float32)
+    out_bytes = b""
+    for chunk in np.array_split(sig_12k, 50):
+        out_bytes += conv.process(chunk)
+    out_samples = np.frombuffer(out_bytes, dtype=np.int16) / 32768.0
+    # 12 kHz aliased genliği en az -30 dB (yaklaşık 0.02'den küçük) olmalı
+    max_out = np.max(np.abs(out_samples[500:]))
+    assert max_out < 0.02
+
+
+def test_h14_play_thread_single_volume_scaling_and_mute_preroll():
+    """H14: Ses kazancı bir kez uygulanmalı (çift ölçekleme olmamalı) ve mute preroll'u atlamamalı."""
+    import queue
+    played_blocks = []
+
+    class RecordingPlayer:
+        def __init__(self, **_kwargs):
+            pass
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            pass
+        def play(self, data):
+            played_blocks.append(np.array(data, copy=True))
+
+    class MockSpeaker:
+        name = "MockSpeaker"
+        def player(self, **kwargs):
+            return RecordingPlayer(**kwargs)
+
+    # 1. Volume 0.5 test
+    loop_obj = SystemAudioLoop("en", "tr", None, "key", output_speaker=MockSpeaker())
+    loop_obj.volume = 0.5
+    loop_obj._play_q = queue.Queue()
+
+    # 1 saniyelik 0.8 genlikli float ses verisi
+    raw_float = np.full(4000, 0.8, dtype=np.float32)
+    pcm_bytes = (raw_float * 32767.0).astype(np.int16).tobytes()
+    loop_obj._play_q.put(pcm_bytes)
+    loop_obj._play_q.put(None)  # durma sinyali
+
+    loop_obj._play_thread()
+
+    assert len(played_blocks) > 0
+    concatenated = np.concatenate(played_blocks)
+    # Kazanç bir kez uygulanmış olmalı: 0.8 * 0.5 = ~0.4 (0.25 gibi çift çarpılmış olmamalı)
+    assert np.allclose(concatenated, 0.4, atol=0.02)
+
+    # 2. Mute test (preroll tamponundayken bile mute sesi engellemeli)
+    played_blocks.clear()
+    loop_obj_muted = SystemAudioLoop("en", "tr", None, "key", output_speaker=MockSpeaker())
+    loop_obj_muted.muted = True
+    loop_obj_muted._play_q = queue.Queue()
+    loop_obj_muted._play_q.put(pcm_bytes)
+    loop_obj_muted._play_q.put(None)
+
+    loop_obj_muted._play_thread()
+    assert len(played_blocks) == 0

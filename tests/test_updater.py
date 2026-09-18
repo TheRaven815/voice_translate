@@ -93,3 +93,71 @@ def test_update_helper_rolls_back_when_new_executable_does_not_start(tmp_path, m
     assert target.read_bytes() == b"old executable"
     assert len(starts) == 2
     assert "geri yüklendi" in starts[-1][1]["error"]
+
+def test_update_helper_does_not_delete_target_if_backup_is_missing_on_failed_start(tmp_path, monkeypatch):
+    target = tmp_path / "Ahenk.exe"
+    source = tmp_path / ".Ahenk.update-0-6-0.exe"
+    target.write_bytes(b"target executable")
+    source.write_bytes(b"broken executable")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    starts = []
+
+    monkeypatch.setattr(updater.sys, "executable", str(source))
+    monkeypatch.setattr(updater, "_wait_for_process", lambda _pid: None)
+    monkeypatch.setattr(updater, "_start_target", lambda *args, **kwargs: starts.append((args, kwargs)) or object())
+    monkeypatch.setattr(updater, "_wait_until_started", lambda _process, _ready: False)
+
+    # Simulate missing backup file by ensuring no .old file exists right before rollback check
+    backup = target.with_suffix(target.suffix + ".old")
+    orig_replace = updater.os.replace
+
+    def fake_replace(src, dst):
+        orig_replace(src, dst)
+        if Path(dst) == backup:
+            backup.unlink(missing_ok=True)
+
+    monkeypatch.setattr(updater.os, "replace", fake_replace)
+
+    assert updater.run_update_helper("123", str(target), digest) == 1
+    # Target must not have been deleted!
+    assert target.exists()
+    assert "korundu" in starts[-1][1]["error"]
+
+
+def test_cleanup_previous_update_touches_ready_without_deleting_backup_or_ready(tmp_path, monkeypatch):
+    target = tmp_path / "Ahenk.exe"
+    target.write_bytes(b"target binary")
+    backup = target.with_suffix(target.suffix + ".old")
+    backup.write_bytes(b"old binary")
+    ready = target.with_name(f".{target.stem}.update-ready-test")
+    new_file = target.with_suffix(target.suffix + ".new")
+    new_file.write_bytes(b"new leftover")
+
+    monkeypatch.setattr(updater, "can_self_update", lambda: True)
+    monkeypatch.setattr(updater.sys, "executable", str(target))
+    monkeypatch.setenv(updater._READY_ENV, str(ready))
+
+    deleted_paths = []
+    monkeypatch.setattr(updater.time, "sleep", lambda _s: None)
+
+    orig_unlink = Path.unlink
+
+    def spy_unlink(self, missing_ok=False):
+        deleted_paths.append(self)
+        return orig_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", spy_unlink)
+
+    updater.cleanup_previous_update()
+
+    # ready file should have been touched
+    assert ready.exists()
+    # Let any background cleanup finish
+    import time
+    time.sleep(0.1)
+
+    # backup (.old) and ready files must NOT be deleted by cleanup_previous_update
+    assert backup.exists()
+    assert ready.exists()
+    assert backup not in deleted_paths
+    assert ready not in deleted_paths

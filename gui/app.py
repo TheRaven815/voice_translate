@@ -87,6 +87,7 @@ class App(tk.Tk):
         self._cfg = cfg
         self._theme = getattr(cfg, "theme", "dark") or "dark"
         C.apply_theme(self._theme)
+        set_ui_lang(getattr(cfg, "ui_lang", "tr"))
         super().__init__()
         self.title(APP_TITLE)
         apply_icon(self)
@@ -127,10 +128,10 @@ class App(tk.Tk):
         self.overlay_history_lines = 2
         self.transcript_items: list[TranscriptItem] = []
         self.session_start_time: float | None = None
+        self._timeline_start_time: float | None = None
         self._curr_heard_buf = ""
         self._curr_trans_buf = ""
         setup_logging()
-        set_ui_lang(getattr(self._cfg, "ui_lang", "tr"))
         if self.always_on_top:
             try:
                 self.attributes("-topmost", True)
@@ -217,7 +218,7 @@ class App(tk.Tk):
             self.pin_btn._rest_fg = C.live
             self.pin_btn.configure(fg=C.live)
         self.pin_btn.pack(side=tk.RIGHT, padx=(0, 6))
-        self.overlay_btn = self._text_btn(self._rail_title, "Altyazı", self.toggle_overlay)
+        self.overlay_btn = self._text_btn(self._rail_title, t("subtitle"), self.toggle_overlay)
         self.overlay_btn.pack(side=tk.RIGHT, padx=(0, 6))
 
         self._rail_st = tk.Frame(self._rail_head, bg=C.rail)
@@ -225,7 +226,7 @@ class App(tk.Tk):
         self._dot = tk.Canvas(self._rail_st, width=8, height=8, bg=C.rail, highlightthickness=0, bd=0)
         self._dot.pack(side=tk.LEFT, pady=1)
         self._dot_id = self._dot.create_oval(1, 1, 7, 7, fill=C.dim, outline="")
-        self.status = tk.Label(self._rail_st, text="Hazır", font=self.font_ui, fg=C.muted, bg=C.rail)
+        self.status = tk.Label(self._rail_st, text=t("ready"), font=self.font_ui, fg=C.muted, bg=C.rail)
         self.status.pack(side=tk.LEFT, padx=(6, 0))
         self.timer_lbl = tk.Label(self._rail_st, text="", font=self.font_ui, fg=C.dim, bg=C.rail)
         self.timer_lbl.pack(side=tk.RIGHT, padx=(6, 0))
@@ -238,11 +239,11 @@ class App(tk.Tk):
         self._devices_frame = tk.Frame(rail, bg=C.rail)
         self._devices_frame.grid(row=2, column=0, sticky="ew", padx=16, pady=(12, 0))
         self._devices_frame.columnconfigure(0, weight=1)
-        tk.Label(self._devices_frame, text="Aygıt", font=self.font_ui, fg=C.muted, bg=C.rail).grid(
+        tk.Label(self._devices_frame, text=t("device"), font=self.font_ui, fg=C.muted, bg=C.rail).grid(
             row=0, column=0, sticky="w"
         )
         self.refresh_btn = self._text_btn(
-            self._devices_frame, "Yenile", lambda: self.refresh_devices(async_scan=True)
+            self._devices_frame, t("refresh"), lambda: self.refresh_devices(async_scan=True)
         )
         self.refresh_btn.grid(row=0, column=1, sticky="e")
 
@@ -250,15 +251,13 @@ class App(tk.Tk):
         self._fields_frame.grid(row=3, column=0, sticky="ew", padx=16, pady=(8, 0))
         self._fields_frame.columnconfigure(0, weight=1)
 
-        tk.Label(self._fields_frame, text="Giriş", font=self.font_ui, fg=C.muted, bg=C.rail).grid(
-            row=0, column=0, sticky="w"
+        tk.Label(self._fields_frame, text=t("input"), font=self.font_ui, fg=C.muted, bg=C.rail).grid(
         )
         self.in_var = tk.StringVar()
         self.in_box = Select(self._fields_frame, textvariable=self.in_var, values=["[Sistem]"], font=self.font_ui)
         self.in_box.grid(row=1, column=0, sticky="ew", pady=(3, 10))
 
-        tk.Label(self._fields_frame, text="Çıkış", font=self.font_ui, fg=C.muted, bg=C.rail).grid(
-            row=2, column=0, sticky="w"
+        tk.Label(self._fields_frame, text=t("output"), font=self.font_ui, fg=C.muted, bg=C.rail).grid(
         )
         self.out_var = tk.StringVar()
         self.out_box = Select(self._fields_frame, textvariable=self.out_var, values=[NONE_OUTPUT], font=self.font_ui)
@@ -268,7 +267,7 @@ class App(tk.Tk):
 
         self._lang_h = tk.Frame(rail, bg=C.rail)
         self._lang_h.grid(row=5, column=0, sticky="ew", padx=16, pady=(12, 0))
-        tk.Label(self._lang_h, text="Dil", font=self.font_ui, fg=C.muted, bg=C.rail).pack(side=tk.LEFT)
+        tk.Label(self._lang_h, text=t("language"), font=self.font_ui, fg=C.muted, bg=C.rail).pack(side=tk.LEFT)
 
         self._langs_frame = tk.Frame(rail, bg=C.rail)
         self._langs_frame.grid(row=6, column=0, sticky="ew", padx=16, pady=(8, 0))
@@ -308,9 +307,9 @@ class App(tk.Tk):
         self._btns_frame.columnconfigure(0, weight=1)
         self._btns_frame.columnconfigure(1, weight=1)
 
-        self.start_btn = self._btn(self._btns_frame, "Başlat", self.start)
+        self.start_btn = self._btn(self._btns_frame, t("start"), self.start)
         self.start_btn._edge.grid(row=0, column=0, sticky="ew", padx=(0, 4))
-        self.stop_btn = self._btn(self._btns_frame, "Durdur", self.stop)
+        self.stop_btn = self._btn(self._btns_frame, t("stop"), self.stop)
         self.stop_btn._edge.grid(row=0, column=1, sticky="ew", padx=(4, 0))
         self._paint(self.start_btn, filled=True, enabled=True)
         self._paint(self.stop_btn, filled=False, enabled=False)
@@ -318,26 +317,25 @@ class App(tk.Tk):
     def _build_main(self, main: tk.Frame):
         self.heard_h = tk.Frame(main, bg=C.bg)
         self.heard_h.grid(row=0, column=0, sticky="ew", padx=(16, 8), pady=(12, 6))
-        self.heard_lbl = tk.Label(self.heard_h, text="Duyulan", font=self.font_ui, fg=C.muted, bg=C.bg)
+        self.heard_lbl = tk.Label(self.heard_h, text=t("heard"), font=self.font_ui, fg=C.muted, bg=C.bg)
         self.heard_lbl.pack(side=tk.LEFT)
         self.detected_lbl = tk.Label(self.heard_h, text="", font=self.font_ui, fg=C.dim, bg=C.bg)
         self.detected_lbl.pack(side=tk.LEFT, padx=(6, 0))
-        self.heard_clear = self._text_btn(self.heard_h, "Temizle", lambda: self._clear_pane(self.heard))
+        self.heard_clear = self._text_btn(self.heard_h, t("clear"), lambda: self._clear_pane(self.heard))
         self.heard_clear.pack(side=tk.RIGHT)
-        self.heard_export = self._text_btn(self.heard_h, "Dışa Aktar", self._export_transcripts)
+        self.heard_export = self._text_btn(self.heard_h, t("export"), self._export_transcripts)
         self.heard_export.pack(side=tk.RIGHT, padx=(0, 6))
-        self.heard_copy = self._text_btn(self.heard_h, "Kopyala", lambda: self._copy_pane(self.heard))
+        self.heard_copy = self._text_btn(self.heard_h, t("copy"), lambda: self._copy_pane(self.heard))
         self.heard_copy.pack(side=tk.RIGHT, padx=(0, 6))
-
         self.trans_h = tk.Frame(main, bg=C.bg)
         self.trans_h.grid(row=0, column=1, sticky="ew", padx=(16, 16), pady=(12, 6))
-        self.trans_lbl = tk.Label(self.trans_h, text="Çeviri", font=self.font_ui, fg=C.muted, bg=C.bg)
+        self.trans_lbl = tk.Label(self.trans_h, text=t("trans"), font=self.font_ui, fg=C.muted, bg=C.bg)
         self.trans_lbl.pack(side=tk.LEFT)
-        self.trans_clear = self._text_btn(self.trans_h, "Temizle", lambda: self._clear_pane(self.trans))
+        self.trans_clear = self._text_btn(self.trans_h, t("clear"), lambda: self._clear_pane(self.trans))
         self.trans_clear.pack(side=tk.RIGHT)
-        self.trans_export = self._text_btn(self.trans_h, "Dışa Aktar", self._export_transcripts)
+        self.trans_export = self._text_btn(self.trans_h, t("export"), self._export_transcripts)
         self.trans_export.pack(side=tk.RIGHT, padx=(0, 6))
-        self.trans_copy = self._text_btn(self.trans_h, "Kopyala", lambda: self._copy_pane(self.trans))
+        self.trans_copy = self._text_btn(self.trans_h, t("copy"), lambda: self._copy_pane(self.trans))
         self.trans_copy.pack(side=tk.RIGHT, padx=(0, 6))
 
         self.heard_wrap = tk.Frame(main, bg=C.bg, bd=0, highlightthickness=0)
@@ -417,14 +415,22 @@ class App(tk.Tk):
 
     def _lock_text(self, w: tk.Text) -> None:
         def on_key(e):
-            if (e.state & 0x4) and e.keysym.lower() in ("c", "a"):
+            if e.keysym in (
+                "Up", "Down", "Left", "Right", "Home", "End",
+                "Prior", "Next", "Tab", "ISO_Left_Tab",
+                "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R",
+                "Caps_Lock", "Escape"
+            ) or (e.keysym.startswith("F") and e.keysym[1:].isdigit()):
                 return
+            if e.state & 0x4:
+                if e.keysym.lower() not in ("v", "x"):
+                    return
             return "break"
 
         w.bind("<Key>", on_key)
         w.bind("<<Paste>>", lambda _e: "break")
+        w.bind("<<Cut>>", lambda _e: "break")
         w.bind("<Button-2>", lambda _e: "break")
-
     def _rail_sep(self, parent: tk.Frame, row: int) -> None:
         sep = tk.Frame(parent, bg=C.line, height=1, bd=0, highlightthickness=0)
         sep.grid(row=row, column=0, sticky="ew", padx=16, pady=(12, 0))
@@ -495,9 +501,19 @@ class App(tk.Tk):
         btn._edge.configure(bg=edge)
 
     def _set_status(self, text: str, color: str = C.dim) -> None:
-        self.status.configure(text=text)
+        status_map = {
+            "Hazır": "ready",
+            "Çalışıyor": "running",
+            "Bağlanıyor": "connecting",
+            "Durdu": "stopped",
+            "Durduruluyor": "stopping",
+            "Yeniden başlatılıyor": "restarting",
+            "Hata": "error",
+        }
+        key = status_map.get(text)
+        translated = t(key, text) if key else text
+        self.status.configure(text=translated)
         self._dot.itemconfigure(self._dot_id, fill=color)
-
     def _set_running(self, running: bool) -> None:
         if self.key_entry is not None and self.key_entry.winfo_exists():
             self.key_entry.configure(state=tk.DISABLED if running else tk.NORMAL)
@@ -547,7 +563,10 @@ class App(tk.Tk):
         self.out_box["values"] = [NONE_OUTPUT] + [s.name for s in outs]
         if not stopping:
             cfg = getattr(self, "_cfg", None) or load_config()
-            if cfg.input_device and cfg.input_device in self.in_box["values"]:
+            cur_in = self.in_var.get()
+            if cur_in and cur_in in self.in_box["values"]:
+                pass
+            elif cfg.input_device and cfg.input_device in self.in_box["values"]:
                 self.in_var.set(cfg.input_device)
             else:
                 loops = [m for m in ins if getattr(m, "isloopback", False)]
@@ -571,7 +590,11 @@ class App(tk.Tk):
                     self.in_var.set(
                         ("[Sistem] " if getattr(default_in, "isloopback", False) else "[Mikrofon] ") + default_in.name
                     )
-            if cfg.output_device and cfg.output_device in self.out_box["values"]:
+
+            cur_out = self.out_var.get()
+            if cur_out and cur_out in self.out_box["values"]:
+                pass
+            elif cfg.output_device and cfg.output_device in self.out_box["values"]:
                 self.out_var.set(cfg.output_device)
             else:
                 try:
@@ -627,8 +650,15 @@ class App(tk.Tk):
         widget.delete("1.0", tk.END)
         if widget is self.heard:
             self.detected_lbl.configure(text="")
-        if widget is self.trans and self._overlay is not None and self._overlay.winfo_exists():
-            self.overlay_label.configure(text="...")
+            self._curr_heard_buf = ""
+            self.transcript_items = [it for it in self.transcript_items if it.stream != "heard"]
+        elif widget is self.trans:
+            if self._overlay is not None and self._overlay.winfo_exists():
+                self.overlay_label.configure(text="...")
+            self._curr_trans_buf = ""
+            self.transcript_items = [it for it in self.transcript_items if it.stream != "trans"]
+        if not self.transcript_items and (self.worker is None or not self.worker.is_alive()):
+            self._timeline_start_time = None
     def _copy_pane(self, pane: tk.Text):
         content = pane.get("1.0", "end-1c").strip()
         if content:
@@ -719,12 +749,16 @@ class App(tk.Tk):
                     self.after(0, lambda: self._settings_status.configure(text=f"✕ Test başarısız: {err_msg}", fg=C.warn) if self._settings_status and self._settings_status.winfo_exists() else None)
         threading.Thread(target=_bg, daemon=True).start()
 
-    def _export_transcripts(self) -> None:
-        from tkinter import filedialog
-        from export import export_txt, export_srt, export_jsonl, TranscriptItem
+    def _get_export_items(self) -> list[TranscriptItem]:
         items = list(getattr(self, "transcript_items", []))
+        now = time.time()
+        heard_buf = getattr(self, "_curr_heard_buf", "").strip()
+        trans_buf = getattr(self, "_curr_trans_buf", "").strip()
+        if heard_buf:
+            items.append(TranscriptItem(timestamp=now, stream="heard", text=heard_buf))
+        if trans_buf:
+            items.append(TranscriptItem(timestamp=now + 0.5, stream="trans", text=trans_buf))
         if not items:
-            now = time.time()
             heard_text = self.heard.get("1.0", "end-1c").strip()
             trans_text = self.trans.get("1.0", "end-1c").strip()
             if heard_text:
@@ -735,6 +769,12 @@ class App(tk.Tk):
                 for line in trans_text.splitlines():
                     if line.strip():
                         items.append(TranscriptItem(timestamp=now + 1.0, stream="trans", text=line.strip()))
+        return items
+
+    def _export_transcripts(self) -> None:
+        from tkinter import filedialog
+        from export import export_txt, export_srt, export_jsonl
+        items = self._get_export_items()
         if not items:
             self._append("[bilgi] Dışa aktarılacak transkript yok.\n")
             return
@@ -753,7 +793,7 @@ class App(tk.Tk):
             return
         try:
             if file_path.lower().endswith(".srt"):
-                content = export_srt(items, session_start=getattr(self, "session_start_time", None))
+                content = export_srt(items, session_start=getattr(self, "_timeline_start_time", None) or getattr(self, "session_start_time", None))
             elif file_path.lower().endswith(".jsonl"):
                 content = export_jsonl(items)
             else:
@@ -925,6 +965,7 @@ class App(tk.Tk):
                 selectforeground=C.text,
                 inactiveselectbackground=C.select,
             )
+            pane.tag_configure("body", foreground=C.text)
 
         self.log.configure(
             bg=C.bg,
@@ -955,10 +996,18 @@ class App(tk.Tk):
             self._overlay.configure(bg=C.overlay_bg)
             if hasattr(self, "_overlay_wrap") and self._overlay_wrap.winfo_exists():
                 self._overlay_wrap.configure(bg=C.overlay_bg, highlightbackground=C.line)
+            if hasattr(self, "_overlay_hdr") and self._overlay_hdr.winfo_exists():
+                self._overlay_hdr.configure(bg=C.overlay_bg)
             if hasattr(self, "overlay_label") and self.overlay_label.winfo_exists():
                 self.overlay_label.configure(bg=C.overlay_bg, fg=C.text)
             if hasattr(self, "_overlay_close") and self._overlay_close.winfo_exists():
                 self._overlay_close.configure(bg=C.overlay_bg, fg=C.dim)
+            if hasattr(self, "_overlay_thru_btn") and self._overlay_thru_btn.winfo_exists():
+                self._overlay_thru_btn.configure(bg=C.overlay_bg, fg=C.dim)
+            if hasattr(self, "_overlay_fplus") and self._overlay_fplus.winfo_exists():
+                self._overlay_fplus.configure(bg=C.overlay_bg, fg=C.dim)
+            if hasattr(self, "_overlay_fminus") and self._overlay_fminus.winfo_exists():
+                self._overlay_fminus.configure(bg=C.overlay_bg, fg=C.dim)
         if self._about is not None and self._about.winfo_exists():
             self._about.configure(bg=C.panel)
             dark_titlebar(self._about, dark=(C.current != "light"))
@@ -971,14 +1020,27 @@ class App(tk.Tk):
                         sid = msg[1] if isinstance(msg, tuple) and len(msg) > 1 else None
                         if sid is not None and sid != self._session_id:
                             continue
+                        if getattr(self, "_curr_heard_buf", "").strip():
+                            self.transcript_items.append(
+                                TranscriptItem(timestamp=time.time(), stream="heard", text=self._curr_heard_buf.strip())
+                            )
+                            self._curr_heard_buf = ""
+                        if getattr(self, "_curr_trans_buf", "").strip():
+                            self.transcript_items.append(
+                                TranscriptItem(timestamp=time.time(), stream="trans", text=self._curr_trans_buf.strip())
+                            )
+                            self._curr_trans_buf = ""
                         self._set_running(False)
                         self.worker = None
                         self.loop_obj = None
                         if getattr(self, "_pending_restart", False):
                             self._pending_restart = False
-                            self.start()
+                            try:
+                                self.start(preserve_transcript=True)
+                            except TypeError:
+                                self.start()
                         else:
-                            if self.status.cget("text") != "Hata":
+                            if self.status.cget("text") not in ("Hata", "Error"):
                                 self._set_status("Durdu", C.dim)
                         continue
                     if isinstance(msg, tuple):
@@ -1167,7 +1229,7 @@ class App(tk.Tk):
         else:
             self.focus_set()
 
-    def start(self):
+    def start(self, preserve_transcript: bool = False):
         if self.worker is not None and self.worker.is_alive():
             return
         self._pending_restart = False
@@ -1175,30 +1237,34 @@ class App(tk.Tk):
         if not api_key:
             self._append("[hata] API anahtarı girin (Ayarlar veya https://aistudio.google.com/apikey)\n")
             self._open_settings()
-            if self.status.cget("text") != "Hata":
+            if self.status.cget("text") not in ("Hata", "Error"):
                 self._set_status("Durdu", C.dim)
             return
         idx = self.in_box.current()
         if idx < 0 or idx >= len(self.inputs):
             self._append("[hata] Geçerli giriş aygıtı seçin.\n")
-            if self.status.cget("text") != "Hata":
+            if self.status.cget("text") not in ("Hata", "Error"):
                 self._set_status("Durdu", C.dim)
             return
         source = self.inputs[idx]
         speaker = self._selected_speaker()
         try:
             save_api_key(api_key)
-        except OSError:
-            pass
+        except OSError as e:
+            self._append(f"[uyarı] API anahtarı diske güvenli kaydedilemedi: {e}\n")
         src, dst = source_code(self.src_var.get()), LANGS[self.dst_var.get()]
-        self._clear_pane(self.heard)
-        self._clear_pane(self.trans)
+        if not preserve_transcript:
+            self._clear_pane(self.heard)
+            self._clear_pane(self.trans)
+            self.transcript_items = []
+            self._curr_heard_buf = ""
+            self._curr_trans_buf = ""
+            self._timeline_start_time = time.time()
+        else:
+            if getattr(self, "_timeline_start_time", None) is None:
+                self._timeline_start_time = time.time()
         self._stopping.clear()
         self.session_start_time = time.time()
-        self.transcript_items = []
-        self._curr_heard_buf = ""
-        self._curr_trans_buf = ""
-        self._session_id += 1
         current_session_id = self._session_id
         self._loop_kwargs = {
             "src": src,
@@ -1660,6 +1726,7 @@ class App(tk.Tk):
 
         hdr = tk.Frame(wrap, bg=C.overlay_bg)
         hdr.pack(fill=tk.X, padx=6, pady=(3, 0))
+        self._overlay_hdr = hdr
 
         close_btn = tk.Label(hdr, text="✕", font=self.font_ui, fg=C.dim, bg=C.overlay_bg, cursor="hand2")
         close_btn.pack(side=tk.RIGHT, padx=(4, 0))
@@ -1676,11 +1743,12 @@ class App(tk.Tk):
         fplus = tk.Label(hdr, text="A+", font=self.font_ui, fg=C.dim, bg=C.overlay_bg, cursor="hand2")
         fplus.pack(side=tk.RIGHT, padx=(4, 0))
         fplus.bind("<Button-1>", lambda _e: self._adjust_overlay_font(1))
+        self._overlay_fplus = fplus
 
         fminus = tk.Label(hdr, text="A-", font=self.font_ui, fg=C.dim, bg=C.overlay_bg, cursor="hand2")
         fminus.pack(side=tk.RIGHT, padx=(4, 0))
         fminus.bind("<Button-1>", lambda _e: self._adjust_overlay_font(-1))
-
+        self._overlay_fminus = fminus
         lines = [l.strip() for l in self.trans.get("1.0", "end").splitlines() if l.strip()]
         cur_text = "\n".join(lines[-getattr(self, "overlay_history_lines", 2):]) if lines else "..."
 

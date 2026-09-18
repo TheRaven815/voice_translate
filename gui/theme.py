@@ -57,7 +57,7 @@ LIGHT = {
     "warn": "#9a6700",
     "err": "#cf222e",
     "select": "#d0d7de",
-    "overlay_bg": "#1f2328",
+    "overlay_bg": "#ffffff",
     "disabled_bg": "#e9edf2",
 }
 

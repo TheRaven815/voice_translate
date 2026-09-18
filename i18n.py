@@ -29,6 +29,9 @@ STRINGS: dict[str, dict[str, str]] = {
         "settings": "Ayarlar",
         "theme": "Tema",
         "pin": "Sabitle",
+        "refresh": "Yenile",
+        "restarting": "Yeniden başlatılıyor",
+        "error": "Hata",
         "copied": "Metin panoya kopyalandı.",
         "exported": "Transkript dışa aktarıldı:",
         "none_output": "Hiçbiri (yalnızca metin)",
@@ -59,12 +62,14 @@ STRINGS: dict[str, dict[str, str]] = {
         "settings": "Settings",
         "theme": "Theme",
         "pin": "Pin",
+        "refresh": "Refresh",
+        "restarting": "Restarting",
+        "error": "Error",
         "copied": "Text copied to clipboard.",
         "exported": "Transcript exported to:",
         "none_output": "None (text-only)",
     },
 }
-
 _current_lang = "tr"
 
 

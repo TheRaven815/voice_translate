@@ -31,12 +31,25 @@ class AudioConverter:
         self.out_rate = out_rate
         self._leftover = np.empty(0, dtype=np.float32)
         self._phase = 0.0
-
+        if in_rate > out_rate:
+            m = 41
+            cutoff = out_rate * 0.45
+            fc = cutoff / in_rate
+            n = np.arange(m) - (m - 1) / 2.0
+            h = 2.0 * fc * np.sinc(2.0 * fc * n) * np.hamming(m)
+            self._taps: np.ndarray | None = (h / np.sum(h)).astype(np.float32)
+            self._filter_state = np.zeros(m - 1, dtype=np.float32)
+        else:
+            self._taps = None
+            self._filter_state = np.empty(0, dtype=np.float32)
     def process(self, frame: np.ndarray) -> bytes:
         mono = frame.mean(axis=1) if frame.ndim > 1 else frame
+        if self._taps is not None and len(mono) > 0:
+            full_mono = np.concatenate([self._filter_state, mono])
+            mono = np.convolve(full_mono, self._taps, mode="valid").astype(np.float32)
+            self._filter_state = full_mono[-(len(self._taps) - 1):].astype(np.float32)
         if len(self._leftover) > 0:
             mono = np.concatenate([self._leftover, mono])
-
         total_in = len(mono)
         if total_in < 2:
             self._leftover = mono.astype(np.float32)
@@ -77,19 +90,14 @@ class AudioConverter:
     def reset(self) -> None:
         self._leftover = np.empty(0, dtype=np.float32)
         self._phase = 0.0
-
+        if self._taps is not None:
+            self._filter_state = np.zeros(len(self._taps) - 1, dtype=np.float32)
 
 def to_16k_mono(frame: np.ndarray, in_rate: int = CAPTURE_RATE) -> bytes:
     """float32 (n, ch) yakalamayı 16 kHz mono int16 PCM'e çevirir."""
     mono = frame.mean(axis=1) if frame.ndim > 1 else frame
     if in_rate == SEND_SAMPLE_RATE:
         pcm = np.clip(mono * 32767.0, -32768, 32767).astype(np.int16)
-        return pcm.tobytes()
-    if in_rate == 48000 and len(mono) % 3 == 0 and len(mono) >= 3:
-        ratio = 3
-        n_out = len(mono) // ratio
-        downsampled = mono[: n_out * ratio].reshape(n_out, ratio).mean(axis=1).astype(np.float32)
-        pcm = np.clip(downsampled * 32767.0, -32768, 32767).astype(np.int16)
         return pcm.tobytes()
     conv = AudioConverter(in_rate, SEND_SAMPLE_RATE)
     return conv.process(mono)

@@ -372,10 +372,16 @@ def run_update_helper(pid_text: str, target_text: str, expected_sha256: str) -> 
 
         process = _start_target(target, cleanup=source, ready=ready)
         if not _wait_until_started(process, ready):
-            target.unlink(missing_ok=True)
-            os.replace(backup, target)
-            updated = False
-            _start_target(target, cleanup=source, error="Yeni sürüm başlatılamadı; önceki sürüm geri yüklendi.")
+            if backup.exists():
+                try:
+                    os.replace(backup, target)
+                except OSError:
+                    target.unlink(missing_ok=True)
+                    os.replace(backup, target)
+                updated = False
+                _start_target(target, cleanup=source, error="Yeni sürüm başlatılamadı; önceki sürüm geri yüklendi.")
+            else:
+                _start_target(target, cleanup=source, error="Yeni sürüm doğrulanamadı ve geri dönüş yedeği bulunamadı; mevcut dosya korundu.")
             return 1
         try:
             backup.unlink(missing_ok=True)
@@ -386,8 +392,11 @@ def run_update_helper(pid_text: str, target_text: str, expected_sha256: str) -> 
         try:
             replacement.unlink(missing_ok=True)
             if backup.exists() and (updated or not target.exists()):
-                target.unlink(missing_ok=True)
-                os.replace(backup, target)
+                try:
+                    os.replace(backup, target)
+                except OSError:
+                    target.unlink(missing_ok=True)
+                    os.replace(backup, target)
             if target.exists():
                 _start_target(target, cleanup=source, error=f"Güncelleme uygulanamadı: {exc}")
         except OSError:
@@ -407,12 +416,14 @@ def cleanup_previous_update() -> None:
     if not can_self_update():
         return
     target = Path(sys.executable).resolve()
-    candidates = [target.with_suffix(target.suffix + ".old"), target.with_suffix(target.suffix + ".new")]
+    candidates: list[Path] = [target.with_suffix(target.suffix + ".new")]
     if ready_text:
         ready = Path(ready_text).resolve()
         if ready.parent == target.parent and ready.name.startswith(f".{target.stem}.update-ready-"):
-            ready.touch()
-            candidates.append(ready)
+            try:
+                ready.touch()
+            except OSError:
+                pass
     if cleanup_text:
         cleanup = Path(cleanup_text).resolve()
         if cleanup.parent == target.parent and cleanup.name.startswith(f".{target.stem}.update-"):
@@ -427,7 +438,6 @@ def cleanup_previous_update() -> None:
                 pass
 
     threading.Thread(target=remove_files, name="update-cleanup", daemon=True).start()
-
 
 def consume_update_error() -> str:
     return os.environ.pop(_ERROR_ENV, "")

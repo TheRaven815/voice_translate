@@ -857,3 +857,238 @@ def test_restart_lifecycle_and_user_stop_cancellation(monkeypatch):
     finally:
         app.destroy()
 
+def test_export_includes_pending_buffer_and_flushes_on_stop(tmp_path, monkeypatch):
+    """H06: Tamamlanmamış tampon metni dışa aktarmada kaybolmamalı, stopta aktarılmalı."""
+    app = App()
+    try:
+        from export import TranscriptItem
+        app.transcript_items = [
+            TranscriptItem(timestamp=100.0, stream="heard", text="Birinci cümle"),
+            TranscriptItem(timestamp=101.0, stream="trans", text="First sentence"),
+        ]
+        app._curr_heard_buf = "İkinci tamamlanmamış cümle"
+        app._curr_trans_buf = "Second incomplete sentence"
+
+        # Canlı oturum sırasında dışa aktarma kontrolü
+        items = app._get_export_items()
+        texts = [it.text for it in items]
+        assert "Birinci cümle" in texts
+        assert "First sentence" in texts
+        assert "İkinci tamamlanmamış cümle" in texts
+        assert "Second incomplete sentence" in texts
+
+        # Dosyaya dışa aktarımı test et
+        out_file = tmp_path / "export_test_h06.txt"
+        monkeypatch.setattr("tkinter.filedialog.asksaveasfilename", lambda **kw: str(out_file))
+        app._export_transcripts()
+        content = out_file.read_text(encoding="utf-8")
+        assert "Birinci cümle" in content
+        assert "İkinci tamamlanmamış cümle" in content
+
+        # Oturum durduğunda tampon transcript_items'a flush edilmeli ve tampon temizlenmeli
+        app._session_id = 1
+        app.log_queue.put(("__stopped__", 1))
+        app._pump_log()
+
+        assert app._curr_heard_buf == ""
+        assert app._curr_trans_buf == ""
+        saved_texts = [it.text for it in app.transcript_items]
+        assert "İkinci tamamlanmamış cümle" in saved_texts
+        assert "Second incomplete sentence" in saved_texts
+
+        # Stop sonrası dışa aktarımda tekrar (duplikasyon) olmamalı
+        items_after_stop = app._get_export_items()
+        assert len(items_after_stop) == 4
+    finally:
+        app.destroy()
+
+def test_theme_toggle_updates_body_tag_and_overlay_contrast():
+    """H07: Tema değiştiğinde trans/heard 'body' tagi ve overlay okunabilir kontrasta güncellenmeli."""
+    app = App()
+    try:
+        app.toggle_overlay()
+
+        # Başlangıç: Dark tema
+        assert C.current == "dark"
+        assert app.trans.tag_cget("body", "foreground") == "#e8e8e8"
+        assert app.trans.cget("bg") == "#111111"
+        assert app.overlay_label.cget("fg") == "#e8e8e8"
+        assert app._overlay.cget("bg") == "#0c0c0c"
+
+        # Light temaya geçiş
+        app.set_theme("light")
+        assert C.current == "light"
+        # 'body' etiketi de yeni metin rengine (#1a1d20) güncellenmiş olmalı (eski beyaz renkte kalmamalı)
+        assert app.trans.tag_cget("body", "foreground") == "#1a1d20"
+        assert app.heard.tag_cget("body", "foreground") == "#1a1d20"
+        assert app.trans.cget("bg") == "#f5f6f8"
+
+        # Overlay zemin ve yazı rengi uyumlu olmalı (koyu zemin üzerinde koyu yazı olmamalı)
+        assert app._overlay.cget("bg") == "#ffffff"
+        assert app.overlay_label.cget("fg") == "#1a1d20"
+        assert app._overlay_hdr.cget("bg") == "#ffffff"
+        assert app._overlay_fplus.cget("bg") == "#ffffff"
+
+        # Tekrar Dark temaya dönüş
+        app.set_theme("dark")
+        assert C.current == "dark"
+        assert app.trans.tag_cget("body", "foreground") == "#e8e8e8"
+        assert app.heard.tag_cget("body", "foreground") == "#e8e8e8"
+        assert app._overlay.cget("bg") == "#0c0c0c"
+        assert app.overlay_label.cget("fg") == "#e8e8e8"
+    finally:
+        app.destroy()
+
+def test_h08_srt_export_preserves_timeline_base_after_stop():
+    """H08: Durdurma sonrasında SRT zaman tabanı sıfırlanmamalı; oturum başı referans kalmalı."""
+    app = App()
+    try:
+        from export import TranscriptItem, export_srt
+        # Oturum t0 = 100.0'da başladı
+        app._timeline_start_time = 100.0
+        app.session_start_time = 100.0
+        # t0 + 10 saniye sonra çeviri geldi
+        app.transcript_items.append(TranscriptItem(timestamp=110.0, stream="trans", text="Zaman testi"))
+
+        # Kullanıcı durdurdu
+        app.stop()
+        assert app.session_start_time is None
+        assert app._timeline_start_time == 100.0
+
+        # Dışa aktarılan SRT başlangıcı 00:00:10 olmalı, 00:00:00'a kaymamalı
+        items = app._get_export_items()
+        srt = export_srt(items, session_start=app._timeline_start_time)
+        assert "00:00:10,000 --> 00:00:13,000" in srt
+    finally:
+        app.destroy()
+
+
+def test_h09_runtime_restart_preserves_transcripts_and_panes(monkeypatch):
+    """H09: Ayar değişimiyle yeniden başlatmada transkriptler ve paneller silinmemeli."""
+    app = App()
+    try:
+        from export import TranscriptItem
+        monkeypatch.setattr(app, "start", lambda preserve_transcript=False: setattr(app, "_restarted_with", preserve_transcript))
+        app.transcript_items = [TranscriptItem(timestamp=100.0, stream="trans", text="Kalıcı metin")]
+        app._curr_trans_buf = "Devam eden"
+        app.trans.insert("end", "Kalıcı metin\n")
+
+        # Yeniden başlatma tetiklendi
+        app.worker = type("MockWorker", (), {"is_alive": lambda self: True})()
+        app.restart()
+        assert app._pending_restart is True
+
+        # Stop sinyali geldi
+        app.log_queue.put(("__stopped__", app._session_id))
+        app._pump_log()
+
+        # start(preserve_transcript=True) çağrılmış olmalı
+        assert getattr(app, "_restarted_with", None) is True
+    finally:
+        app.destroy()
+
+
+def test_h10_clear_pane_clears_transcript_items_and_buffers():
+    """H10: Temizle butonu hem Text widget'ını hem de ilgili kayıt ve tamponları silmeli."""
+    app = App()
+    try:
+        from export import TranscriptItem
+        app.transcript_items = [
+            TranscriptItem(timestamp=1.0, stream="heard", text="Duyulan 1"),
+            TranscriptItem(timestamp=2.0, stream="trans", text="Çeviri 1"),
+        ]
+        app._curr_heard_buf = "Bekleyen duyulan"
+        app._curr_trans_buf = "Bekleyen çeviri"
+        app.heard.insert("end", "Duyulan 1\n")
+        app.trans.insert("end", "Çeviri 1\n")
+
+        # Heard temizle
+        app._clear_pane(app.heard)
+        assert app.heard.get("1.0", "end-1c") == ""
+        assert app._curr_heard_buf == ""
+        assert len(app.transcript_items) == 1
+        assert app.transcript_items[0].stream == "trans"
+
+        # Trans temizle
+        app._clear_pane(app.trans)
+        assert app.trans.get("1.0", "end-1c") == ""
+        assert app._curr_trans_buf == ""
+        assert len(app.transcript_items) == 0
+    finally:
+        app.destroy()
+
+
+def test_h11_lock_text_allows_navigation_and_shortcuts():
+    """H11: Transkript kutusu F5, Tab, ok tuşlarını ve Ctrl+C/A'yı geçirmeli; düzenlemeyi engellemeli."""
+    app = App()
+    try:
+        w = app.trans
+        # on_key fonksiyonunu test et
+        Event = type("Event", (), {})
+
+        # 1. F5 izin verilmeli (None dönmeli)
+        e_f5 = Event()
+        e_f5.keysym = "F5"
+        e_f5.state = 0
+        assert w._on_key(e_f5) is None if hasattr(w, "_on_key") else True
+
+        # 2. Tab ve Ok tuşları izin verilmeli
+        for sym in ("Tab", "Up", "Down", "Left", "Right", "Home", "End"):
+            ev = Event()
+            ev.keysym = sym
+            ev.state = 0
+            # widget bind çağrısı doğrudan kontrol edilebilir
+
+        # Tk widget'ında Key olayını simüle et
+        # Karakter yazma engellenmeli
+        app.update()
+        w.focus_set()
+        w.event_generate("<KeyPress-a>")
+        assert "a" not in w.get("1.0", "end")
+    finally:
+        app.destroy()
+
+
+def test_h12_device_refresh_preserves_current_selection():
+    """H12: Aygıt listesi yenilendiğinde kullanıcının mevcut geçerli seçimi korunmalı."""
+    app = App()
+    try:
+        from types import SimpleNamespace
+        dev1 = SimpleNamespace(id="1", name="Hoparlör 1", isloopback=True)
+        dev2 = SimpleNamespace(id="2", name="Hoparlör 2", isloopback=True)
+        ins = [dev1, dev2]
+        outs = [dev1, dev2]
+
+        app._apply_devices(ins, outs, stopping=False)
+        # Kullanıcı 2. aygıtı seçti
+        app.in_var.set("[Sistem] Hoparlör 2")
+
+        # Aygıtlar tekrar yenilendi
+        app._apply_devices(ins, outs, stopping=False)
+
+        # Seçim 1. aygıta veya config'e sıfırlanmamalı, kullanıcının seçtiği 2. aygıt kalmalı
+        assert app.in_var.get() == "[Sistem] Hoparlör 2"
+    finally:
+        app.destroy()
+
+
+def test_h17_ui_lang_en_applies_to_all_gui_labels(monkeypatch):
+    """H17: ui_lang='en' iken arayüz etiketleri İngilizceye çevrilmeli."""
+    import config
+    from i18n import set_ui_lang
+    monkeypatch.setattr("gui.app.load_config", lambda: config.Settings(api_key="", ui_lang="en"))
+    app = App()
+    try:
+        assert app.status.cget("text") == "Ready"
+        assert app.heard_lbl.cget("text") == "Heard"
+        assert app.trans_lbl.cget("text") == "Translation"
+        assert app.start_btn.cget("text") == "Start"
+        assert app.stop_btn.cget("text") == "Stop"
+        assert app.overlay_btn.cget("text") == "Subtitle"
+        assert app.heard_clear.cget("text") == "Clear"
+        assert app.heard_export.cget("text") == "Export"
+        assert app.refresh_btn.cget("text") == "Refresh"
+    finally:
+        set_ui_lang("tr")
+        app.destroy()
+

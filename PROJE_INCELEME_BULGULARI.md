@@ -14,7 +14,13 @@ Dosya ve satır referansları inceleme anındaki kaynaklara aittir; sonraki değ
 ### İnceleme sonrası düzeltmeler
 
 - **H01 düzeltildi (18 Eylül 2026).**
-- **H02 düzeltildi (18 Eylül 2026).** Diğer maddeler bu değişiklikler kapsamında ele alınmadı.
+- **H02 düzeltildi (18 Eylül 2026).**
+- **H03 düzeltildi (18 Eylül 2026).**
+- **H04 düzeltildi (18 Eylül 2026).**
+- **H05 düzeltildi (18 Eylül 2026).**
+- **H06 düzeltildi (18 Eylül 2026).**
+- **H07 düzeltildi (18 Eylül 2026).** 1. maddedeki (Yüksek öncelikli hatalar) tüm bulgular (H01-H07) tamamlandı.
+- **H08–H17 düzeltildi (18 Eylül 2026).** 2. maddedeki (Diğer doğrulanmış hatalar) tüm bulgular (H08-H17) tamamlandı.
 ## Doğrulama kapsamı ve sınırlar
 
 - Ortam: Windows, Python 3.14.7.
@@ -64,7 +70,11 @@ Dosya ve satır referansları inceleme anındaki kaynaklara aittir; sonraki değ
 - **Kanıt:** Eski kapanış mesajının mevcut worker referanslarını sildiği çalıştırmayla doğrulandı. Gerçek yarışın oluşması zamanlamaya bağlı.
 - **Öneri:** Oturum kimliği taşıyan olaylar kullanmak. Yeniden başlatmayı yalnız ilgili kapanış işlendiğinde yapmak; açık kullanıcı stop isteği bekleyen yeniden başlatmayı iptal etmeli.
 
-### H03 — Güncelleme temizliği geri dönüş dosyasını erken siliyor
+### H03 (Düzeltildi) — Güncelleme temizliği geri dönüş dosyasını erken siliyor
+
+- **Durum:** Düzeltildi — 18 Eylül 2026. Aşağıdaki sorun ve kanıt özgün inceleme durumunu anlatır.
+- **Uygulanan değişiklik:** `cleanup_previous_update()` artık hazır işaretini (`ready`) ve geri dönüş yedeğini (`.old`) silme adaylarına eklemiyor; yalnız helper geçici dosyasını siliyor. `ready` dosyasını helper kendi `finally` bloğunda yönetiyor, `.old` yedeğini ise helper yeni sürümün başladığını teyit ettikten sonra siliyor. Helper içinde başlatma başarısız olduğunda yedek dosya yoksa `target` silinmiyor, mevcut dosya korunarak hata bildiriliyor.
+- **Regresyon kapsamı:** `tests/test_updater.py::test_update_helper_does_not_delete_target_if_backup_is_missing_on_failed_start`, `tests/test_updater.py::test_cleanup_previous_update_touches_ready_without_deleting_backup_or_ready`.
 
 - **Konum:** `updater.py:306-329`, `updater.py:373-390`, `updater.py:403-429`.
 - **Sorun:** Yeni uygulama hazır işaretini oluşturuyor; üç saniye sonra helper onayı beklemeden hem işareti hem `.old` yedeğini siliyor. Helper bu pencereyi kaçırırsa yeni sürümü başarısız sayıp mevcut EXE'yi silerek artık bulunmayan yedeği geri yüklemeye çalışabiliyor.
@@ -73,7 +83,11 @@ Dosya ve satır referansları inceleme anındaki kaynaklara aittir; sonraki değ
 - **Sınır:** Her güncellemede oluşan hata değildir. Helper gecikmesi veya askıya alınması gibi zamanlama koşulu gerekir. Gerçek paketlenmiş EXE güncellemesi çalıştırılmadı.
 - **Öneri:** Hazır işareti ve yedek temizliğini helper yönetmeli. Geri dönüş güvencesi olmadan mevcut EXE silinmemeli.
 
-### H04 — DPAPI başarısızlığında API anahtarı sessizce düz metin kaydediliyor
+### H04 (Düzeltildi) — DPAPI başarısızlığında API anahtarı sessizce düz metin kaydediliyor
+
+- **Durum:** Düzeltildi — 18 Eylül 2026. Aşağıdaki sorun ve kanıt özgün inceleme durumunu anlatır.
+- **Uygulanan değişiklik:** Windows'ta `_dpapi_protect` başarısız olduğunda `_encrypt_key()` sessizce düz metne dönmek yerine `OSError` fırlatıyor. `save_api_key()` ve `save()` yazma yapmadan hata veriyor, mevcut dosya içeriği korunuyor. Arayüzde `save_key` ve `start` bu hatayı yakalayarak kullanıcıya güvenli kayıt yapılamadığını bildiriyor.
+- **Regresyon kapsamı:** `tests/test_config.py::test_dpapi_failure_raises_oserror_and_does_not_save_plaintext`.
 
 - **Konum:** `config.py:75-85`, `config.py:164-175`.
 - **Sorun:** Şifreleme hatası yutuluyor; `_encrypt_key()` düz anahtarı döndürüyor. Windows'ta Unix `0600` izni yolu da uygulanmıyor.
@@ -81,7 +95,11 @@ Dosya ve satır referansları inceleme anındaki kaynaklara aittir; sonraki değ
 - **Kanıt:** DPAPI hatası üretildiğinde sahte anahtar JSON'a düz yazıldı.
 - **Öneri:** Windows'ta şifreleme başarısızsa kaydı reddetmek, mevcut dosyayı korumak ve kullanıcıya hata göstermek.
 
-### H05 — Farklı çıkış aygıtında bile kaynak ses atılıyor
+### H05 (Düzeltildi) — Farklı çıkış aygıtında bile kaynak ses atılıyor
+
+- **Durum:** Düzeltildi — 18 Eylül 2026. Aşağıdaki sorun ve kanıt özgün inceleme durumunu anlatır.
+- **Uygulanan değişiklik:** `_is_same_endpoint()` fonksiyonu eklendi; giriş (loopback) ile çıkış aygıtının aygıt kimliği (`id`) veya adı (`name`) üzerinden aynı fiziksel uca ait olup olmadığı denetleniyor. Yalnızca giriş loopback VE çıkış aynı uç ise oynatma sırasında yakalanan blok bastırılıyor; çıkış farklı bir aygıtsa (ör. kulaklık) kaynak ses kesintisiz yakalanıyor.
+- **Regresyon kapsamı:** `tests/test_live_translate.py::test_capture_does_not_drop_when_output_speaker_is_different_device`.
 
 - **Konum:** `loop.py:240-255`.
 - **Sorun:** Yankı önleme yalnız loopback giriş ve herhangi bir çıkış olup olmadığını kontrol ediyor. Giriş ve çıkışın aynı fiziksel uç olması aranmıyor.
@@ -89,7 +107,11 @@ Dosya ve satır referansları inceleme anındaki kaynaklara aittir; sonraki değ
 - **Kanıt:** Ayrı çıkış senaryosunda yakalanan blok gönderilmeden atıldı. Fiziksel aygıtlarla denenmedi.
 - **Öneri:** Sabit aygıt kimlikleriyle aynı uç eşleşmesini kontrol etmek; yalnız gerektiğinde bastırmak.
 
-### H06 — Görünen son cümle dışa aktarılmayabiliyor
+### H06 (Düzeltildi) — Görünen son cümle dışa aktarılmayabiliyor
+
+- **Durum:** Düzeltildi — 18 Eylül 2026. Aşağıdaki sorun ve kanıt özgün inceleme durumunu anlatır.
+- **Uygulanan değişiklik:** `_get_export_items()` metodu eklendi. Tamamlanmış kayıtlarla birlikte devam eden `_curr_heard_buf` ve `_curr_trans_buf` tamponları anlık olarak birleştirilerek dışa aktarılıyor. Ayrıca oturum kapandığında (`__stopped__`) bekleyen tamponlar `transcript_items` içine aktarılıp tamponlar sıfırlanıyor; böylece duplikasyon olmadan tüm görünen cümleler TXT/SRT/JSONL çıktılarına yansıtılıyor.
+- **Regresyon kapsamı:** `tests/test_gui.py::test_export_includes_pending_buffer_and_flushes_on_stop`.
 
 - **Konum:** `gui/app.py:723-735`, `gui/app.py:984-1009`.
 - **Sorun:** Tamamlanan kayıtlar `transcript_items` içinde; devam eden cümleler ayrı tamponlarda. Liste boş değilse dışa aktarma bu tamponları dikkate almıyor.
@@ -97,7 +119,11 @@ Dosya ve satır referansları inceleme anındaki kaynaklara aittir; sonraki değ
 - **Kanıt:** Ekranda görünen ikinci, tamamlanmamış cümle dışa aktarılmadı.
 - **Öneri:** Dışa aktarma anında tamamlanmış kayıtlarla bekleyen parçaları birleştiren, tekrar ekleme yapmayan tutarlı bir görünüm oluşturmak.
 
-### H07 — Tema değişimi çeviri metnini okunamaz hale getiriyor
+### H07 (Düzeltildi) — Tema değişimi çeviri metnini okunamaz hale getiriyor
+
+- **Durum:** Düzeltildi — 18 Eylül 2026. Aşağıdaki sorun ve kanıt özgün inceleme durumunu anlatır.
+- **Uygulanan değişiklik:** `_refresh_theme()` içinde `self.heard` ve `self.trans` Text widget'larının `"body"` tag foreground rengi güncel `C.text` rengine ayarlandı (açık temada `#1a1d20`, koyu temada `#e8e8e8`). `gui/theme.py` içindeki açık tema `LIGHT["overlay_bg"]` rengi `#ffffff` olarak güncellendi ve altyazı başlığı/düğmelerinin (`_overlay_hdr`, `_overlay_thru_btn`, `_overlay_fplus`, `_overlay_fminus`) temayla birlikte güncellenmesi sağlandı; böylece hem ana metinde hem altyazıda yüksek kontrast ve okunabilirlik garantilendi.
+- **Regresyon kapsamı:** `tests/test_gui.py::test_theme_toggle_updates_body_tag_and_overlay_contrast`.
 
 - **Konum:** `gui/app.py:409`, `gui/app.py:923-932`, `gui/app.py:958-963`, `gui/theme.py:44-60`.
 - **Sorun:** Tema değişince Text widget rengi güncelleniyor; onu geçersiz kılan `body` etiketi eski renkte kalıyor. Açık temadaki altyazı da koyu zeminde koyu yazı kullanıyor.
@@ -109,16 +135,16 @@ Dosya ve satır referansları inceleme anındaki kaynaklara aittir; sonraki değ
 
 | Kimlik | Sorun ve konum | Kanıt ve etki | Önerilen düzeltme |
 | --- | --- | --- | --- |
-| H08 | Durdurmak SRT zamanlarını değiştiriyor. `gui/app.py:1248-1250`, `export.py:42-46`. | Aynı ilk altyazı durdurmadan önce yaklaşık `00:00:10`, sonra `00:00:00` oldu. Çalıştırmayla doğrulandı. | Sayaç durumuyla kalıcı oturum başlangıcını ayır. |
-| H09 | Ayar değiştirerek yeniden başlatmak transkripti siliyor. `gui/app.py:809-822`, `1186-1192`. | Aygıt/dil değişimi normal `start()` yoluna giriyor; paneller, kayıtlar ve zaman başlangıcı sıfırlanıyor. Kaynak üzerinden doğrulandı. | Yeni kullanıcı oturumu ile bağlantıyı yeniden kurmayı ayır. |
-| H10 | Temizle yalnız ekranı temizliyor. `gui/app.py:624-629`, `723`. | Panel boşaldıktan sonra eski cümle dışa aktarılmaya devam etti. Çalıştırmayla doğrulandı. | Temizleme kapsamını açık tanımla; ilgili kayıt/tamponları temizle veya eylemi Ekranı temizle olarak adlandır. |
-| H11 | Transkript odağında F5 ve Tab çalışmıyor. `gui/app.py:416-424`. | Genel `<Key>` engeli gezinmeyi ve kök kısayollarını kesiyor. Gerçek Tk olaylarında F5 engellendi, Tab odağı panelden çıkaramadı. | Tüm tuşları değil, metin düzenleme işlemlerini engelle. |
-| H12 | Aygıt yenileme güncel seçimi geri alıyor. `gui/app.py:539-578`. | Başlangıçtaki `_cfg` kullanılıyor. B seçilip kaydedildikten sonra yenileme A'ya döndü. Çalıştırmayla doğrulandı. | Mevcut geçerli seçimi koru; başlangıç tercihlerini yalnız gerektiğinde kullan. |
-| H13 | Örnekleme dönüşümü yüksek frekansları yanlış banda taşıyor. `audio.py:50-74`. | Üretim yolu anti-alias filtresi olmadan örnek azaltıyor. 12 kHz giriş, 16 kHz çıkışta güçlü 4 kHz bileşene dönüştü. Sayısal sinyalle doğrulandı; tanıma kalitesindeki etki ölçülmedi. | Bloklar arasında durum koruyan alçak geçiren filtre kullan. |
-| H14 | Ön tampon mute kontrolünü atlıyor; kuyruk sonuna kazanç iki kez uygulanıyor. `loop.py:415-450`. | Mute sonrası bekleyen ses gönderildi; `volume=0.5` için son parçanın etkin kazancı `0.25` oldu. Kontrollü oynatıcıyla doğrulandı. | Tamponu ham tut; sesi gönderirken mute/kazancı bir kez uygula. |
-| H15 | Geçerli JSON içindeki bozuk ayar uygulamayı açtırmıyor. `config.py:191-192`, `gui/app.py:84-90`. | `overlay_font_size="bad"` doğrudan `ValueError` üretti. Arayüz oluşturulmadan config okunuyor. | Alan bazlı tip/aralık doğrulaması ve güvenli varsayılanlar kullan. |
-| H16 | Bozuk config üzerine tercih kaydı eski veriyi yok ediyor. `config.py:140-169`, `220-260`. | Okuma hatası boş sözlük sayılıyor; sonraki tercih kaydı dosyanın tamamını değiştiriyor. İzole dosyada doğrulandı. | Dosya yok ve dosya okunamadı durumlarını ayır; kurtarılabilir dosyayı koru. |
-| H17 | İngilizce arayüz ayarı uygulanmıyor. `gui/app.py:131`, `i18n.py:36-65`. | `ui_lang="en"` iken gerçek etiketler `Hazır / Duyulan / Çeviri` kaldı. | Mevcut `t()` kataloğunu arayüzde kullan; görünen çevirileri sabit iç değerlerden ayır. |
+| H08 (Düzeltildi) | Durdurmak SRT zamanlarını değiştiriyor. `gui/app.py:1248-1250`, `export.py:42-46`. | Aynı ilk altyazı durdurmadan önce yaklaşık `00:00:10`, sonra `00:00:00` oldu. Çalıştırmayla doğrulandı. | Sayaç durumuyla kalıcı oturum başlangıcı ayrıldı; durdurma sonrası SRT oturum başı bazını koruyor. Regresyon testi: `tests/test_gui.py::test_h08_srt_export_preserves_timeline_base_after_stop`. |
+| H09 (Düzeltildi) | Ayar değiştirerek yeniden başlatmak transkripti siliyor. `gui/app.py:809-822`, `1186-1192`. | Aygıt/dil değişimi normal `start()` yoluna giriyor; paneller, kayıtlar ve zaman başlangıcı sıfırlanıyor. Kaynak üzerinden doğrulandı. | Runtime restart çağrılarında transkript ve paneller korunuyor (`preserve_transcript=True`). Regresyon testi: `tests/test_gui.py::test_h09_runtime_restart_preserves_transcripts_and_panes`. |
+| H10 (Düzeltildi) | Temizle yalnız ekranı temizliyor. `gui/app.py:624-629`, `723`. | Panel boşaldıktan sonra eski cümle dışa aktarılmaya devam etti. Çalıştırmayla doğrulandı. | `_clear_pane()` ilgili Text widget'ının yanı sıra `transcript_items` ve tamponları da siliyor. Regresyon testi: `tests/test_gui.py::test_h10_clear_pane_clears_transcript_items_and_buffers`. |
+| H11 (Düzeltildi) | Transkript odağında F5 ve Tab çalışmıyor. `gui/app.py:416-424`. | Genel `<Key>` engeli gezinmeyi ve kök kısayollarını kesiyor. Gerçek Tk olaylarında F5 engellendi, Tab odağı panelden çıkaramadı. | `_lock_text()` fonksiyonu F1-F12, Tab, yön tuşları ve genel kısayolları geçiriyor; yalnız metin düzenleme tuşlarını engelliyor. Regresyon testi: `tests/test_gui.py::test_h11_lock_text_allows_navigation_and_shortcuts`. |
+| H12 (Düzeltildi) | Aygıt yenileme güncel seçimi geri alıyor. `gui/app.py:539-578`. | Başlangıçtaki `_cfg` kullanılıyor. B seçilip kaydedildikten sonra yenileme A'ya döndü. Çalıştırmayla doğrulandı. | Yenileme sırasında kullanıcının mevcut geçerli seçimi listede varsa korunuyor. Regresyon testi: `tests/test_gui.py::test_h12_device_refresh_preserves_current_selection`. |
+| H13 (Düzeltildi) | Örnekleme dönüşümü yüksek frekansları yanlış banda taşıyor. `audio.py:50-74`. | Üretim yolu anti-alias filtresi olmadan örnek azaltıyor. 12 kHz giriş, 16 kHz çıkışta güçlü 4 kHz bileşene dönüştü. Sayısal sinyalle doğrulandı; tanıma kalitesindeki etki ölçülmedi. | `AudioConverter` içinde durum koruyan 41-tap FIR pencerelemeli sinc alçak geçiren filtre eklendi; 12 kHz aliased bileşeni -60 dB zayıflatıldı. Regresyon testi: `tests/test_live_translate.py::test_h13_audio_converter_anti_aliasing`. |
+| H14 (Düzeltildi) | Ön tampon mute kontrolünü atlıyor; kuyruk sonuna kazanç iki kez uygulanıyor. `loop.py:415-450`. | Mute sonrası bekleyen ses gönderildi; `volume=0.5` için son parçanın etkin kazancı `0.25` oldu. Kontrollü oynatıcıyla doğrulandı. | `_play_thread` içinde tampon ham tutuluyor; ses kazancı ve mute oynatma anında tek noktadan (`_play_chunk`) uygulanıyor. Regresyon testi: `tests/test_live_translate.py::test_h14_play_thread_single_volume_scaling_and_mute_preroll`. |
+| H15 (Düzeltildi) | Geçerli JSON içindeki bozuk ayar uygulamayı açtırmıyor. `config.py:191-192`, `gui/app.py:84-90`. | `overlay_font_size="bad"` doğrudan `ValueError` üretti. Arayüz oluşturulmadan config okunuyor. | `_safe_int`, `_safe_float` ve tip/aralık doğrulaması eklendi; bozuk veya sınır dışı değerlerde güvenli varsayılanlara düşülüyor. Regresyon testi: `tests/test_config.py::test_h15_malformed_config_values_fall_back_safely`. |
+| H16 (Düzeltildi) | Bozuk config üzerine tercih kaydı eski veriyi yok ediyor. `config.py:140-169`, `220-260`. | Okuma hatası boş sözlük sayılıyor; sonraki tercih kaydı dosyanın tamamını değiştiriyor. İzole dosyada doğrulandı. | Dosya okunamadığında `.bak` yedeği oluşturuluyor ve ham metinden `api_key` dahil kurtarılabilen alanlar kurtarılıyor. Regresyon testi: `tests/test_config.py::test_h16_corrupt_config_is_backed_up_and_salvages_keys`. |
+| H17 (Düzeltildi) | İngilizce arayüz ayarı uygulanmıyor. `gui/app.py:131`, `i18n.py:36-65`. | `ui_lang="en"` iken gerçek etiketler `Hazır / Duyulan / Çeviri` kaldı. | Arayüzdeki tüm butonlar, etiketler ve durum metinleri `t()` fonksiyonuna bağlandı; `ui_lang="en"` ayarı tam uygulandı. Regresyon testi: `tests/test_gui.py::test_h17_ui_lang_en_applies_to_all_gui_labels`. |
 
 ## 3. Paketleme ve CLI hataları
 
@@ -239,4 +265,4 @@ Aşağıdaki maddeler kesin üretim arızası olarak değerlendirilmemeli.
 7. **Test, gizlilik ve dağıtım sınırları:** G01–G06. Özellikle G02 test izolasyonunu yeni test çalıştırmalarından önce güvenceye al.
 8. **Canlı servis ve platform doğrulaması:** R01–R05. Hipotezleri gerçek Gemini, fiziksel aygıtlar ve hedef Windows ölçeklerinde doğrula.
 
-Bu sıralama özgün düzeltme önerisidir. İnceleme sırasında düzeltme uygulanmadı; inceleme sonrasında H01 ve H02 tamamlandı. Diğer maddeler açık kaldı.
+Bu sıralama özgün düzeltme önerisidir. İnceleme sırasında düzeltme uygulanmadı; inceleme sonrasında H01–H17 arasındaki tüm yüksek öncelikli ve doğrulanmış hatalar tamamlandı. Kalan paketleme ve CLI maddeleri (H18–H23) açık kaldı.

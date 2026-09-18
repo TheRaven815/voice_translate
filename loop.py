@@ -78,6 +78,22 @@ def merge_transcript(prev: str, incoming: str) -> tuple[str, str]:
         return incoming, incoming[len(prev) :]
     return prev + incoming, incoming
 
+def _is_same_endpoint(source, target) -> bool:
+    """Giriş (loopback) ile çıkış aygıtının aynı fiziksel ses ucuna ait olup olmadığını doğrular."""
+    if source is None or target is None:
+        return False
+    src_id = getattr(source, "id", None)
+    dst_id = getattr(target, "id", None)
+    if src_id is not None and dst_id is not None:
+        return str(src_id) == str(dst_id)
+    src_name = getattr(source, "name", None)
+    dst_name = getattr(target, "name", None)
+    if src_name is not None and dst_name is not None:
+        s_name = str(src_name).strip().lower()
+        d_name = str(dst_name).strip().lower()
+        return s_name == d_name or d_name in s_name or s_name in d_name
+    return src_id is None and dst_id is None and src_name is None and dst_name is None
+
 
 class SystemAudioLoop:
     def __init__(
@@ -238,6 +254,7 @@ class SystemAudioLoop:
         chunk'ta ayrı to_thread kullanmak erişim ihlaline yol açar.
         """
         is_loopback = getattr(self.source_mic, "isloopback", False)
+        same_endpoint = is_loopback and _is_same_endpoint(self.source_mic, self.output_speaker)
         conv = AudioConverter(in_rate=CAPTURE_RATE, out_rate=SEND_SAMPLE_RATE)
         ch = 1 if getattr(self.source_mic, "channels", 2) == 1 else 2
         with self.source_mic.recorder(
@@ -250,7 +267,7 @@ class SystemAudioLoop:
                 if self._paused.is_set():
                     self.last_level = 0.0
                     continue
-                if is_loopback and self.output_speaker is not None:
+                if same_endpoint:
                     if time.monotonic() < self._playback_until + 0.15:
                         continue
                 arr = np.asarray(frame, dtype=np.float32)
@@ -283,9 +300,12 @@ class SystemAudioLoop:
                             self._waiting_response = True
 
                 try:
-                    self._loop.call_soon_threadsafe(
-                        self._post, {"data": pcm, "mime_type": f"audio/pcm;rate={SEND_SAMPLE_RATE}"}
-                    )
+                    if self._loop is not None and not self._loop.is_closed():
+                        self._loop.call_soon_threadsafe(
+                            self._post, {"data": pcm, "mime_type": f"audio/pcm;rate={SEND_SAMPLE_RATE}"}
+                        )
+                    else:
+                        self._post({"data": pcm, "mime_type": f"audio/pcm;rate={SEND_SAMPLE_RATE}"})
                 except RuntimeError:
                     break
 
@@ -409,14 +429,20 @@ class SystemAudioLoop:
         with speaker.player(
             samplerate=RECEIVE_SAMPLE_RATE, channels=1, blocksize=2048
         ) as sp:
+            def _play_chunk(audio_raw: np.ndarray) -> None:
+                if self.muted or self.volume <= 0.0 or audio_raw.size == 0:
+                    return
+                if abs(self.volume - 1.0) > 1e-3:
+                    audio_raw = np.clip(audio_raw * self.volume, -1.0, 1.0)
+                self._playback_until = time.monotonic() + len(audio_raw) / RECEIVE_SAMPLE_RATE
+                sp.play(audio_raw)
+
             while not self._play_stop.is_set():
                 try:
                     pcm = self._play_q.get(timeout=0.05)
                 except queue.Empty:
                     if pending:
-                        audio = np.concatenate(pending)
-                        self._playback_until = time.monotonic() + len(audio) / RECEIVE_SAMPLE_RATE
-                        sp.play(audio)
+                        _play_chunk(np.concatenate(pending))
                         pending.clear()
                         pending_n = 0
                     started = False
@@ -426,10 +452,6 @@ class SystemAudioLoop:
                 audio = pcm16_to_float(pcm)
                 if audio.size == 0:
                     continue
-                if self.muted or self.volume <= 0.0:
-                    continue
-                if abs(self.volume - 1.0) > 1e-3:
-                    audio = np.clip(audio * self.volume, -1.0, 1.0)
                 if not started:
                     pending.append(audio)
                     pending_n += audio.size
@@ -439,15 +461,9 @@ class SystemAudioLoop:
                     pending.clear()
                     pending_n = 0
                     started = True
-                self._playback_until = time.monotonic() + len(audio) / RECEIVE_SAMPLE_RATE
-                sp.play(audio)
+                _play_chunk(audio)
             if pending:
-                audio = np.concatenate(pending)
-                if not (self.muted or self.volume <= 0.0):
-                    if abs(self.volume - 1.0) > 1e-3:
-                        audio = np.clip(audio * self.volume, -1.0, 1.0)
-                    self._playback_until = time.monotonic() + len(audio) / RECEIVE_SAMPLE_RATE
-                    sp.play(audio)
+                _play_chunk(np.concatenate(pending))
                 pending.clear()
 
     async def play(self):

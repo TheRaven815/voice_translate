@@ -99,3 +99,66 @@ def test_save_preferences(tmp_path, monkeypatch):
     assert loaded.dst_lang == "tr"
     assert loaded.window_geom == "900x500+100+100"
     assert loaded.overlay_geom == "500x50+200+200"
+
+def test_dpapi_failure_raises_oserror_and_does_not_save_plaintext(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    monkeypatch.setattr(config.os, "name", "nt")
+
+    def failing_dpapi_protect(_data):
+        raise RuntimeError("Simulated DPAPI failure")
+
+    monkeypatch.setattr(config, "_dpapi_protect", failing_dpapi_protect, raising=False)
+
+    cfg_file = tmp_path / "config.json"
+    cfg_file.write_text(json.dumps({"api_key": "safe_existing"}), encoding="utf-8")
+
+    import pytest
+    with pytest.raises(OSError, match="DPAPI"):
+        config.save_api_key("AIzaSyDangerousPlainKey")
+
+    # File content must still be safe_existing, not overwritten with plaintext key
+    data = json.loads(cfg_file.read_text(encoding="utf-8"))
+    assert data["api_key"] == "safe_existing"
+    assert "AIzaSyDangerousPlainKey" not in cfg_file.read_text(encoding="utf-8")
+
+def test_h15_malformed_config_values_fall_back_safely(tmp_path, monkeypatch):
+    """H15: JSON geçerli ama alan değerleri bozukken ValueError atmamalı, varsayılanlara düşmeli."""
+    _isolate(tmp_path, monkeypatch)
+    cfg_file = tmp_path / "config.json"
+    cfg_file.write_text(
+        json.dumps({
+            "overlay_font_size": "bad_font_size",
+            "overlay_alpha": "not_a_float",
+            "theme": "unsupported_neon_theme",
+            "ui_lang": "invalid_lang",
+            "always_on_top": "not_a_bool",
+        }),
+        encoding="utf-8",
+    )
+    loaded = config.load()
+    assert loaded.overlay_font_size == 13
+    assert loaded.overlay_alpha == 0.92
+    assert loaded.theme == "dark"
+    assert loaded.ui_lang == "tr"
+    assert loaded.always_on_top is False
+
+
+def test_h16_corrupt_config_is_backed_up_and_salvages_keys(tmp_path, monkeypatch):
+    """H16: Bozuk config dosyası save_preferences sırasında yok edilmemeli, yedeklenmeli ve kurtarılmalı."""
+    _isolate(tmp_path, monkeypatch)
+    cfg_file = tmp_path / "config.json"
+    # api_key içeren ancak sonradan sözdizimi bozulan bir dosya
+    cfg_file.write_text('{\n  "api_key": "safe_encrypted_key",\n  "broken_syntax": [,\n', encoding="utf-8")
+
+    # save_preferences çağrıldığında
+    config.save_preferences(theme="light")
+
+    # 1. Orijinal bozuk dosya .bak olarak korunmuş olmalı
+    bak_file = tmp_path / "config.json.bak"
+    assert bak_file.is_file()
+    assert "broken_syntax" in bak_file.read_text(encoding="utf-8")
+
+    # 2. Kurtarılabilen api_key yeni dosyada korunmuş olmalı (kaybolmamalı)
+    new_data = json.loads(cfg_file.read_text(encoding="utf-8"))
+    assert new_data.get("api_key") == "safe_encrypted_key"
+    assert new_data.get("theme") == "light"

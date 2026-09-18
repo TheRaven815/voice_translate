@@ -79,11 +79,10 @@ def _encrypt_key(plain: str) -> str:
         try:
             enc = _dpapi_protect(plain.encode("utf-8"))
             return "dpapi:" + base64.b64encode(enc).decode("ascii")
-        except Exception:
-            pass
-    # Windows harici veya DPAPI basarisiz ise duz metin (0600 izni ile)
+        except Exception as exc:
+            raise OSError(f"DPAPI anahtar şifreleme başarısız: {exc}") from exc
+    # Windows harici ise düz metin (0600 izni ile)
     return plain
-
 
 def _decrypt_key(stored: str) -> str:
     if not stored:
@@ -155,11 +154,34 @@ def _read_raw() -> dict:
                 return {}
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        content = path.read_text(encoding="utf-8")
+        data = json.loads(content)
+        if isinstance(data, dict):
+            return data
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
+        pass
 
+    bak = path.with_suffix(".json.bak")
+    try:
+        if not bak.exists():
+            bak.write_bytes(path.read_bytes())
+    except OSError:
+        pass
+
+    recovered: dict = {}
+    try:
+        import re
+        raw_text = path.read_text(encoding="utf-8", errors="ignore")
+        m_key = re.search(r'"api_key"\s*:\s*"([^"]+)"', raw_text)
+        if m_key:
+            recovered["api_key"] = m_key.group(1)
+        for fld in ("theme", "src_lang", "dst_lang", "input_device", "output_device", "window_geom", "overlay_geom", "ui_lang"):
+            m = re.search(rf'"{fld}"\s*:\s*"([^"]+)"', raw_text)
+            if m:
+                recovered[fld] = m.group(1)
+    except Exception:
+        pass
+    return recovered
 
 def _write_raw(data: dict) -> Path:
     path = config_path()
@@ -175,25 +197,59 @@ def _write_raw(data: dict) -> Path:
     return path
 
 
+def _safe_int(val, default: int, min_val: int | None = None, max_val: int | None = None) -> int:
+    try:
+        res = int(val)
+        if min_val is not None and res < min_val:
+            return default
+        if max_val is not None and res > max_val:
+            return default
+        return res
+    except (ValueError, TypeError):
+        return default
+
+
+def _safe_float(val, default: float, min_val: float | None = None, max_val: float | None = None) -> float:
+    try:
+        res = float(val)
+        if min_val is not None and res < min_val:
+            return default
+        if max_val is not None and res > max_val:
+            return default
+        return res
+    except (ValueError, TypeError):
+        return default
+
+
 def load() -> Settings:
     raw = _read_raw()
     raw_key = str(raw.get("api_key") or "")
+    theme = str(raw.get("theme") or "dark").lower().strip()
+    if theme not in ("dark", "light"):
+        theme = "dark"
+    ui_lang = str(raw.get("ui_lang") or "tr").lower().strip()
+    if ui_lang not in ("tr", "en"):
+        ui_lang = "tr"
+    always_on_top = bool(raw.get("always_on_top")) if isinstance(raw.get("always_on_top"), (bool, int)) else False
+    overlay_click_through = bool(raw.get("overlay_click_through")) if isinstance(raw.get("overlay_click_through"), (bool, int)) else False
+    overlay_font_size = _safe_int(raw.get("overlay_font_size"), default=13, min_val=8, max_val=72)
+    overlay_alpha = _safe_float(raw.get("overlay_alpha"), default=0.92, min_val=0.1, max_val=1.0)
+
     return Settings(
         api_key=_decrypt_key(raw_key),
         input_device=str(raw.get("input_device") or ""),
         output_device=str(raw.get("output_device") or ""),
         src_lang=str(raw.get("src_lang") or ""),
         dst_lang=str(raw.get("dst_lang") or ""),
-        theme=str(raw.get("theme") or "dark"),
+        theme=theme,
         window_geom=str(raw.get("window_geom") or ""),
         overlay_geom=str(raw.get("overlay_geom") or ""),
-        always_on_top=bool(raw.get("always_on_top", False)),
-        overlay_font_size=int(raw.get("overlay_font_size") or 13),
-        overlay_alpha=float(raw.get("overlay_alpha") or 0.92),
-        overlay_click_through=bool(raw.get("overlay_click_through", False)),
-        ui_lang=str(raw.get("ui_lang") or "tr"),
+        always_on_top=always_on_top,
+        overlay_font_size=overlay_font_size,
+        overlay_alpha=overlay_alpha,
+        overlay_click_through=overlay_click_through,
+        ui_lang=ui_lang,
     )
-
 def save(settings: Settings) -> Path:
     raw = _read_raw()
     raw["api_key"] = _encrypt_key(settings.api_key)
