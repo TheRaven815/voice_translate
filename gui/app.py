@@ -1771,7 +1771,7 @@ class App(tk.Tk):
         self._settings_status = None
         self._settings_close_btn = None
 
-    def _fit_overlay(self) -> None:
+    def _fit_overlay(self, anchor: str = "bottom") -> None:
         pop = self._overlay
         if pop is None or not pop.winfo_exists():
             return
@@ -1779,8 +1779,11 @@ class App(tk.Tk):
         width = pop.winfo_width()
         height = max(56, pop.winfo_reqheight())
         x = pop.winfo_x()
-        bottom = pop.winfo_y() + pop.winfo_height()
-        y = bottom - height
+        if anchor == "top":
+            y = pop.winfo_y()
+        else:
+            bottom = pop.winfo_y() + pop.winfo_height()
+            y = bottom - height
         pop.geometry(f"{width}x{height}{x:+d}{y:+d}")
 
     def toggle_overlay(self) -> None:
@@ -1853,25 +1856,28 @@ class App(tk.Tk):
         )
         self.overlay_label.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Sağ alt köşe: yeniden boyutlandırma tutamacı (belirgin çubuk)
+        # Sağ alt köşe: yeniden boyutlandırma tutamacı.
+        # pack ile izole edilir; wrap'teki tasi/boya karisikligina girmez.
         grip = tk.Label(
             wrap, text="◢", font=(self.font_ui[0], 12), fg=C.dim,
             bg=C.overlay_bg, cursor="size_nw_se", padx=4, pady=2,
         )
-        grip.place(relx=1.0, rely=1.0, anchor="se")
+        grip.pack(side=tk.RIGHT, anchor="se")
         self._overlay_grip = grip
 
         def start_resize(e):
             pop._resize_x = e.x_root
             pop._resize_w = pop.winfo_width()
+            return "break"
 
         def do_resize(e):
-            dx = e.x_root - pop._resize_x
+            dx = self.winfo_pointerx() - pop._resize_x
             new_w = max(220, min(self.winfo_screenwidth() - 40, pop._resize_w + dx))
             if new_w != pop.winfo_width():
                 pop.geometry(f"{new_w}x{pop.winfo_height()}")
-                self.overlay_label.configure(wraplength=max(120, new_w - 44))
-                self._fit_overlay()
+                self.overlay_label.configure(wraplength=max(120, new_w - 64))
+                self._fit_overlay(anchor="top")
+            return "break"
 
         grip.bind("<ButtonPress-1>", start_resize)
         grip.bind("<B1-Motion>", do_resize)
