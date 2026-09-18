@@ -293,8 +293,12 @@ class App(tk.Tk):
         )
         self.dst_box.grid(row=0, column=2, sticky="ew")
 
-        for var in (self.in_var, self.out_var, self.src_var, self.dst_var):
+        for var in (self.src_var, self.dst_var):
             var.trace_add("write", self._on_runtime_pref_change)
+        for var in (self.in_var, self.out_var):
+            # Aygıt değişimi çalışan oturumu durdurup yeniden başlatmaz;
+            # yalnızca kaydedilir, bir sonraki başlatmada geçerli olur.
+            var.trace_add("write", lambda *_: self._save_user_prefs())
 
         self._rail_sep(rail, 7)
 

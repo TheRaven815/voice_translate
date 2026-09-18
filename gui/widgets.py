@@ -446,7 +446,7 @@ class Select(tk.Frame):
     def _on_focus_out(self):
         self.configure(bg=C.line)
 
-    def _set_popup_highlight(self, idx: int) -> None:
+    def _set_popup_highlight(self, idx: int, scroll: bool = False) -> None:
         if not self._rows:
             return
         idx = max(0, min(len(self._rows) - 1, idx))
@@ -454,14 +454,25 @@ class Select(tk.Frame):
             self._rows[self._highlight_idx].configure(bg=C.panel)
         self._highlight_idx = idx
         self._rows[idx].configure(bg=C.hover)
-        if self._canvas is not None and len(self._rows) > 1:
-            self._canvas.yview_moveto(idx / len(self._rows))
+        # Yalnızca klavye gezintisinde görünürlüğü koru; fare hover'ında
+        # listeyi asla kaydırma (eskiden yview_moveto en alta zıplatıyordu).
+        if scroll and self._canvas is not None:
+            row_h = max(1, self._rows[0].winfo_reqheight())
+            top_f, bot_f = self._canvas.yview()
+            total = len(self._rows) * row_h
+            row_top = idx * row_h / total
+            row_bot = (idx + 1) * row_h / total
+            view = bot_f - top_f
+            if row_top < top_f:
+                self._canvas.yview_moveto(row_top)
+            elif row_bot > bot_f:
+                self._canvas.yview_moveto(max(0.0, row_bot - view))
 
     def _on_key_down(self, _e=None):
         if self._state == "disabled" or not self._values:
             return "break"
         if self._pop is not None:
-            self._set_popup_highlight(self._highlight_idx + 1)
+            self._set_popup_highlight(self._highlight_idx + 1, scroll=True)
         else:
             cur = self.current()
             next_idx = min(len(self._values) - 1, cur + 1) if cur >= 0 else 0
@@ -472,7 +483,7 @@ class Select(tk.Frame):
         if self._state == "disabled" or not self._values:
             return "break"
         if self._pop is not None:
-            self._set_popup_highlight(self._highlight_idx - 1)
+            self._set_popup_highlight(self._highlight_idx - 1, scroll=True)
         else:
             cur = self.current()
             prev_idx = max(0, cur - 1) if cur >= 0 else 0
@@ -622,6 +633,10 @@ class Select(tk.Frame):
         pop.bind("<Key>", self._on_key_char)
         self._pop = pop
         Select._open = self
+        if self._canvas is not None and len(self._rows) > visible and self._highlight_idx >= 0:
+            # Acilista secili oge gorunsun; listeyi en alta ziplatmadan
+            row_top = self._highlight_idx / len(self._rows)
+            self._canvas.yview_moveto(min(row_top, 1.0 - visible / len(self._rows)))
         pop.after_idle(self._arm_dismiss)
 
     def _arm_dismiss(self) -> None:
