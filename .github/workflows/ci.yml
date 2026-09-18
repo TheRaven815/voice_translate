@@ -27,3 +27,12 @@ jobs:
       - name: Run pytest
         run: |
           pytest -v -m "not device"
+      - name: Verify wheel packaging and CLI entrypoint
+        shell: pwsh
+        run: |
+          pip install build
+          python -m build --wheel
+          $whl = (Get-Item dist/*.whl).FullName
+          pip install $whl
+          ahenk-cli --version
+          ahenk-cli --list-langs

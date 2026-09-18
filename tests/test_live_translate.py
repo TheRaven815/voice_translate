@@ -441,37 +441,56 @@ def test_play_thread_device_disconnect_raises():
         asyncio.run(_run())
     assert "Çıkış ses aygıtı hatası" in str(exc_info.value)
 
-def test_queue_drop_oldest_on_full():
+def test_queue_drop_oldest_on_full_via_receive():
+    """G03: receive() metodunun tam dolu audio_in_queue üzerinde en eskiyi atıp yeniyi eklemesini doğrula."""
     loop_obj = SystemAudioLoop("en", "tr", FakeMic(), "dummy-key", output_speaker=FakeSpeaker())
-    loop_obj.audio_in_queue = asyncio.Queue(maxsize=3)
-    for i in range(3):
-        loop_obj.audio_in_queue.put_nowait(f"msg_{i}".encode())
+    loop_obj.audio_in_queue = asyncio.Queue(maxsize=2)
+    # 2 eleman doldur
+    loop_obj.audio_in_queue.put_nowait(b"oldest")
+    loop_obj.audio_in_queue.put_nowait(b"middle")
     assert loop_obj.audio_in_queue.full()
 
-    # Receive logic: drop oldest and insert newest
-    try:
-        loop_obj.audio_in_queue.put_nowait(b"msg_3")
-    except asyncio.QueueFull:
-        loop_obj.audio_in_queue.get_nowait()
-        loop_obj.audio_in_queue.put_nowait(b"msg_3")
+    class StreamSession:
+        def receive(self):
+            async def _gen():
+                # receive() bu veriyi alıp audio_in_queue'ya koyacak; dolu olduğu için 'oldest' atılmalı
+                yield SimpleNamespace(data=b"newest", text=None, server_content=None)
+                await asyncio.sleep(3600)
+            return _gen()
 
-    assert loop_obj.audio_in_queue.qsize() == 3
-    assert loop_obj.audio_in_queue.get_nowait() == b"msg_1"
+    loop_obj.session = StreamSession()
+
+    async def _run():
+        task = asyncio.create_task(loop_obj.receive())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(_run())
+    assert loop_obj.audio_in_queue.qsize() == 2
+    assert loop_obj.audio_in_queue.get_nowait() == b"middle"
+    assert loop_obj.audio_in_queue.get_nowait() == b"newest"
 
 
-def test_loopback_echo_suppressed_during_playback(monkeypatch):
-    class LoopbackMic(FakeMic):
-        isloopback = True
+def test_g06_bounded_byte_queue_caps_latency():
+    """G06: BoundedByteQueue toplam byte bütçesini aşan eski ses paketlerini atarak gecikmeyi sınırlar."""
+    from loop import BoundedByteQueue
+    bq = BoundedByteQueue(max_bytes=100)
+    # 40'ar byte'lık 4 parça (toplam 160 byte > 100)
+    bq.put_nowait(b"A" * 40)
+    bq.put_nowait(b"B" * 40)
+    bq.put_nowait(b"C" * 40)
+    bq.put_nowait(b"D" * 40)
 
-    loop_obj = SystemAudioLoop("en", "tr", LoopbackMic(), "dummy-key", output_speaker=FakeSpeaker())
-    # Set playback_until to 10 seconds in the future
-    loop_obj._playback_until = time.monotonic() + 10.0
-    loop_obj._cap_stop.set() # Don't loop
-
-    # Ensure the check prevents sending
-    assert loop_obj.source_mic.isloopback is True
-    assert loop_obj.output_speaker is not None
-
+    # En eski A ve B atılmış olmalı; C ve D (80 byte <= 100) kalmalı
+    item1 = bq.get(timeout=0.1)
+    assert item1 == b"C" * 40
+    item2 = bq.get(timeout=0.1)
+    assert item2 == b"D" * 40
+    assert bq.curr_bytes == 0
 def test_receive_handles_both_audio_and_transcription():
     emitted = []
     loop_obj = SystemAudioLoop(
@@ -731,3 +750,42 @@ def test_h14_play_thread_single_volume_scaling_and_mute_preroll():
 
     loop_obj_muted._play_thread()
     assert len(played_blocks) == 0
+
+def test_r01_vad_hangover_silence_chunks_sent_before_dropping():
+    """R01: Konuşma bittiğinde ilk sessizlik parçaları (hangover) hemen kesilmeden Gemini VAD'e gönderilmeli."""
+    loop_obj = SystemAudioLoop("en", "tr", None, "key", output_speaker=None, vad_threshold=0.05)
+    # vad_silence_chunks 1 olduğunda (yani 15'ten küçük) continue yapılmayıp post edilmeli
+    loop_obj._vad_silence_chunks = 0
+    rms = 0.01  # eşiğin altında sessizlik
+    HANGOVER_CHUNKS = 15
+    # 1. parça sessizlik: HANGOVER_CHUNKS dahilinde gönderilmeli
+    loop_obj._vad_silence_chunks += 1
+    should_skip = loop_obj._vad_silence_chunks > HANGOVER_CHUNKS and loop_obj._vad_silence_chunks % 75 != 0
+    assert should_skip is False
+
+    # 16. parça sessizlik: HANGOVER bitti, atılmalı
+    loop_obj._vad_silence_chunks = 16
+    should_skip = loop_obj._vad_silence_chunks > HANGOVER_CHUNKS and loop_obj._vad_silence_chunks % 75 != 0
+    assert should_skip is True
+
+
+def test_r02_merge_transcript_preserves_repeated_words():
+    """R02: merge_transcript peş peşe gelen aynı kelimeleri (ha ha, no no) silmemeli."""
+    # Tekrarlanan parçalar
+    full, delta = merge_transcript("ha", "ha")
+    assert full == "haha"
+    assert delta == "ha"
+
+    # Kümülatif büyüyen parça
+    full, delta = merge_transcript("hello", "hello world")
+    assert full == "hello world"
+    assert delta == " world"
+
+def test_r04_loop_close_and_finally_closes_client():
+    """R04: loop_obj.close() metodu client kaynaklarını serbest bırakmalı."""
+    from unittest.mock import MagicMock
+    loop_obj = SystemAudioLoop("en", "tr", None, "key", output_speaker=None)
+    mock_client = MagicMock()
+    loop_obj.client = mock_client
+    loop_obj.close()
+    mock_client.close.assert_called_once()

@@ -7,9 +7,9 @@ import config
 
 def _isolate(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "load_dotenv", lambda: None)
+    monkeypatch.setenv("AHENK_CONFIG", str(tmp_path / "config.json"))
     monkeypatch.setenv("VOICE_TRANSLATE_CONFIG", str(tmp_path / "config.json"))
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-
 
 def test_save_load_roundtrip(tmp_path, monkeypatch):
     _isolate(tmp_path, monkeypatch)
@@ -162,3 +162,16 @@ def test_h16_corrupt_config_is_backed_up_and_salvages_keys(tmp_path, monkeypatch
     new_data = json.loads(cfg_file.read_text(encoding="utf-8"))
     assert new_data.get("api_key") == "safe_encrypted_key"
     assert new_data.get("theme") == "light"
+
+def test_g02_ahenk_config_priority_and_isolation(tmp_path, monkeypatch):
+    """G02: AHENK_CONFIG ortam değişkeni varsa VOICE_TRANSLATE_CONFIG yerine öncelikli olmalı ve izole edilmeli."""
+    ahenk_cfg = tmp_path / "ahenk_custom.json"
+    vt_cfg = tmp_path / "vt_custom.json"
+    monkeypatch.setenv("AHENK_CONFIG", str(ahenk_cfg))
+    monkeypatch.setenv("VOICE_TRANSLATE_CONFIG", str(vt_cfg))
+
+    assert config.config_path() == ahenk_cfg
+
+    # AHENK_CONFIG kaldırıldığında VOICE_TRANSLATE_CONFIG'e düşmeli
+    monkeypatch.delenv("AHENK_CONFIG", raising=False)
+    assert config.config_path() == vt_cfg

@@ -49,17 +49,22 @@ jobs:
         run: python -m pytest -q -m "not device"
       - name: Build onefile executable
         run: python -m PyInstaller --noconfirm --clean Ahenk.spec
-      - name: Create SHA-256 checksum
+      - name: Verify built CLI executable
+        shell: pwsh
+        run: |
+          dist\Ahenk-cli.exe --version
+          dist\Ahenk-cli.exe --list-langs
+      - name: Create SHA-256 checksums
         shell: python
         run: |
           import hashlib
           from pathlib import Path
 
-          executable = Path("dist/Ahenk.exe")
-          Path("dist/Ahenk.exe.sha256").write_text(
-              f"{hashlib.sha256(executable.read_bytes()).hexdigest()} *Ahenk.exe\n",
-              encoding="ascii",
-          )
+          for name in ("Ahenk.exe", "Ahenk-cli.exe"):
+              target = Path(f"dist/{name}")
+              if target.is_file():
+                  sha = hashlib.sha256(target.read_bytes()).hexdigest()
+                  Path(f"dist/{name}.sha256").write_text(f"{sha} *{name}\n", encoding="ascii")
       - name: Publish GitHub Release
         shell: pwsh
         env:
@@ -68,6 +73,8 @@ jobs:
           gh release create $env:GITHUB_REF_NAME `
             dist/Ahenk.exe `
             dist/Ahenk.exe.sha256 `
+            dist/Ahenk-cli.exe `
+            dist/Ahenk-cli.exe.sha256 `
             --verify-tag `
             --generate-notes `
             --title "Ahenk $env:GITHUB_REF_NAME"

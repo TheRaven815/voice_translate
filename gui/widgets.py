@@ -201,10 +201,29 @@ class Select(tk.Frame):
         inner = tk.Frame(pop, bg=C.panel, bd=0, highlightthickness=0)
         inner.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
 
-        row_h = 24
-        visible = min(8, max(1, len(self._values)))
+        font_obj = tkfont.Font(self, font=self._font)
+        linespace = font_obj.metrics("linespace")
+        row_h = max(24, linespace + 8)
+
+        screen_h = self.winfo_screenheight()
+        btn_y = self.winfo_rooty()
+        btn_h = max(1, self.winfo_height())
+        space_below = screen_h - (btn_y + btn_h) if screen_h > 0 else 500
+        space_above = btn_y if screen_h > 0 else 500
+        max_visible_below = max(2, int((space_below - 20) / row_h)) if space_below > 0 else 2
+        max_visible_above = max(2, int((space_above - 20) / row_h)) if space_above > 0 else 2
+
+        if space_below < (min(8, len(self._values)) * row_h + 10) and space_above > space_below:
+            max_visible = max_visible_above
+            open_above = True
+        else:
+            max_visible = max_visible_below
+            open_above = False
+
+        visible = min(8, max_visible, max(1, len(self._values)))
+        needs_scroll = len(self._values) > visible
         host = inner
-        if len(self._values) > 8:
+        if needs_scroll:
             canvas = tk.Canvas(
                 inner, bg=C.panel, highlightthickness=0, bd=0, height=visible * row_h
             )
@@ -245,11 +264,10 @@ class Select(tk.Frame):
             self._rows.append(row)
             row.bind("<Button-1>", lambda _e, val=v: self._pick(val))
             row.bind("<Enter>", lambda _e, idx=i: self._set_popup_highlight(idx))
-            if len(self._values) > 8:
+            if needs_scroll:
                 row.bind("<MouseWheel>", _wheel)
         x = self.winfo_rootx()
-        y = self.winfo_rooty() + self.winfo_height() - 1
-        font_obj = tkfont.Font(self, font=self._font)
+        y = (btn_y - (row_h * visible + 2) + 1) if open_above else (btn_y + btn_h - 1)
         text_w = max((font_obj.measure(str(v)) for v in self._values), default=0) + 24
         w = max(self.winfo_width(), text_w)
         screen_w = self.winfo_screenwidth()
@@ -258,11 +276,11 @@ class Select(tk.Frame):
         elif self.winfo_rootx() < 0 and (x + w) > 0:
             x = self.winfo_rootx() + self.winfo_width() - w
         h = row_h * visible + 2
-        screen_h = self.winfo_screenheight()
-        if screen_h > 0 and y + h > screen_h and self.winfo_rooty() >= 0:
-            y = self.winfo_rooty() - h + 1
-        elif self.winfo_rooty() < 0 and (y + h) > 0:
-            y = self.winfo_rooty() - h + 1
+        if screen_h > 0:
+            if y + h > screen_h:
+                y = max(0, screen_h - h - 8)
+            if y < 0:
+                y = 0
         pop.geometry(f"{w}x{h}+{x}+{y}")
         pop.bind("<Escape>", lambda _e: self._close())
         pop.bind("<Up>", self._on_key_up)

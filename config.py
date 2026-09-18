@@ -117,7 +117,7 @@ class Settings:
     overlay_alpha: float = 0.92
     overlay_click_through: bool = False
     ui_lang: str = "tr"
-
+    save_history: bool = True
 
 def config_dir() -> Path:
     if os.name == "nt":
@@ -249,6 +249,7 @@ def load() -> Settings:
         overlay_alpha=overlay_alpha,
         overlay_click_through=overlay_click_through,
         ui_lang=ui_lang,
+        save_history=bool(raw.get("save_history", True)),
     )
 def save(settings: Settings) -> Path:
     raw = _read_raw()
@@ -265,6 +266,7 @@ def save(settings: Settings) -> Path:
     raw["overlay_alpha"] = settings.overlay_alpha
     raw["overlay_click_through"] = settings.overlay_click_through
     raw["ui_lang"] = settings.ui_lang
+    raw["save_history"] = settings.save_history
     return _write_raw(raw)
 
 def save_api_key(key: str) -> Path:
@@ -287,6 +289,7 @@ def save_preferences(
     overlay_alpha: float | None = None,
     overlay_click_through: bool | None = None,
     ui_lang: str | None = None,
+    save_history: bool | None = None,
 ) -> Path:
     raw = _read_raw()
     if input_device is not None:
@@ -313,6 +316,8 @@ def save_preferences(
         raw["overlay_click_through"] = overlay_click_through
     if ui_lang is not None:
         raw["ui_lang"] = ui_lang
+    if save_history is not None:
+        raw["save_history"] = save_history
     return _write_raw(raw)
 
 

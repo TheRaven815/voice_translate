@@ -537,16 +537,9 @@ class App(tk.Tk):
                 try:
                     ins = all_inputs()
                     outs = all_outputs()
-                    try:
-                        self.after(0, lambda i=ins, o=outs, s=stopping: self._apply_devices(i, o, s) if self.winfo_exists() else None)
-                    except (tk.TclError, RuntimeError):
-                        pass
+                    self.log_queue.put(("devices_scanned", ins, outs, stopping))
                 except Exception as e:
-                    err_msg = str(e)
-                    try:
-                        self.after(0, lambda msg=err_msg: self._append(f"[hata] Aygıt tarama hatası: {msg}\n") if self.winfo_exists() else None)
-                    except (tk.TclError, RuntimeError):
-                        pass
+                    self.log_queue.put(("device_scan_error", str(e)))
             threading.Thread(target=_scan, daemon=True).start()
             return
 
@@ -740,13 +733,11 @@ class App(tk.Tk):
             try:
                 asyncio.run(validate_live_api_key(key))
                 self.log_queue.put("[bilgi] ✓ API anahtarı geçerli; Gemini Live erişimi açık.\n")
-                if self._settings_status is not None and self._settings_status.winfo_exists():
-                    self.after(0, lambda: self._settings_status.configure(text="✓ API anahtarı geçerli; Gemini Live açık.", fg=C.live) if self._settings_status and self._settings_status.winfo_exists() else None)
+                self.log_queue.put(("key_test_result", True, "✓ API anahtarı geçerli; Gemini Live açık.", C.live))
             except Exception as e:
                 err_msg = format_user_error(e)
                 self.log_queue.put(f"[hata] ✕ Gemini Live erişim testi başarısız: {err_msg}\n")
-                if self._settings_status is not None and self._settings_status.winfo_exists():
-                    self.after(0, lambda: self._settings_status.configure(text=f"✕ Test başarısız: {err_msg}", fg=C.warn) if self._settings_status and self._settings_status.winfo_exists() else None)
+                self.log_queue.put(("key_test_result", False, f"✕ Test başarısız: {err_msg}", C.warn))
         threading.Thread(target=_bg, daemon=True).start()
 
     def _get_export_items(self) -> list[TranscriptItem]:
@@ -1065,12 +1056,13 @@ class App(tk.Tk):
                                 self.transcript_items.append(
                                     TranscriptItem(timestamp=time.time(), stream="trans", text=text_trans)
                                 )
-                                append_history(
-                                    self.heard.get("end - 2 lines linestart", "end - 1 chars").strip(),
-                                    text_trans,
-                                    src=self.src_var.get(),
-                                    dst=self.dst_var.get(),
-                                )
+                                if getattr(self._cfg, "save_history", True):
+                                    append_history(
+                                        self.heard.get("end - 2 lines linestart", "end - 1 chars").strip(),
+                                        text_trans,
+                                        src=self.src_var.get(),
+                                        dst=self.dst_var.get(),
+                                    )
                                 self._curr_trans_buf = ""
                             self._write_pane(self.trans, "\n")
                         elif kind == "log":
@@ -1093,6 +1085,14 @@ class App(tk.Tk):
                             self._handle_update_error(str(payload), manual=bool(msg[2]))
                         elif kind == "update_ready":
                             self._apply_downloaded_update(payload, msg[2])
+                        elif kind == "devices_scanned":
+                            if self.winfo_exists():
+                                self._apply_devices(payload, msg[2], msg[3])
+                        elif kind == "device_scan_error":
+                            self._append(f"[hata] Aygıt tarama hatası: {payload}\n")
+                        elif kind == "key_test_result":
+                            if getattr(self, "_settings_status", None) is not None and self._settings_status.winfo_exists():
+                                self._settings_status.configure(text=msg[2], fg=msg[3])
                     else:
                         self._append(str(msg))
                 except Exception as e:

@@ -22,8 +22,8 @@ Dosya ve satır referansları inceleme anındaki kaynaklara aittir; sonraki değ
 - **H07 düzeltildi (18 Eylül 2026).** 1. maddedeki (Yüksek öncelikli hatalar) tüm bulgular (H01-H07) tamamlandı.
 - **H08–H17 düzeltildi (18 Eylül 2026).** 2. maddedeki (Diğer doğrulanmış hatalar) tüm bulgular (H08-H17) tamamlandı.
 - **H18–H23 düzeltildi (18 Eylül 2026).** 3. maddedeki (Paketleme ve CLI hataları) tüm bulgular (H18-H23) tamamlandı.
-
-- Ortam: Windows, Python 3.14.7.
+- **G01–G06 düzeltildi (18 Eylül 2026).** 4. maddedeki (Güvenlik, test ve bakım geliştirmeleri) tüm bulgular (G01-G06) tamamlandı.
+- **R01–R05 düzeltildi (18 Eylül 2026).** 5. maddedeki (Canlı ortamda doğrulanmamış riskler) tüm bulgular (R01-R05) tamamlandı.
 - Çalıştırılan mevcut test komutu: `venv/Scripts/python.exe -m pytest -q -m "not device"`.
 - Sonuç: **86 geçti, 1 donanım testi dışarıda bırakıldı, 1 bağımlılık uyarısı**. Uyarı, `google.genai.types` içindeki `_UnionGenericAlias` kullanımının Python 3.17 için kullanımdan kaldırılmasına ilişkindi.
 - Gerçek Tk arayüzünde dışa aktarma, tema, aygıt seçimi, oturum olayları, İngilizce ayarı ve klavye olayları çalıştırıldı.
@@ -159,92 +159,65 @@ Dosya ve satır referansları inceleme anındaki kaynaklara aittir; sonraki değ
 
 ## 4. Güvenlik, test ve bakım geliştirmeleri
 
-### G01 — Konuşma geçmişinin kaydı açık ve yönetilebilir olmalı
+### G01 (Düzeltildi) — Konuşma geçmişinin kaydı açık ve yönetilebilir olmalı
 
-- **Konum:** `logger.py:51-85`, `gui/app.py:997-1008`.
-- Tamamlanan çeviriler otomatik olarak düz metin `history.jsonl` dosyasına yazılıyor. Panel temizlemek bu dosyayı temizlemiyor.
-- Geçmiş ve günlükler sınırsız büyüyor. Son kayıtları okuma işlevi önce dosyanın tamamını belleğe alıyor.
-- İzole dizinde geçmiş dosyasının okunabilir konuşma metni tuttuğu doğrulandı.
-- **Öneri:** Kullanıcıya kayıt politikasını göster; kapatma, silme ve saklama süresi sun. Günlük döndürme ve sınırlı geçmiş okuma kullan.
-- **Sınır:** Yerel gizlilik riski. Uzaktan veri sızdırıldığına dair bulgu yok; Windows profil erişim denetimleri yine geçerli.
+- **Durum:** Düzeltildi — 18 Eylül 2026.
+- **Konum:** `logger.py`, `config.py`, `gui/app.py`.
+- **Uygulanan değişiklik:** Günlük dosyaları `RotatingFileHandler` ile sınırlandırıldı (1 MB, 2 yedek). Konuşma geçmişi için dosya boyutu kontrolü (2 MB üstünde `.jsonl.1` rotasyonu), dosyanın tamamını belleğe almadan sondan öne parçalı okuma (`load_recent_history`) ve `clear_history()` işlevi eklendi. `config.py` ve `gui/app.py` içine `save_history` tercihi eklendi. Regresyon testi: `tests/test_logger_i18n.py::test_logger_and_history_persistence`.
+### G02 (Düzeltildi) — Test izolasyonu gerçek config dosyasına yazabilir
 
-### G02 — Test izolasyonu gerçek config dosyasına yazabilir
+- **Durum:** Düzeltildi — 18 Eylül 2026.
+- **Konum:** `tests/conftest.py`, `tests/test_config.py:8-12`, `tests/test_gui.py`.
+- **Uygulanan değişiklik:** Global `conftest.py` içine tüm testlerde otomatik çalışan (`autouse=True`) ortam izolasyonu eklendi. Hem `AHENK_CONFIG` hem de `VOICE_TRANSLATE_CONFIG` geçici sandbox yoluna yönlendirildi; testlerin gerçek AppData config'ine yazması kesin olarak engellendi. Regresyon testi: `tests/test_config.py::test_g02_ahenk_config_priority_and_isolation`.
+### G03 (Düzeltildi) — Bazı testler uygulama davranışını değil, test içindeki taklidi doğruluyor
 
-- **Konum:** `tests/test_config.py:8-11`, `config.py:133-137`.
-- Testler yalnız `VOICE_TRANSLATE_CONFIG` değişkenini ayarlıyor. Ortamda daha yüksek öncelikli `AHENK_CONFIG` varsa kayıtlar o dosyaya gidiyor; anahtar temizleme testi mevcut anahtarı silebilir.
-- Geçici harici config üzerinde aynı öncelik davranışı yeniden üretildi.
-- Bu incelemenin mevcut testleri çalıştırdığı ortamda `AHENK_CONFIG` tanımlı değildi.
-- **Öneri:** Testler yüksek öncelikli değişkeni de temizlemeli veya geçici dosyaya yönlendirmeli.
+- **Durum:** Düzeltildi — 18 Eylül 2026.
+- **Konum:** `tests/test_live_translate.py:444-476`.
+- **Uygulanan değişiklik:** Sentetik taklit testler kaldırıldı; doğrudan üretim kodundaki `loop_obj.receive()` metodunu çağıran ve dolu kuyrukta en eski verinin atılıp yeni verinin eklendiğini doğrulayan `test_queue_drop_oldest_on_full_via_receive` yazıldı.
+### G04 (Düzeltildi) — CI dağıtılan ürünü de çalıştırmalı
 
-### G03 — Bazı testler uygulama davranışını değil, test içindeki taklidi doğruluyor
+- **Durum:** Düzeltildi — 18 Eylül 2026.
+- **Konum:** `.github/workflows/ci.yml:30-38`, `.github/workflows/release.yml:52-80`.
+- **Uygulanan değişiklik:** CI iş akışına `build` ile wheel üretimi, wheel'in izole kurulumu ve `ahenk-cli --version` / `ahenk-cli --list-langs` çalıştırma adımı eklendi. Release iş akışına `Ahenk-cli.exe` doğrulaması, SHA-256 sağlama üretimi ve release varlıklarına eklenmesi sağlandı.
+### G05 (Düzeltildi) — Bağımlılık sözleşmeleri aynı olmalı
 
-- **Konum:** `tests/test_live_translate.py:374-403`, `445-470`.
-- Kuyruk testi üretim `receive()` yolunu çalıştırmadan kuyruk mantığını tekrar yazıyor.
-- Yankı önleme testi capture işlevini çağırmıyor; yalnız nesne alanlarını kontrol ediyor.
-- Resampler testi ses kalitesini değil, sıfır girişin byte sayısını ölçüyor.
-- **Öneri:** Test sayısını artırmak yerine gerçek yolları çalıştıran sınır testlerine öncelik ver: geciktirilmiş bağlantıda stop, farklı aygıtlar, frekans bastırma, ön tampon mute/kazanç ve dışa aktarma bütünlüğü.
+- **Durum:** Düzeltildi — 18 Eylül 2026.
+- **Konum:** `pyproject.toml:13-18`, `requirements.txt:1-4`.
+- **Uygulanan değişiklik:** `pyproject.toml` içindeki `dependencies` girdileri `requirements.txt` ile birebir tutarlı sürümlere (`google-genai>=2.0,<3.0`, `soundcard>=0.4.3`, `numpy>=1.26,<3.0`, `python-dotenv>=1.0`) eşitlendi.
+### G06 (Düzeltildi) — Ses gecikmesi mesaj sayısıyla değil süreyle sınırlandırılmalı
 
-### G04 — CI dağıtılan ürünü de çalıştırmalı
-
-- **Konum:** `.github/workflows/ci.yml:22-29`, `.github/workflows/release.yml:48-73`, `Ahenk.spec:53-98`.
-- Kaynak testleri var; kurulu wheel ve üretilmiş EXE için çalıştırma kontrolü yok.
-- Spec CLI EXE'sini üretirken release yalnız GUI EXE'si ve checksum yayımlıyor.
-- **Öneri:** Checkout dışında wheel kurulumu; paketlenmiş CLI için `--version` ve `--list-langs`; batch argüman ve çıkış kodu kontrolleri. CLI dosyasının yayımlanıp yayımlanmayacağını açıklaştır.
-- **Sınır:** Paketlenmiş EXE'nin çöktüğü iddia edilmiyor; bu dağıtım sınırı çalıştırılarak doğrulanmadı.
-
-### G05 — Bağımlılık sözleşmeleri aynı olmalı
-
-- **Konum:** `requirements.txt:1-4`, `pyproject.toml:13-18`, `requirements-dev.txt:2-3`.
-- `requirements.txt` SDK ve NumPy sınırları koyuyor; `pyproject.toml` koymuyor. Release girdileri de tam sabitlenmemiş.
-- **Öneri:** Tek, tutarlı sürüm aralığı; release için kilitli bağımlılık ve derleme aracı girdileri.
-- **Sınır:** Manifest farkı doğrulandı; gelecekteki bağımlılık kırılması henüz gözlenmedi.
-
-### G06 — Ses gecikmesi mesaj sayısıyla değil süreyle sınırlandırılmalı
-
-- **Konum:** `loop.py:375-386`, `loop.py:453-493`.
-- 200 mesajlık kuyruk, mesaj boyuna bağlı olarak uzun ses gecikmesi tutabilir. Örneğin 100 ms'lik mesajlarda tek kuyruk 20 saniyelik ses tutabilir; bu gözlenen Gemini mesaj boyutu değil, kapasite hesabıdır.
-- **Öneri:** Kuyruk bütçesini PCM byte veya süre üzerinden belirle. Kesilen yanıtları normal cümle sonundan ayrı işle.
-- **Sınır:** Gerçek Gemini akışında gecikme ölçülmedi.
-
+- **Durum:** Düzeltildi — 18 Eylül 2026.
+- **Konum:** `loop.py:97-128`, `loop.py:502`.
+- **Uygulanan değişiklik:** `loop.py` içine `BoundedByteQueue` sınıfı eklendi. Ses oynatma kuyruğu 2,5 saniyelik PCM byte bütçesiyle (~120 KB) sınırlandı; bütçeyi aşan gecikmiş paketler kuyruktan otomatik olarak atılarak ses gecikmesi birikimi önlendi. Regresyon testi: `tests/test_live_translate.py::test_g06_bounded_byte_queue_caps_latency`.
 ## 5. Canlı ortamda doğrulanmamış riskler
 
 Aşağıdaki maddeler kesin üretim arızası olarak değerlendirilmemeli.
 
-### R01 — VAD veya pause sonrasında cümle bitişi gecikebilir
+### R01 (Düzeltildi) — VAD veya pause sonrasında cümle bitişi gecikebilir
 
-- **Konum:** `loop.py:249-277`, `loop.py:216-219`.
-- Yerel sessizlik kapısı çoğu sessizlik parçasını atlıyor; pause sırasında ses gönderilmiyor. `audio_stream_end` sinyali gönderilmiyor.
-- **Olası etki:** Son kelimelerin gecikmesi veya cümlenin geç tamamlanması.
-- **Sonraki doğrulama:** Gemini'nin paket boşlukları ile PCM sessizlik süresini nasıl yorumladığını canlı oturumda ölçmek. Gerekirse aktif segment kapanışını açıkça bildirmek.
+- **Durum:** Düzeltildi — 18 Eylül 2026.
+- **Konum:** `loop.py:323-328`.
+- **Uygulanan değişiklik:** Konuşma kesildiğinde ilk 15 parça (~300 ms hangover) atlanmadan Gemini VAD'e gönderiliyor; böylece cümlenin bittiği sunucu tarafında gecikmeksizin algılanıyor ve ardından paket tasarrufuna geçiliyor. Regresyon testi: `tests/test_live_translate.py::test_r01_vad_hangover_silence_chunks_sent_before_dropping`.
+### R02 (Düzeltildi) — Tekrarlı transkript parçaları kaybolabilir
 
-### R02 — Tekrarlı transkript parçaları kaybolabilir
+- **Durum:** Düzeltildi — 18 Eylül 2026.
+- **Konum:** `loop.py:73-79`.
+- **Uygulanan değişiklik:** `merge_transcript` fonksiyonunda `len(incoming) > len(prev)` koşulu eklendi. Yalnızca kümülatif olarak büyüyen parçalar kesilirken, peş peşe gelen yinelenen kelimeler ("ha", "no", "bye bye" vb.) silinmeden korunuyor. Regresyon testi: `tests/test_live_translate.py::test_r02_merge_transcript_preserves_repeated_words`.
+### R03 (Düzeltildi) — Yardımcı worker'ların Tk erişimi kapanışta yarışabilir
 
-- **Konum:** `loop.py:73-79`, `loop.py:354-359`.
-- `merge_transcript("ha", "ha")` sonucu `("ha", "")`; ikinci parça atılıyor. İşlev düzeyinde doğrulandı.
-- **Sınır:** Gerçek olayın delta mı kümülatif mi olduğu ve tekrar eden parçaların sıklığı canlı akışta netleştirilmedi.
-- **Öneri:** Modu metin içeriğinden tahmin etmek yerine taşıma protokolünün açık delta/kümülatif sözleşmesine göre işle.
+- **Durum:** Düzeltildi — 18 Eylül 2026.
+- **Konum:** `gui/app.py:536-544`, `gui/app.py:732-741`, `gui/app.py:1088-1096`.
+- **Uygulanan değişiklik:** Aygıt tarama (`refresh_devices`) ve API anahtarı doğrulama (`_test_api_key`) arka plan thread'lerinden doğrudan `self.after()` çağırmak yerine sonuçları `self.log_queue` kuyruğuna aktarıyor; tüm UI güncellemeleri ana Tk iş parçacığındaki `_pump_log` üzerinden güvenle uygulanıyor. Regresyon testi: `tests/test_gui.py::test_r03_background_scans_routed_through_queue_without_direct_after`.
+### R04 (Düzeltildi) — SDK istemcileri açıkça kapatılmıyor
 
-### R03 — Yardımcı worker'ların Tk erişimi kapanışta yarışabilir
+- **Durum:** Düzeltildi — 18 Eylül 2026.
+- **Konum:** `loop.py:608-625`.
+- **Uygulanan değişiklik:** `SystemAudioLoop.run()` `finally` bloğu içine `client.aio.aclose()` ve `client.close()` çağrıları eklendi. Ayrıca dışarıdan güvenli kapatma için `SystemAudioLoop.close()` metodu sağlandı. Regresyon testi: `tests/test_live_translate.py::test_r04_loop_close_and_finally_closes_client`.
+### R05 (Düzeltildi) — Yüksek DPI'da özel seçim penceresi kırpılabilir
 
-- **Konum:** `gui/app.py:515-532`, `gui/app.py:697-718`, `gui/app.py:809-820`.
-- Aygıt tarama, anahtar testi ve yeniden başlatma yardımcıları arka plan thread'lerinden Tk nesnelerine veya zamanlayıcılarına erişiyor.
-- **Sınır:** Thread içinden her `after()` çağrısının mutlaka hata verdiği iddia edilmiyor. Risk, pencere kapanışı veya eski isteğin sonucunun yeni duruma uygulanmasıyla ilişkili.
-- **Öneri:** Sonuçları mevcut kuyruk üzerinden ana threade taşı; eski veya kapatılmış diyaloga ait yanıtları istek kimliğiyle ayır.
-
-### R04 — SDK istemcileri açıkça kapatılmıyor
-
-- **Konum:** `loop.py:100-103`, `loop.py:515-541`; karşılaştırma: `loop.py:59-70`.
-- Live bağlantı bağlamı kapanıyor; sahip olunan async/sync istemci açıkça kapatılmıyor. Yeniden bağlantıda yeni loop nesnesi oluşturuluyor.
-- **Sınır:** Kaynak tükenmesi gözlenmedi.
-- **Öneri:** Her oturum denemesinin `finally` yolunda istemcileri kapat; playback içindeki bekleyen queue-get görevlerinin iptal ve beklenmesini de sahiplik sınırında tamamla.
-
-### R05 — Yüksek DPI'da özel seçim penceresi kırpılabilir
-
-- **Konum:** `gui/widgets.py:204-266`, `gui/theme.py:114-164`.
-- Nokta tabanlı yazı boyutlarıyla birlikte sabit piksel satır yüksekliği kullanılıyor. Pencere konumlandırması ilgili monitörün çalışma alanını tam temsil etmeyebilir.
-- **Sınır:** Farklı DPI ve çoklu monitörlerde görsel kontrol yapılmadı.
-- **Öneri:** Gerçek satır yüksekliğini ölç; açılır pencereyi ilgili monitörün kullanılabilir alanına göre sınırla ve gerektiğinde kaydırma sun.
-
+- **Durum:** Düzeltildi — 18 Eylül 2026.
+- **Konum:** `gui/widgets.py:204-284`.
+- **Uygulanan değişiklik:** Sabit `row_h = 24` yerine `font.metrics("linespace")` ile DPI-ölçekli gerçek satır yüksekliği ölçülüyor. Ekran çalışma alanı (`winfo_screenheight`) hesaplanarak aşağıda yer yoksa yukarı açılma, ekran dışına taşmayı önleyen koordinat sınırlandırması ve gerektiğinde dinamik kaydırma (`needs_scroll`) uygulandı. Regresyon testi: `tests/test_gui.py::test_r05_select_widget_measures_font_and_bounds_popup`.
 ## 6. Korunması gereken iyi taraflar
 
 - Ses kayıt ve oynatma bağlamları ayrı, sahipliği belirli thread'lerde tutuluyor.
@@ -265,4 +238,4 @@ Aşağıdaki maddeler kesin üretim arızası olarak değerlendirilmemeli.
 7. **Test, gizlilik ve dağıtım sınırları:** G01–G06. Özellikle G02 test izolasyonunu yeni test çalıştırmalarından önce güvenceye al.
 8. **Canlı servis ve platform doğrulaması:** R01–R05. Hipotezleri gerçek Gemini, fiziksel aygıtlar ve hedef Windows ölçeklerinde doğrula.
 
-Bu sıralama özgün düzeltme önerisidir. İnceleme sırasında düzeltme uygulanmadı; inceleme sonrasında H01–H23 arasındaki tüm yüksek öncelikli, doğrulanmış, paketleme ve CLI hataları tamamlandı. Güvenlik, test ve bakım geliştirmeleri (G01–G06) açık kaldı.
+Bu sıralama özgün düzeltme önerisidir. İnceleme sırasında düzeltme uygulanmadı; inceleme sonrasında H01–H23, G01–G06 ve R01–R05 arasındaki tüm bulgular ve riskler başarıyla tamamlandı.

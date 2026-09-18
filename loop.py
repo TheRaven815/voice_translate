@@ -74,7 +74,7 @@ def merge_transcript(prev: str, incoming: str) -> tuple[str, str]:
     """Gelen parça delta veya kümülatif olabilir; (tam metin, eklenecek) döner."""
     if not incoming:
         return prev, ""
-    if prev and incoming.startswith(prev):
+    if prev and len(incoming) > len(prev) and incoming.startswith(prev):
         return incoming, incoming[len(prev) :]
     return prev + incoming, incoming
 
@@ -93,6 +93,38 @@ def _is_same_endpoint(source, target) -> bool:
         d_name = str(dst_name).strip().lower()
         return s_name == d_name or d_name in s_name or s_name in d_name
     return src_id is None and dst_id is None and src_name is None and dst_name is None
+
+class BoundedByteQueue:
+    """Ses gecikmesini sınırlandırmak için byte/süre bütçeli kuyruk (G06)."""
+
+    def __init__(self, max_bytes: int = int(RECEIVE_SAMPLE_RATE * 2 * 2.5)):
+        self.max_bytes = max_bytes
+        self.curr_bytes = 0
+        self._q: queue.Queue[bytes | None] = queue.Queue()
+        self._lock = threading.Lock()
+
+    def put_nowait(self, item: bytes | None) -> None:
+        with self._lock:
+            if item is None:
+                self._q.put_nowait(None)
+                return
+            self.curr_bytes += len(item)
+            while self.curr_bytes > self.max_bytes and not self._q.empty():
+                try:
+                    dropped = self._q.get_nowait()
+                    if dropped is not None:
+                        self.curr_bytes = max(0, self.curr_bytes - len(dropped))
+                except queue.Empty:
+                    break
+            self._q.put_nowait(item)
+
+    def get(self, timeout: float | None = None) -> bytes | None:
+        item = self._q.get(timeout=timeout)
+        with self._lock:
+            if item is not None:
+                self.curr_bytes = max(0, self.curr_bytes - len(item))
+        return item
+
 
 
 class SystemAudioLoop:
@@ -288,9 +320,10 @@ class SystemAudioLoop:
                     lvl = 0.0
                 self.last_level = lvl
 
+                HANGOVER_CHUNKS = 15  # ~300 ms ses kesildikten sonra devam eden sessizlik tamponu (R01)
                 if self.vad_threshold > 0.0 and rms < self.vad_threshold:
                     self._vad_silence_chunks += 1
-                    if self._vad_silence_chunks % 75 != 0:
+                    if self._vad_silence_chunks > HANGOVER_CHUNKS and self._vad_silence_chunks % 75 != 0:
                         continue
                 else:
                     self._vad_silence_chunks = 0
@@ -467,7 +500,7 @@ class SystemAudioLoop:
                 pending.clear()
 
     async def play(self):
-        self._play_q = queue.Queue(maxsize=200)
+        self._play_q = BoundedByteQueue(max_bytes=int(RECEIVE_SAMPLE_RATE * 2 * 2.5))
         done = asyncio.Event()
         err: list[BaseException] = []
 
@@ -572,3 +605,21 @@ class SystemAudioLoop:
             stop_task.cancel()
             await asyncio.gather(stop_task, return_exceptions=True)
             self.session = None
+            if hasattr(self.client, "aio") and hasattr(self.client.aio, "aclose"):
+                try:
+                    await self.client.aio.aclose()
+                except Exception:
+                    pass
+            if hasattr(self.client, "close"):
+                try:
+                    self.client.close()
+                except Exception:
+                    pass
+
+    def close(self):
+        """SDK istemci kaynaklarını serbest bırakır (R04)."""
+        if hasattr(self.client, "close"):
+            try:
+                self.client.close()
+            except Exception:
+                pass

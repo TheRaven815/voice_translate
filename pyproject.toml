@@ -11,10 +11,10 @@ authors = [{ name = "Enes Eliağır" }]
 license = { text = "MIT" }
 requires-python = ">=3.11"
 dependencies = [
-    "google-genai",
-    "soundcard",
-    "numpy",
-    "python-dotenv",
+    "google-genai>=2.0,<3.0",
+    "soundcard>=0.4.3",
+    "numpy>=1.26,<3.0",
+    "python-dotenv>=1.0",
 ]
 
 [project.scripts]

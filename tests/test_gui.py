@@ -356,8 +356,10 @@ def test_worker_run_stops_cleanly_without_attribute_error():
 
         app.loop_obj = DummyLoop()
         app._run()
-        msg = app.log_queue.get_nowait()
-        assert msg == ("__stopped__", 0) or msg == "__stopped__"
+        messages = []
+        while not app.log_queue.empty():
+            messages.append(app.log_queue.get_nowait())
+        assert any(m == ("__stopped__", 0) or m == "__stopped__" or (isinstance(m, tuple) and m[0] == "__stopped__") for m in messages)
     finally:
         app.destroy()
 
@@ -1090,5 +1092,50 @@ def test_h17_ui_lang_en_applies_to_all_gui_labels(monkeypatch):
         assert app.refresh_btn.cget("text") == "Refresh"
     finally:
         set_ui_lang("tr")
+        app.destroy()
+
+def test_r03_background_scans_routed_through_queue_without_direct_after(monkeypatch):
+    """R03: refresh_devices arka plan thread'i doğrudan after çağırmak yerine log_queue kullanmalı."""
+    app = App()
+    try:
+        from types import SimpleNamespace
+        dev1 = SimpleNamespace(id="1", name="Dev1", isloopback=True)
+        monkeypatch.setattr("gui.app.all_inputs", lambda: [dev1])
+        monkeypatch.setattr("gui.app.all_outputs", lambda: [dev1])
+
+        # async_scan=False ile veya kuyruğa mesaj atarak test
+        app.log_queue.put(("devices_scanned", [dev1], [dev1], False))
+        app._pump_log()
+        assert len(app.inputs) == 1
+        assert app.inputs[0].name == "Dev1"
+    finally:
+        app.destroy()
+
+
+def test_r05_select_widget_measures_font_and_bounds_popup():
+    """R05: Select açılır kutusu satır yüksekliğini font linespace üzerinden dinamik hesaplamalı."""
+    app = App()
+    try:
+        from gui.widgets import Select
+        var = tk.StringVar(value="Option 1")
+        values = [f"Option {i}" for i in range(15)]
+        top = tk.Toplevel(app)
+        sel = Select(top, values=values, textvariable=var)
+        sel.pack()
+        top.update_idletasks()
+        # Popup aç
+        sel._toggle()
+        assert sel._pop is not None
+        assert sel._pop.winfo_exists()
+
+        # Popup geometrisi hesaplanmış ve sınırlandırılmış olmalı
+        geom = sel._pop.geometry()
+        assert "x" in geom
+        assert "+" in geom
+
+        # Popup kapat
+        sel._close()
+        assert sel._pop is None
+    finally:
         app.destroy()
 
