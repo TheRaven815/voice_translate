@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 from pathlib import Path
 from tkinter import messagebox
 import webbrowser
@@ -619,6 +620,51 @@ class App(tk.Tk):
         else:
             self.start()
 
+    def _overlay_tail(self, full_text: str) -> str:
+        """Overlay için son N görsel satırı döndürür.
+
+        Tk 'end - N lines' mantıksal satır saydığı için uzun paragrafların
+        tamamı ekrana taşıyordu; burada wraplength genişliğine göre gerçek
+        kelime kaydırması ölçülür.
+        """
+        text = full_text.strip()
+        if not text:
+            return ""
+        max_lines = max(1, getattr(self, "overlay_history_lines", 2))
+        font = tkfont.Font(font=(self.font_brand[0], getattr(self, "overlay_font_size", 13), "bold"))
+        try:
+            avail = 520
+            if getattr(self, "overlay_label", None) is not None and self.overlay_label.winfo_exists():
+                avail = max(120, int(str(self.overlay_label.cget("wraplength"))))
+            lines: list[str] = []
+            cur = ""
+            for word in text.split():
+                cand = f"{cur} {word}".strip()
+                if cur and font.measure(cand) > avail:
+                    lines.append(cur)
+                    cur = word
+                else:
+                    cur = cand
+            if cur:
+                lines.append(cur)
+            if len(lines) <= max_lines:
+                return text
+            return "\n".join(lines[-max_lines:])
+        finally:
+            del font
+
+    def _update_overlay(self, full_text: str) -> None:
+        if self._overlay is None or not self._overlay.winfo_exists():
+            return
+        tail = self._overlay_tail(full_text)
+        if not tail:
+            return
+        self.overlay_label.configure(
+            text=tail,
+            justify="right" if is_rtl(self.dst_var.get()) else "center",
+        )
+        self._fit_overlay()
+
     def _write_pane(self, widget, text: str):
         lang = self.src_var.get() if widget is self.heard else self.dst_var.get()
         tag = "rtl" if is_rtl(lang) else "ltr"
@@ -634,11 +680,7 @@ class App(tk.Tk):
                 ]
                 last = lines[-1] if lines else ""
             if last:
-                self.overlay_label.configure(
-                    text=last,
-                    justify="right" if is_rtl(self.dst_var.get()) else "center",
-                )
-                self._fit_overlay()
+                self._update_overlay(last)
     def _clear_pane(self, widget):
         widget.delete("1.0", tk.END)
         if widget is self.heard:
@@ -1778,8 +1820,7 @@ class App(tk.Tk):
         fminus.pack(side=tk.RIGHT, padx=(4, 0))
         fminus.bind("<Button-1>", lambda _e: self._adjust_overlay_font(-1))
         self._overlay_fminus = fminus
-        lines = [l.strip() for l in self.trans.get("1.0", "end").splitlines() if l.strip()]
-        cur_text = "\n".join(lines[-getattr(self, "overlay_history_lines", 2):]) if lines else "..."
+        cur_text = self._overlay_tail(self.trans.get("1.0", "end")) or "..."
 
         self.overlay_label = tk.Label(
             wrap,
