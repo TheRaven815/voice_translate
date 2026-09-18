@@ -71,7 +71,7 @@ def test_app_name_version_and_about():
         assert ICON_ICO.is_file()
         assert ICON_PNG.is_file()
         assert getattr(app, "_ahenk_icon", None) is not None
-        assert app.info_btn["text"] == "ⓘ"
+        assert app.info_btn.kind == "info"
         assert app._about is None
         app._open_about()
         assert app._about is not None
@@ -296,10 +296,10 @@ def test_vu_meter_update():
     try:
         app._update_meter(0.5)
         coords = app.meter.coords(app._meter_bar)
-        assert coords == [0.0, 0.0, 27.0, 6.0]
+        assert coords == [0.0, 0.0, 28.0, 8.0]
         app._update_meter(0.0)
         coords = app.meter.coords(app._meter_bar)
-        assert coords == [0.0, 0.0, 0.0, 6.0]
+        assert coords == [0.0, 0.0, 0.0, 8.0]
     finally:
         app.destroy()
 
@@ -404,15 +404,17 @@ def test_theme_toggle_and_persistence(tmp_path, monkeypatch):
     app = App()
     try:
         assert C.current == "dark"
-        assert app.theme_btn.cget("text") == "☀"
-        assert app.cget("bg") == "#111111"
+        assert app.theme_btn._pos == 0.0
+        assert app.cget("bg") == C.bg
         app.update_idletasks()
         theme_btn_geometry = (app.theme_btn.winfo_x(), app.theme_btn.winfo_width())
 
         app.toggle_theme()
         assert C.current == "light"
-        assert app.theme_btn.cget("text") == "🌙"
-        assert app.cget("bg") == "#f5f6f8"
+        assert app.theme_btn._target() == 1.0
+        app.theme_btn.sync(animate=False)
+        assert app.theme_btn._pos == 1.0
+        assert app.cget("bg") == C.bg
         assert app.pin_btn.cget("bg") == C.rail
         app.update_idletasks()
         assert (app.theme_btn.winfo_x(), app.theme_btn.winfo_width()) == theme_btn_geometry
@@ -422,8 +424,10 @@ def test_theme_toggle_and_persistence(tmp_path, monkeypatch):
 
         app.toggle_theme()
         assert C.current == "dark"
-        assert app.theme_btn.cget("text") == "☀"
-        assert app.cget("bg") == "#111111"
+        assert app.theme_btn._target() == 0.0
+        app.theme_btn.sync(animate=False)
+        assert app.theme_btn._pos == 0.0
+        assert app.cget("bg") == C.bg
         assert config.load().theme == "dark"
     finally:
         app.destroy()
@@ -559,8 +563,8 @@ def test_start_btn_hover_palette_in_light_theme():
     app = App()
     try:
         app.set_theme("light")
-        assert app.start_btn._hover_bg == C.fill_hover == "#32383f"
-        assert app.start_btn.cget("bg") == C.fill == "#1f2328"
+        assert app.start_btn._hover_bg == C.fill_hover
+        assert app.start_btn.cget("bg") == C.fill
         assert app.start_btn.cget("fg") == C.fill_fg == "#ffffff"
     finally:
         app.destroy()
@@ -667,7 +671,7 @@ def test_vu_meter_reads_loop_last_level_directly():
         app._pump_log()
         coords = app.meter.coords(app._meter_bar)
         assert coords[2] > 40.0
-        assert coords[3] == 6.0
+        assert coords[3] == 8.0
     finally:
         app.destroy()
 
@@ -729,10 +733,10 @@ def test_gui_key_mask_toggle():
         assert app.key_entry.cget("show") == "•"
         app._toggle_key_mask()
         assert app.key_entry.cget("show") == ""
-        assert app.mask_btn.cget("text") == "🙈"
+        assert app.mask_btn.kind == "eye_off"
         app._toggle_key_mask()
         assert app.key_entry.cget("show") == "•"
-        assert app.mask_btn.cget("text") == "👁"
+        assert app.mask_btn.kind == "eye"
     finally:
         app.destroy()
 
@@ -912,32 +916,32 @@ def test_theme_toggle_updates_body_tag_and_overlay_contrast():
 
         # Başlangıç: Dark tema
         assert C.current == "dark"
-        assert app.trans.tag_cget("body", "foreground") == "#e8e8e8"
-        assert app.trans.cget("bg") == "#111111"
-        assert app.overlay_label.cget("fg") == "#e8e8e8"
-        assert app._overlay.cget("bg") == "#0c0c0c"
+        assert app.trans.tag_cget("body", "foreground") == C.text
+        assert app.trans.cget("bg") == C.bg
+        assert app.overlay_label.cget("fg") == C.text
+        assert app._overlay.cget("bg") == C.overlay_bg
 
         # Light temaya geçiş
         app.set_theme("light")
         assert C.current == "light"
-        # 'body' etiketi de yeni metin rengine (#1a1d20) güncellenmiş olmalı (eski beyaz renkte kalmamalı)
-        assert app.trans.tag_cget("body", "foreground") == "#1a1d20"
-        assert app.heard.tag_cget("body", "foreground") == "#1a1d20"
-        assert app.trans.cget("bg") == "#f5f6f8"
+        # 'body' etiketi de yeni metin rengine güncellenmiş olmalı (eski beyaz renkte kalmamalı)
+        assert app.trans.tag_cget("body", "foreground") == C.text
+        assert app.heard.tag_cget("body", "foreground") == C.text
+        assert app.trans.cget("bg") == C.bg
 
         # Overlay zemin ve yazı rengi uyumlu olmalı (koyu zemin üzerinde koyu yazı olmamalı)
-        assert app._overlay.cget("bg") == "#ffffff"
-        assert app.overlay_label.cget("fg") == "#1a1d20"
-        assert app._overlay_hdr.cget("bg") == "#ffffff"
-        assert app._overlay_fplus.cget("bg") == "#ffffff"
+        assert app._overlay.cget("bg") == C.overlay_bg
+        assert app.overlay_label.cget("fg") == C.text
+        assert app._overlay_hdr.cget("bg") == C.overlay_bg
+        assert app._overlay_fplus.cget("bg") == C.overlay_bg
 
         # Tekrar Dark temaya dönüş
         app.set_theme("dark")
         assert C.current == "dark"
-        assert app.trans.tag_cget("body", "foreground") == "#e8e8e8"
-        assert app.heard.tag_cget("body", "foreground") == "#e8e8e8"
-        assert app._overlay.cget("bg") == "#0c0c0c"
-        assert app.overlay_label.cget("fg") == "#e8e8e8"
+        assert app.trans.tag_cget("body", "foreground") == C.text
+        assert app.heard.tag_cget("body", "foreground") == C.text
+        assert app._overlay.cget("bg") == C.overlay_bg
+        assert app.overlay_label.cget("fg") == C.text
     finally:
         app.destroy()
 
@@ -1086,7 +1090,7 @@ def test_h17_ui_lang_en_applies_to_all_gui_labels(monkeypatch):
         assert app.trans_lbl.cget("text") == "Translation"
         assert app.start_btn.cget("text") == "Start"
         assert app.stop_btn.cget("text") == "Stop"
-        assert app.overlay_btn.cget("text") == "Subtitle"
+        assert app.overlay_btn.tooltip == "Subtitle"
         assert app.heard_clear.cget("text") == "Clear"
         assert app.heard_export.cget("text") == "Export"
         assert app.refresh_btn.cget("text") == "Refresh"

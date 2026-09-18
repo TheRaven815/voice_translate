@@ -22,43 +22,45 @@ APP_ID = "eneseliagir.ahenk"
 
 
 DARK = {
-    "bg": "#111111",
-    "rail": "#141414",
-    "panel": "#171717",
-    "text": "#e8e8e8",
-    "muted": "#8d8d8d",
-    "dim": "#5c5c5c",
-    "line": "#2b2b2b",
-    "hover": "#222222",
-    "fill": "#ececec",
-    "fill_fg": "#111111",
+    "bg": "#111113",
+    "rail": "#151517",
+    "panel": "#1a1a1d",
+    "text": "#ececec",
+    "muted": "#9a9aa0",
+    "dim": "#63636a",
+    "line": "#2a2a2e",
+    "hover": "#232327",
+    "fill": "#ededed",
+    "fill_fg": "#131315",
     "fill_hover": "#ffffff",
-    "live": "#7aaf6a",
-    "warn": "#c4a35a",
-    "err": "#c97878",
-    "select": "#2c2c2c",
-    "overlay_bg": "#0c0c0c",
-    "disabled_bg": "#1a1a1a",
+    "live": "#6fbf73",
+    "warn": "#d0a94f",
+    "err": "#d47b7b",
+    "select": "#2e2e33",
+    "overlay_bg": "#0d0d0f",
+    "disabled_bg": "#1c1c1f",
+    "accent": "#d4a94e",
 }
 
 LIGHT = {
-    "bg": "#f5f6f8",
-    "rail": "#ebedf2",
+    "bg": "#f6f6f4",
+    "rail": "#eeeeeb",
     "panel": "#ffffff",
-    "text": "#1a1d20",
-    "muted": "#57606a",
-    "dim": "#8c959f",
-    "line": "#d5dbe2",
-    "hover": "#dfe4ea",
-    "fill": "#1f2328",
+    "text": "#1b1d20",
+    "muted": "#5b636b",
+    "dim": "#8b939c",
+    "line": "#d8dce1",
+    "hover": "#e4e7ea",
+    "fill": "#22262b",
     "fill_fg": "#ffffff",
-    "fill_hover": "#32383f",
+    "fill_hover": "#363c43",
     "live": "#2da44e",
     "warn": "#9a6700",
     "err": "#cf222e",
-    "select": "#d0d7de",
+    "select": "#d3d9e0",
     "overlay_bg": "#ffffff",
-    "disabled_bg": "#e9edf2",
+    "disabled_bg": "#e9ecef",
+    "accent": "#8a6414",
 }
 
 
@@ -81,6 +83,7 @@ class C:
     select = DARK["select"]
     overlay_bg = DARK["overlay_bg"]
     disabled_bg = DARK["disabled_bg"]
+    accent = DARK["accent"]
 
     @classmethod
     def apply_theme(cls, name: str = "dark"):

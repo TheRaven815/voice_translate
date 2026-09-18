@@ -2,11 +2,343 @@
 
 from __future__ import annotations
 
+import math
 import time
 import tkinter as tk
 import tkinter.font as tkfont
 
 from .theme import C
+
+
+def _hex_rgb(color: str) -> tuple[int, int, int]:
+    color = color.lstrip("#")
+    return int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
+
+
+def mix(a: str, b: str, t: float) -> str:
+    """İki hex rengi karıştırır (t=0 -> a, t=1 -> b)."""
+    ar, ag, ab = _hex_rgb(a)
+    br, bg, bb = _hex_rgb(b)
+    r = round(ar + (br - ar) * t)
+    g = round(ag + (bg - ag) * t)
+    bl = round(ab + (bb - ab) * t)
+    return f"#{r:02x}{g:02x}{bl:02x}"
+
+
+def _rounded_rect_points(x1: float, y1: float, x2: float, y2: float, r: float) -> list[float]:
+    """Saat yönünde yumuşatılmış köşe noktaları (smooth polygon için)."""
+    pts: list[float] = []
+    corners = (
+        (x2 - r, y1 + r, -90.0),   # ust sag
+        (x2 - r, y2 - r, 0.0),     # alt sag
+        (x1 + r, y2 - r, 90.0),    # alt sol
+        (x1 + r, y1 + r, 180.0),   # ust sol
+    )
+    for cx, cy, start in corners:
+        for i in range(5):
+            ang = math.radians(start + i * 22.5)
+            pts.extend((cx + r * math.cos(ang), cy + r * math.sin(ang)))
+    return pts
+
+
+class IconButton(tk.Canvas):
+    """Vektör ikonlu, uniform 24px kare basma alanlı düğme.
+
+    Unicode/emoji glyph'lerin fonta ve platforma göre kaymasını önlemek için
+    tüm ikonlar Canvas üzerinde çizilir.
+    """
+
+    SIZE = 24
+
+    def __init__(self, master, kind: str, command, *, tooltip: str = "", bg: str | None = None):
+        self._bg = bg or C.rail
+        super().__init__(
+            master,
+            width=self.SIZE,
+            height=self.SIZE,
+            bg=self._bg,
+            highlightthickness=0,
+            bd=0,
+            cursor="hand2",
+            takefocus=0,
+        )
+        self.kind = kind
+        self._command = command
+        self._enabled = True
+        self._hover = False
+        self._accent = False
+        self.tooltip = tooltip
+        self.bind("<Button-1>", self._on_click)
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.redraw()
+
+    def configure(self, cnf=None, **kw):  # noqa: A003
+        bg = kw.pop("bg", None)
+        if isinstance(cnf, dict):
+            bg = cnf.pop("bg", bg)
+            kw = {**cnf, **kw}
+        if bg is not None:
+            self._bg = bg
+            super().configure(bg=bg)
+            self.redraw()
+        if kw:
+            super().configure(**kw)
+
+    config = configure
+
+    def cget(self, key):
+        if key == "bg":
+            return self._bg
+        return super().cget(key)
+
+    def set_enabled(self, enabled: bool) -> None:
+        self._enabled = enabled
+        self.redraw()
+
+    def set_accent(self, accent: bool) -> None:
+        """Aktif/etkin durum göstergesi (ör. sabitlenmiş pencere)."""
+        self._accent = accent
+        self.redraw()
+
+    def _on_click(self, _e):
+        if self._enabled:
+            self._command()
+
+    def _on_enter(self, _e):
+        self._hover = True
+        self.redraw()
+
+    def _on_leave(self, _e):
+        self._hover = False
+        self.redraw()
+
+    def redraw(self) -> None:
+        self.delete("all")
+        if not self._enabled:
+            fg = C.dim
+        elif self._accent:
+            fg = C.accent if not self._hover else mix(C.accent, C.text, 0.3)
+        elif self._hover:
+            fg = C.text
+        else:
+            fg = C.dim
+        self._draw_icon(fg)
+
+    def update_theme(self) -> None:
+        self.configure(bg=self._bg)
+
+    def _draw_icon(self, fg: str) -> None:
+        getattr(self, f"_glyph_{self.kind}", self._glyph_info)(fg)
+
+    # -- 24x24 icerisinde izdusumlu ikonlar (merkez 12,12) ----------------
+
+    def _glyph_pin(self, fg: str) -> None:
+        # Harita pini: dolu daire + sivri alt uc (nokta konum gosterir)
+        cx, cy, r = 12.0, 9.4, 4.8
+        pts: list[float] = []
+        for i in range(14):
+            ang = math.radians(105.0 + i * 25.0)  # alt kisim acik kalir
+            pts.extend((cx + r * math.cos(ang), cy + r * math.sin(ang)))
+        pts.extend((cx, 19.8))
+        self.create_polygon(*pts, fill=fg, outline="", smooth=True, splinesteps=24)
+        inner = mix(fg, self._bg, 0.75)
+        self.create_oval(cx - 1.7, cy - 1.7, cx + 1.7, cy + 1.7, fill=inner, outline="")
+
+    def _glyph_close(self, fg: str) -> None:
+        self.create_line(7.5, 7.5, 16.5, 16.5, fill=fg, width=1.7, capstyle=tk.ROUND)
+        self.create_line(16.5, 7.5, 7.5, 16.5, fill=fg, width=1.7, capstyle=tk.ROUND)
+
+    def _glyph_eye(self, fg: str) -> None:
+        # Goz: iki yaydan lens + iris
+        self.create_arc(4.5, 5.5, 19.5, 18.5, start=25, extent=130, style=tk.ARC, outline=fg, width=1.5)
+        self.create_arc(4.5, 5.5, 19.5, 18.5, start=205, extent=130, style=tk.ARC, outline=fg, width=1.5)
+        self.create_oval(10.3, 10.3, 13.7, 13.7, fill=fg, outline="")
+
+    def _glyph_eye_off(self, fg: str) -> None:
+        self._glyph_eye(fg)
+        self.create_line(5.5, 18.5, 18.5, 5.5, fill=fg, width=1.6, capstyle=tk.ROUND)
+
+    def _glyph_target(self, fg: str) -> None:
+        self.create_oval(5.5, 5.5, 18.5, 18.5, outline=fg, width=1.5)
+        self.create_oval(10.4, 10.4, 13.6, 13.6, fill=fg, outline="")
+
+    def _glyph_cursor(self, fg: str) -> None:
+        self.create_polygon(
+            7.0, 4.5, 7.0, 18.5, 10.6, 15.4, 13.0, 19.6, 15.2, 18.3, 12.8, 14.2, 17.6, 14.2,
+            fill=fg, outline="",
+        )
+
+    def _glyph_gear(self, fg: str) -> None:
+        cx = cy = 12.0
+        teeth = 8
+        r_out, r_in = 7.4, 5.4
+        half_out, half_in = math.radians(10.0), math.radians(13.5)
+        pts: list[float] = []
+        for i in range(teeth):
+            ang = math.radians(i * (360.0 / teeth) - 90.0)
+            pts.extend((cx + r_in * math.cos(ang - half_in), cy + r_in * math.sin(ang - half_in)))
+            pts.extend((cx + r_out * math.cos(ang - half_out), cy + r_out * math.sin(ang - half_out)))
+            pts.extend((cx + r_out * math.cos(ang + half_out), cy + r_out * math.sin(ang + half_out)))
+            pts.extend((cx + r_in * math.cos(ang + half_in), cy + r_in * math.sin(ang + half_in)))
+        self.create_polygon(*pts, fill="", outline=fg, width=1.5, joinstyle=tk.MITER)
+        self.create_oval(cx - 2.7, cy - 2.7, cx + 2.7, cy + 2.7, outline=fg, width=1.5)
+
+    def _glyph_info(self, fg: str) -> None:
+        self.create_oval(5, 5, 19, 19, outline=fg, width=1.5)
+        self.create_oval(11.2, 8.2, 12.8, 9.8, fill=fg, outline="")
+        self.create_line(12, 12.4, 12, 15.6, fill=fg, width=1.8, capstyle=tk.ROUND)
+
+    def _glyph_swap(self, fg: str) -> None:
+        # Iki yonlu ok (ust saga, alt sola)
+        self.create_line(6, 9, 18, 9, fill=fg, width=1.6, capstyle=tk.ROUND)
+        self.create_line(15, 6, 18, 9, fill=fg, width=1.6, capstyle=tk.ROUND)
+        self.create_line(15, 12, 18, 9, fill=fg, width=1.6, capstyle=tk.ROUND)
+        self.create_line(18, 15, 6, 15, fill=fg, width=1.6, capstyle=tk.ROUND)
+        self.create_line(9, 12, 6, 15, fill=fg, width=1.6, capstyle=tk.ROUND)
+        self.create_line(9, 18, 6, 15, fill=fg, width=1.6, capstyle=tk.ROUND)
+
+    def _glyph_subtitle(self, fg: str) -> None:
+        # Altyazi balonu: cerceve + iki satir
+        self.create_polygon(
+            *_rounded_rect_points(4.5, 6.5, 19.5, 17.5, 2.5),
+            fill="", outline=fg, width=1.4, smooth=True,
+        )
+        self.create_line(8, 11, 16, 11, fill=fg, width=1.5, capstyle=tk.ROUND)
+        self.create_line(8, 14.5, 13, 14.5, fill=fg, width=1.5, capstyle=tk.ROUND)
+
+
+class ThemeSwitch(tk.Canvas):
+    """Güneş/ay teması için hap şeklinde kayar düğme.
+
+    Konum, font bağımsız vektör çizimle belirlenir: koyu temada top solda
+    (hilal), açık temada sağda (güneş). Geçişte top kısa bir animasyonla kayar.
+    """
+
+    W, H = 40, 22
+    _STEPS = 6
+    _DELAY_MS = 16
+
+    def __init__(self, master, command, *, bg: str | None = None):
+        self._bg = bg or C.rail
+        super().__init__(
+            master,
+            width=self.W,
+            height=self.H,
+            bg=self._bg,
+            highlightthickness=0,
+            bd=0,
+            cursor="hand2",
+            takefocus=0,
+        )
+        self._command = command
+        self._anim_after: str | None = None
+        # 0.0 = koyu (top solda), 1.0 = açık (top sağda)
+        self._pos = 1.0 if C.current == "light" else 0.0
+        self.bind("<Button-1>", lambda _e: self._command())
+        self.bind("<Enter>", lambda _e: self._draw(hover=True))
+        self.bind("<Leave>", lambda _e: self._draw(hover=False))
+        self._draw()
+
+    def configure(self, cnf=None, **kw):  # noqa: A003
+        bg = kw.pop("bg", None)
+        if isinstance(cnf, dict):
+            bg = cnf.pop("bg", bg)
+            kw = {**cnf, **kw}
+        if bg is not None:
+            self._bg = bg
+            super().configure(bg=bg)
+            self._draw()
+        if kw:
+            super().configure(**kw)
+
+    config = configure
+
+    def cget(self, key):
+        if key == "bg":
+            return self._bg
+        return super().cget(key)
+
+    def _target(self) -> float:
+        return 1.0 if C.current == "light" else 0.0
+
+    def sync(self, animate: bool = True) -> None:
+        """Mevcut tema konumuna getirir; tema değişiminde animasyonla kayar."""
+        target = self._target()
+        if self._anim_after is not None:
+            try:
+                self.after_cancel(self._anim_after)
+            except tk.TclError:
+                pass
+            self._anim_after = None
+        if not animate or abs(target - self._pos) < 1e-6:
+            self._pos = target
+            self._draw()
+            return
+        step = (target - self._pos) / self._STEPS
+
+        def _tick(remaining: int) -> None:
+            self._anim_after = None
+            if remaining <= 1:
+                self._pos = self._target()
+                self._draw()
+                return
+            self._pos += step
+            self._draw()
+            self._anim_after = self.after(self._DELAY_MS, lambda: _tick(remaining - 1))
+
+        self._anim_after = self.after(self._DELAY_MS, lambda: _tick(self._STEPS))
+
+    def update_theme(self) -> None:
+        super().configure(bg=self._bg)
+        self._draw()
+
+    def _draw(self, hover: bool = False) -> None:
+        self.delete("all")
+        w, h = self.W, self.H
+        r = h / 2 - 1.5
+        track = C.hover if not hover else mix(C.hover, C.text, 0.08)
+        self.create_polygon(
+            *_rounded_rect_points(1.5, 1.5, w - 1.5, h - 1.5, r),
+            fill=track, outline=C.line, width=1, smooth=True,
+        )
+        pad = 4.0
+        knob_r = h / 2 - pad - 0.5
+        x_min, x_max = pad + knob_r, w - pad - knob_r
+        cx = x_min + (x_max - x_min) * self._pos
+        cy = h / 2
+        self.create_oval(cx - knob_r, cy - knob_r, cx + knob_r, cy + knob_r, fill=C.fill, outline="")
+        glyph = C.fill_fg
+        # pos=1 (açık) -> güneş, pos=0 (koyu) -> hilal
+        self._draw_moon(cx, cy, knob_r, glyph, alpha=1.0 - self._pos)
+        self._draw_sun(cx, cy, knob_r, glyph, alpha=self._pos)
+
+    def _draw_moon(self, cx: float, cy: float, knob_r: float, color: str, alpha: float) -> None:
+        if alpha <= 0.0:
+            return
+        col = mix(C.fill, color, alpha)
+        r = knob_r * 0.62
+        self.create_oval(cx - r, cy - r, cx + r, cy + r, fill=col, outline="")
+        bite = r * 0.88
+        bx = cx + r * 0.95
+        by = cy - r * 0.28
+        self.create_oval(bx - bite, by - bite, bx + bite, by + bite, fill=C.fill, outline="")
+
+    def _draw_sun(self, cx: float, cy: float, knob_r: float, color: str, alpha: float) -> None:
+        if alpha <= 0.0:
+            return
+        col = mix(C.fill, color, alpha)
+        r = knob_r * 0.30
+        self.create_oval(cx - r, cy - r, cx + r, cy + r, fill=col, outline="")
+        for i in range(8):
+            ang = math.radians(i * 45.0)
+            r1, r2 = knob_r * 0.58, knob_r * 0.80
+            self.create_line(
+                cx + r1 * math.cos(ang), cy + r1 * math.sin(ang),
+                cx + r2 * math.cos(ang), cy + r2 * math.sin(ang),
+                fill=col, width=1.3, capstyle=tk.ROUND,
+            )
+
 
 class Select(tk.Frame):
     """Tek satırlık seçici; ttk.Combobox'un native çerçevesini taşımıyor."""

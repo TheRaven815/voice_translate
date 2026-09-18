@@ -31,7 +31,7 @@ from updater import (
     launch_update_helper,
 )
 from .theme import C, ICON_PNG, apply_icon, dark_titlebar, pick_fonts, prepare_app_id
-from .widgets import Select
+from .widgets import IconButton, Select, ThemeSwitch
 
 _PERMANENT_LIVE_ERRORS = (
     "api_key_invalid",
@@ -198,41 +198,37 @@ class App(tk.Tk):
             self._rail_title, text=f"v{__version__}", font=self.font_ui, fg=C.dim, bg=C.rail
         )
         self.version_lbl.pack(side=tk.LEFT, padx=(8, 0))
-        self.info_btn = self._text_btn(self._rail_title, "ⓘ", self._open_about)
-        self.info_btn.pack(side=tk.RIGHT)
-        settings_symbol = "\ue713" if os.name == "nt" else "⚙"
-        self.settings_btn = self._text_btn(self._rail_title, settings_symbol, self._open_settings)
-        if os.name == "nt":
-            self.settings_btn.configure(font=("Segoe MDL2 Assets", 10))
-        self.settings_btn.pack(side=tk.RIGHT, padx=(0, 6))
-        self.theme_btn = self._text_btn(
-            self._rail_title, "☀" if C.current == "dark" else "🌙", self.toggle_theme
+        self._rail_actions = tk.Frame(self._rail_title, bg=C.rail)
+        self._rail_actions.pack(side=tk.RIGHT)
+
+        self.overlay_btn = IconButton(
+            self._rail_actions, "subtitle", self.toggle_overlay, tooltip=t("subtitle")
         )
-        self.theme_btn.configure(width=2)
-        self.theme_btn.pack(side=tk.RIGHT, padx=(0, 6))
-        pin_symbol = "\ue718" if os.name == "nt" else "📌"
-        self.pin_btn = self._text_btn(self._rail_title, pin_symbol, self.toggle_pin)
-        if os.name == "nt":
-            self.pin_btn.configure(font=("Segoe MDL2 Assets", 10))
-        if self.always_on_top:
-            self.pin_btn._rest_fg = C.live
-            self.pin_btn.configure(fg=C.live)
-        self.pin_btn.pack(side=tk.RIGHT, padx=(0, 6))
-        self.overlay_btn = self._text_btn(self._rail_title, t("subtitle"), self.toggle_overlay)
-        self.overlay_btn.pack(side=tk.RIGHT, padx=(0, 6))
+        self.overlay_btn.pack(side=tk.LEFT, padx=(0, 4))
+        self.pin_btn = IconButton(self._rail_actions, "pin", self.toggle_pin, tooltip=t("pin"))
+        self.pin_btn.pack(side=tk.LEFT, padx=(0, 4))
+        self.pin_btn.set_accent(self.always_on_top)
+        self.settings_btn = IconButton(
+            self._rail_actions, "gear", self._open_settings, tooltip=t("settings")
+        )
+        self.settings_btn.pack(side=tk.LEFT, padx=(0, 4))
+        self.info_btn = IconButton(self._rail_actions, "info", self._open_about, tooltip=t("about"))
+        self.info_btn.pack(side=tk.LEFT, padx=(0, 8))
+        self.theme_btn = ThemeSwitch(self._rail_actions, self.toggle_theme)
+        self.theme_btn.pack(side=tk.LEFT)
 
         self._rail_st = tk.Frame(self._rail_head, bg=C.rail)
-        self._rail_st.pack(anchor="w", pady=(6, 0), fill=tk.X)
-        self._dot = tk.Canvas(self._rail_st, width=8, height=8, bg=C.rail, highlightthickness=0, bd=0)
+        self._rail_st.pack(anchor="w", pady=(8, 0), fill=tk.X)
+        self._dot = tk.Canvas(self._rail_st, width=10, height=10, bg=C.rail, highlightthickness=0, bd=0)
         self._dot.pack(side=tk.LEFT, pady=1)
-        self._dot_id = self._dot.create_oval(1, 1, 7, 7, fill=C.dim, outline="")
+        self._dot_id = self._dot.create_oval(1, 1, 9, 9, fill=C.dim, outline="")
         self.status = tk.Label(self._rail_st, text=t("ready"), font=self.font_ui, fg=C.muted, bg=C.rail)
-        self.status.pack(side=tk.LEFT, padx=(6, 0))
+        self.status.pack(side=tk.LEFT, padx=(7, 0))
         self.timer_lbl = tk.Label(self._rail_st, text="", font=self.font_ui, fg=C.dim, bg=C.rail)
-        self.timer_lbl.pack(side=tk.RIGHT, padx=(6, 0))
-        self.meter = tk.Canvas(self._rail_st, width=54, height=6, bg=C.line, highlightthickness=0, bd=0)
-        self.meter.pack(side=tk.RIGHT, padx=(0, 2), pady=2)
-        self._meter_bar = self.meter.create_rectangle(0, 0, 0, 6, fill=C.live, outline="")
+        self.timer_lbl.pack(side=tk.RIGHT, padx=(8, 0))
+        self.meter = tk.Canvas(self._rail_st, width=56, height=8, bg=C.line, highlightthickness=0, bd=0)
+        self.meter.pack(side=tk.RIGHT, pady=2)
+        self._meter_bar = self.meter.create_rectangle(0, 0, 0, 8, fill=C.live, outline="")
 
         self._rail_sep(rail, 1)
 
@@ -252,12 +248,14 @@ class App(tk.Tk):
         self._fields_frame.columnconfigure(0, weight=1)
 
         tk.Label(self._fields_frame, text=t("input"), font=self.font_ui, fg=C.muted, bg=C.rail).grid(
+            row=0, column=0, sticky="w"
         )
         self.in_var = tk.StringVar()
         self.in_box = Select(self._fields_frame, textvariable=self.in_var, values=["[Sistem]"], font=self.font_ui)
         self.in_box.grid(row=1, column=0, sticky="ew", pady=(3, 10))
 
         tk.Label(self._fields_frame, text=t("output"), font=self.font_ui, fg=C.muted, bg=C.rail).grid(
+            row=2, column=0, sticky="w"
         )
         self.out_var = tk.StringVar()
         self.out_box = Select(self._fields_frame, textvariable=self.out_var, values=[NONE_OUTPUT], font=self.font_ui)
@@ -283,13 +281,8 @@ class App(tk.Tk):
         )
         self.src_box.grid(row=0, column=0, sticky="ew")
 
-        self.swap_btn = tk.Label(
-            self._langs_frame, text="→", font=self.font_ui, fg=C.dim, bg=C.rail, cursor="hand2", padx=6
-        )
-        self.swap_btn.grid(row=0, column=1)
-        self.swap_btn.bind("<Button-1>", lambda _e: self._swap_langs())
-        self.swap_btn.bind("<Enter>", lambda _e: self.swap_btn.configure(fg=C.text))
-        self.swap_btn.bind("<Leave>", lambda _e: self.swap_btn.configure(fg=C.dim))
+        self.swap_btn = IconButton(self._langs_frame, "swap", self._swap_langs, bg=C.rail)
+        self.swap_btn.grid(row=0, column=1, padx=2)
 
         self.dst_var = tk.StringVar(value=dst_val)
         self.dst_box = Select(
@@ -308,9 +301,9 @@ class App(tk.Tk):
         self._btns_frame.columnconfigure(1, weight=1)
 
         self.start_btn = self._btn(self._btns_frame, t("start"), self.start)
-        self.start_btn._edge.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        self.start_btn._edge.grid(row=0, column=0, sticky="ew", padx=(0, 4), ipady=2)
         self.stop_btn = self._btn(self._btns_frame, t("stop"), self.stop)
-        self.stop_btn._edge.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        self.stop_btn._edge.grid(row=0, column=1, sticky="ew", padx=(4, 0), ipady=2)
         self._paint(self.start_btn, filled=True, enabled=True)
         self._paint(self.stop_btn, filled=False, enabled=False)
 
@@ -362,7 +355,7 @@ class App(tk.Tk):
         self.log = tk.Text(
             self.log_wrap,
             wrap=tk.WORD,
-            height=4,
+            height=3,
             font=self.font_log,
             bg=C.bg,
             fg=C.dim,
@@ -660,8 +653,8 @@ class App(tk.Tk):
             self._append("[bilgi] Metin panoya kopyalandı.\n")
 
     def _update_meter(self, level: float) -> None:
-        w = int(max(0.0, min(1.0, level)) * 54)
-        self.meter.coords(self._meter_bar, 0, 0, w, 6)
+        w = int(max(0.0, min(1.0, level)) * 56)
+        self.meter.coords(self._meter_bar, 0, 0, w, 8)
 
     def _save_user_prefs(self):
         if getattr(self, "_save_prefs_timer", None) is not None:
@@ -703,8 +696,7 @@ class App(tk.Tk):
         except tk.TclError:
             pass
         if hasattr(self, "pin_btn"):
-            self.pin_btn._rest_fg = C.live if self.always_on_top else C.dim
-            self.pin_btn.configure(fg=self.pin_btn._rest_fg)
+            self.pin_btn.set_accent(self.always_on_top)
         self._save_user_prefs()
 
     def _toggle_key_mask(self) -> None:
@@ -713,11 +705,13 @@ class App(tk.Tk):
         if self.key_entry.cget("show") == "•":
             self.key_entry.configure(show="")
             if self.mask_btn is not None and self.mask_btn.winfo_exists():
-                self.mask_btn.configure(text="🙈")
+                self.mask_btn.kind = "eye_off"
+                self.mask_btn.redraw()
         else:
             self.key_entry.configure(show="•")
             if self.mask_btn is not None and self.mask_btn.winfo_exists():
-                self.mask_btn.configure(text="👁")
+                self.mask_btn.kind = "eye"
+                self.mask_btn.redraw()
 
     def _test_api_key(self) -> None:
         key = self.key_var.get().strip()
@@ -837,7 +831,8 @@ class App(tk.Tk):
             except Exception:
                 pass
         if hasattr(self, "_overlay_thru_btn"):
-            self._overlay_thru_btn.configure(text="🎯" if self.overlay_click_through else "🖱")
+            self._overlay_thru_btn.kind = "target" if self.overlay_click_through else "cursor"
+            self._overlay_thru_btn.redraw()
         self._save_user_prefs()
     def restart(self) -> None:
         """Çalışırken ayarları nazikçe yeniden başlatarak uygular."""
@@ -884,7 +879,7 @@ class App(tk.Tk):
         self.main.configure(bg=C.bg)
 
         # Rail header
-        for f in (self._rail_head, self._rail_title, self._rail_st):
+        for f in (self._rail_head, self._rail_title, self._rail_actions, self._rail_st):
             f.configure(bg=C.rail)
         self.brand.configure(fg=C.text, bg=C.rail)
         self.version_lbl.configure(fg=C.dim, bg=C.rail)
@@ -894,21 +889,19 @@ class App(tk.Tk):
         self._dot.itemconfigure(self._dot_id, fill=C.live if running else C.dim)
         self.meter.configure(bg=C.line)
         self.meter.itemconfigure(self._meter_bar, fill=C.live)
-        self.theme_btn.configure(text="☀" if C.current == "dark" else "🌙")
 
-        # Rail text buttons
-        for btn in (
-            self.info_btn,
-            self.settings_btn,
-            self.theme_btn,
-            self.pin_btn,
-            self.overlay_btn,
-            self.refresh_btn,
-        ):
-            btn._rest_fg = C.dim
-            btn.configure(fg=C.dim, bg=C.rail)
-        self.pin_btn._rest_fg = C.live if self.always_on_top else C.dim
-        self.pin_btn.configure(fg=self.pin_btn._rest_fg)
+        # Rail icon buttons + theme switch
+        for btn in (self.info_btn, self.settings_btn, self.pin_btn, self.overlay_btn):
+            btn.configure(bg=C.rail)
+        self.pin_btn.set_accent(self.always_on_top)
+        self.overlay_btn.set_accent(
+            self._overlay is not None and self._overlay.winfo_exists()
+        )
+        self.swap_btn.configure(bg=C.rail)
+        self.theme_btn.configure(bg=C.rail)
+        self.theme_btn.sync(animate=True)
+        self.refresh_btn._rest_fg = C.dim
+        self.refresh_btn.configure(fg=C.dim, bg=C.rail)
 
         # Rail frames and labels
         for f in (
@@ -931,7 +924,7 @@ class App(tk.Tk):
             box.update_theme()
 
         # Swap button
-        self.swap_btn.configure(fg=C.dim, bg=C.rail)
+        self.swap_btn.configure(bg=C.rail)
         # Action buttons
         self._paint(self.start_btn, filled=not running, enabled=not running)
         self._paint(self.stop_btn, filled=running, enabled=running)
@@ -992,9 +985,9 @@ class App(tk.Tk):
             if hasattr(self, "overlay_label") and self.overlay_label.winfo_exists():
                 self.overlay_label.configure(bg=C.overlay_bg, fg=C.text)
             if hasattr(self, "_overlay_close") and self._overlay_close.winfo_exists():
-                self._overlay_close.configure(bg=C.overlay_bg, fg=C.dim)
+                self._overlay_close.configure(bg=C.overlay_bg)
             if hasattr(self, "_overlay_thru_btn") and self._overlay_thru_btn.winfo_exists():
-                self._overlay_thru_btn.configure(bg=C.overlay_bg, fg=C.dim)
+                self._overlay_thru_btn.configure(bg=C.overlay_bg)
             if hasattr(self, "_overlay_fplus") and self._overlay_fplus.winfo_exists():
                 self._overlay_fplus.configure(bg=C.overlay_bg, fg=C.dim)
             if hasattr(self, "_overlay_fminus") and self._overlay_fminus.winfo_exists():
@@ -1569,11 +1562,8 @@ class App(tk.Tk):
         self.key_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(1, 0), pady=1, ipady=4)
         self.key_entry.bind("<Return>", lambda _e: self.save_key())
 
-        self.mask_btn = tk.Label(
-            self.key_edge, text="👁", font=self.font_ui, fg=C.dim, bg=C.panel, cursor="hand2", padx=6
-        )
+        self.mask_btn = IconButton(self.key_edge, "eye", self._toggle_key_mask, bg=C.panel)
         self.mask_btn.pack(side=tk.RIGHT, fill=tk.Y, pady=1, padx=(0, 1))
-        self.mask_btn.bind("<Button-1>", lambda _e: self._toggle_key_mask())
 
         running = self.worker is not None and self.worker.is_alive()
         if running:
@@ -1696,7 +1686,7 @@ class App(tk.Tk):
         if self._overlay is not None and self._overlay.winfo_exists():
             self._overlay.destroy()
             self._overlay = None
-            self.overlay_btn.configure(fg=C.dim)
+            self.overlay_btn.set_accent(False)
             return
 
         pop = tk.Toplevel(self)
@@ -1709,7 +1699,7 @@ class App(tk.Tk):
         except tk.TclError:
             pass
         pop.configure(bg=C.overlay_bg)
-        self.overlay_btn.configure(fg=C.live)
+        self.overlay_btn.set_accent(True)
 
         def start_move(e):
             pop._drag_x = e.x_root - pop.winfo_x()
@@ -1728,17 +1718,13 @@ class App(tk.Tk):
         hdr.pack(fill=tk.X, padx=6, pady=(3, 0))
         self._overlay_hdr = hdr
 
-        close_btn = tk.Label(hdr, text="✕", font=self.font_ui, fg=C.dim, bg=C.overlay_bg, cursor="hand2")
+        close_btn = IconButton(hdr, "close", self.toggle_overlay, bg=C.overlay_bg)
         close_btn.pack(side=tk.RIGHT, padx=(4, 0))
         self._overlay_close = close_btn
-        close_btn.bind("<Button-1>", lambda _e: self.toggle_overlay())
-        close_btn.bind("<Enter>", lambda _e: close_btn.configure(fg=C.text))
-        close_btn.bind("<Leave>", lambda _e: close_btn.configure(fg=C.dim))
 
-        thru_sym = "🎯" if getattr(self, "overlay_click_through", False) else "🖱"
-        self._overlay_thru_btn = tk.Label(hdr, text=thru_sym, font=self.font_ui, fg=C.dim, bg=C.overlay_bg, cursor="hand2")
+        thru_kind = "target" if getattr(self, "overlay_click_through", False) else "cursor"
+        self._overlay_thru_btn = IconButton(hdr, thru_kind, self._toggle_overlay_click_through, bg=C.overlay_bg)
         self._overlay_thru_btn.pack(side=tk.RIGHT, padx=(4, 0))
-        self._overlay_thru_btn.bind("<Button-1>", lambda _e: self._toggle_overlay_click_through())
 
         fplus = tk.Label(hdr, text="A+", font=self.font_ui, fg=C.dim, bg=C.overlay_bg, cursor="hand2")
         fplus.pack(side=tk.RIGHT, padx=(4, 0))
