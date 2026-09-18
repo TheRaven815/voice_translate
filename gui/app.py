@@ -864,24 +864,33 @@ class App(tk.Tk):
             self._fit_overlay()
         self._save_user_prefs()
 
+    def _apply_overlay_click_through(self) -> None:
+        if os.name != "nt" or self._overlay is None or not self._overlay.winfo_exists():
+            return
+        import ctypes
+        hwnd = self._overlay.winfo_id()
+        GWL_EXSTYLE = -20
+        WS_EX_TRANSPARENT = 0x00000020
+        WS_EX_LAYERED = 0x00080000
+        try:
+            style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            if self.overlay_click_through:
+                ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_TRANSPARENT | WS_EX_LAYERED)
+            else:
+                ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style & ~WS_EX_TRANSPARENT)
+        except Exception:
+            pass
+
     def _toggle_overlay_click_through(self) -> None:
         if self._overlay is None or not self._overlay.winfo_exists():
             return
         self.overlay_click_through = not getattr(self, "overlay_click_through", False)
-        if os.name == "nt":
-            import ctypes
-            hwnd = self._overlay.winfo_id()
-            GWL_EXSTYLE = -20
-            WS_EX_TRANSPARENT = 0x00000020
-            WS_EX_LAYERED = 0x00080000
-            try:
-                style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-                if self.overlay_click_through:
-                    ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_TRANSPARENT | WS_EX_LAYERED)
-                else:
-                    ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style & ~WS_EX_TRANSPARENT)
-            except Exception:
-                pass
+        # Tk'nin pencere bayraklariyla karismamasi icin pencereyi yeniden kur;
+        # boylece geri almak da garantili calisir.
+        geom = self._overlay.geometry()
+        self._overlay.destroy()
+        self._overlay = None
+        self._build_overlay(geom=geom)
         if hasattr(self, "_overlay_thru_btn"):
             self._overlay_thru_btn.kind = "target" if self.overlay_click_through else "cursor"
             self._overlay_thru_btn.redraw()
@@ -1054,6 +1063,8 @@ class App(tk.Tk):
                 self._overlay_fplus.configure(bg=C.overlay_bg, fg=C.dim)
             if hasattr(self, "_overlay_fminus") and self._overlay_fminus.winfo_exists():
                 self._overlay_fminus.configure(bg=C.overlay_bg, fg=C.dim)
+            if hasattr(self, "_overlay_grip") and self._overlay_grip.winfo_exists():
+                self._overlay_grip.configure(bg=C.overlay_bg, fg=C.dim)
         if self._about is not None and self._about.winfo_exists():
             self._about.configure(bg=C.panel)
             dark_titlebar(self._about, dark=(C.current != "light"))
@@ -1776,7 +1787,9 @@ class App(tk.Tk):
             self._overlay = None
             self.overlay_btn.set_accent(False)
             return
+        self._build_overlay()
 
+    def _build_overlay(self, geom: str | None = None) -> None:
         pop = tk.Toplevel(self)
         self._overlay = pop
         pop.title("Altyazı")
@@ -1837,6 +1850,28 @@ class App(tk.Tk):
             pady=8,
         )
         self.overlay_label.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Sağ kenar: genişlik tutamacı
+        grip = tk.Label(wrap, text="⋮⋮", font=(self.font_ui[0], 7), fg=C.dim, bg=C.overlay_bg, cursor="size_we", padx=2)
+        grip.pack(side=tk.RIGHT, fill=tk.Y)
+        self._overlay_grip = grip
+
+        def start_resize(e):
+            pop._resize_x = e.x_root
+            pop._resize_w = pop.winfo_width()
+
+        def do_resize(e):
+            dx = e.x_root - pop._resize_x
+            new_w = max(220, min(self.winfo_screenwidth() - 40, pop._resize_w + dx))
+            if new_w != pop.winfo_width():
+                pop.geometry(f"{new_w}x{pop.winfo_height()}")
+                self.overlay_label.configure(wraplength=max(120, new_w - 44))
+                self._fit_overlay()
+
+        grip.bind("<ButtonPress-1>", start_resize)
+        grip.bind("<B1-Motion>", do_resize)
+        grip.bind("<ButtonRelease-1>", lambda _e: self._save_user_prefs())
+
         for w in (pop, wrap, self.overlay_label):
             w.bind("<ButtonPress-1>", start_move)
             w.bind("<B1-Motion>", do_move)
@@ -1844,13 +1879,21 @@ class App(tk.Tk):
         sw = self.winfo_screenwidth()
         sh = self.winfo_screenheight()
         w, h = 580, 56
-        if getattr(self, "_cfg", None) and self._cfg.overlay_geom:
+        if geom:
+            try:
+                pop.geometry(geom)
+            except tk.TclError:
+                pop.geometry(f"{w}x{h}+{(sw - w) // 2}+{sh - h - 100}")
+        elif getattr(self, "_cfg", None) and self._cfg.overlay_geom:
             try:
                 pop.geometry(self._cfg.overlay_geom)
             except tk.TclError:
                 pop.geometry(f"{w}x{h}+{(sw - w) // 2}+{sh - h - 100}")
         else:
             pop.geometry(f"{w}x{h}+{(sw - w) // 2}+{sh - h - 100}")
+        pop.update_idletasks()
+        self.overlay_label.configure(wraplength=max(120, pop.winfo_width() - 44))
+        self._apply_overlay_click_through()
         for w_widget in (pop, wrap, self.overlay_label):
             w_widget.bind("<ButtonRelease-1>", lambda _e: self._save_user_prefs(), add="+")
         self._fit_overlay()
