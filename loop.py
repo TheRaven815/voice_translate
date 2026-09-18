@@ -56,6 +56,20 @@ def build_config(
     )
 
 
+async def validate_live_api_key(api_key: str) -> None:
+    """Anahtarı uygulamanın kullandığı gerçek Live modeliyle doğrular."""
+    client = genai.Client(http_options={"api_version": "v1beta"}, api_key=api_key)
+    try:
+        async with client.aio.live.connect(
+            model=os.environ.get("GEMINI_LIVE_MODEL") or DEFAULT_MODEL,
+            config=build_config(None, "tr"),
+        ):
+            return
+    finally:
+        await client.aio.aclose()
+        client.close()
+
+
 def merge_transcript(prev: str, incoming: str) -> tuple[str, str]:
     """Gelen parça delta veya kümülatif olabilir; (tam metin, eklenecek) döner."""
     if not incoming:
@@ -89,7 +103,7 @@ class SystemAudioLoop:
         )
         self.source_mic = source_mic
         self.output_speaker = output_speaker
-        modalities = ["TEXT"] if self.output_speaker is None else ["AUDIO"]
+        modalities = ["AUDIO"]
         full_instruction = system_instruction or ""
         if glossary:
             if isinstance(glossary, dict):

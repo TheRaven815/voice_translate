@@ -17,16 +17,42 @@ from export import TranscriptItem, export_jsonl, export_srt, export_txt
 from languages import AUTO_SRC, LANGS, is_rtl, lang_code_to_name, source_code, source_names, src_code_to_name
 from i18n import get_ui_lang, set_ui_lang, t
 from logger import append_history, log_exception, setup_logging
-from loop import SystemAudioLoop
+from loop import SystemAudioLoop, validate_live_api_key
 from meta import APP_AUTHOR, APP_TITLE, __version__
 from .theme import C, ICON_PNG, apply_icon, dark_titlebar, pick_fonts, prepare_app_id
 from .widgets import Select
+
+_PERMANENT_LIVE_ERRORS = (
+    "api_key_invalid",
+    "api key not valid",
+    "permission_denied",
+    "forbidden",
+    "denied access",
+    "policy violation",
+    "resource_exhausted",
+    "quota",
+    "not_found",
+)
+
+
+def _is_retryable_error(err: BaseException) -> bool:
+    code = getattr(err, "code", None)
+    msg = str(err).lower()
+    if code in {400, 401, 403, 404, 429, 1008} or any(token in msg for token in _PERMANENT_LIVE_ERRORS):
+        return False
+    if isinstance(code, int) and code >= 500:
+        return True
+    kind = type(err).__name__.lower()
+    return any(token in kind or token in msg for token in ("connection", "socket", "timeout", "gaierror", "network"))
+
 
 def format_user_error(err: BaseException) -> str:
     """Teknik istisnaları kullanıcı dostu Türkçe açıklamaya dönüştürür."""
     msg = str(err)
     err_type = type(err).__name__
     msg_lower = msg.lower()
+    if "denied access" in msg_lower or "policy violation" in msg_lower or "1008" in msg:
+        return "Google projesinin Gemini Live erişimi reddedildi (1008). Google AI Studio'da başka bir proje/anahtar oluşturun veya proje erişimi için Google desteğe başvurun."
 
     if "api_key_invalid" in msg_lower or "api key not valid" in msg_lower:
         return "Geçersiz API anahtarı. Lütfen Google AI Studio anahtarınızı kontrol edin (https://aistudio.google.com/apikey)."
@@ -146,11 +172,14 @@ class App(tk.Tk):
         self.theme_btn = self._text_btn(
             self._rail_title, "☀️" if C.current == "dark" else "🌙", self.toggle_theme
         )
+        self.theme_btn.configure(width=2)
         self.theme_btn.pack(side=tk.RIGHT, padx=(0, 6))
-        self.pin_btn = self._text_btn(
-            self._rail_title, "📌", self.toggle_pin
-        )
+        pin_symbol = "\ue718" if os.name == "nt" else "📌"
+        self.pin_btn = self._text_btn(self._rail_title, pin_symbol, self.toggle_pin)
+        if os.name == "nt":
+            self.pin_btn.configure(font=("Segoe MDL2 Assets", 10))
         if self.always_on_top:
+            self.pin_btn._rest_fg = C.live
             self.pin_btn.configure(fg=C.live)
         self.pin_btn.pack(side=tk.RIGHT, padx=(0, 6))
         self.overlay_btn = self._text_btn(self._rail_title, "Altyazı", self.toggle_overlay)
@@ -403,9 +432,10 @@ class App(tk.Tk):
     def _text_btn(self, parent, label: str, command, bg: str | None = None) -> tk.Label:
         color_bg = bg or (parent["bg"] if "bg" in parent.keys() else C.rail)
         w = tk.Label(parent, text=label, font=self.font_ui, fg=C.dim, bg=color_bg, cursor="hand2")
+        w._rest_fg = C.dim
         w.bind("<Button-1>", lambda _e: command())
         w.bind("<Enter>", lambda _e: w.configure(fg=C.text))
-        w.bind("<Leave>", lambda _e: w.configure(fg=C.dim))
+        w.bind("<Leave>", lambda _e: w.configure(fg=w._rest_fg))
         return w
 
     def _btn(self, parent, label: str, command) -> tk.Button:
@@ -649,7 +679,8 @@ class App(tk.Tk):
         except tk.TclError:
             pass
         if hasattr(self, "pin_btn"):
-            self.pin_btn.configure(fg=C.live if self.always_on_top else C.dim)
+            self.pin_btn._rest_fg = C.live if self.always_on_top else C.dim
+            self.pin_btn.configure(fg=self.pin_btn._rest_fg)
         self._save_user_prefs()
 
     def _toggle_key_mask(self) -> None:
@@ -668,13 +699,11 @@ class App(tk.Tk):
         self._append("[bilgi] API anahtarı test ediliyor...\n")
         def _bg():
             try:
-                from google import genai
-                test_client = genai.Client(http_options={"api_version": "v1beta"}, api_key=key)
-                list(test_client.models.list(config={"page_size": 1}))
-                self.log_queue.put(("[bilgi] ✓ API Anahtarı geçerli ve çalışıyor!\n"))
+                asyncio.run(validate_live_api_key(key))
+                self.log_queue.put("[bilgi] ✓ API anahtarı geçerli; Gemini Live erişimi açık.\n")
             except Exception as e:
                 err_msg = format_user_error(e)
-                self.log_queue.put((f"[hata] ✕ API Anahtarı geçersiz: {err_msg}\n"))
+                self.log_queue.put(f"[hata] ✕ Gemini Live erişim testi başarısız: {err_msg}\n")
         threading.Thread(target=_bg, daemon=True).start()
 
     def _export_transcripts(self) -> None:
@@ -833,11 +862,16 @@ class App(tk.Tk):
         for btn in (
             self.info_btn,
             self.theme_btn,
+            self.pin_btn,
             self.overlay_btn,
             self.refresh_btn,
+            self.test_key_btn,
             self.save_key_btn,
         ):
+            btn._rest_fg = C.dim
             btn.configure(fg=C.dim, bg=C.rail)
+        self.pin_btn._rest_fg = C.live if self.always_on_top else C.dim
+        self.pin_btn.configure(fg=self.pin_btn._rest_fg)
 
         # Rail frames and labels
         for f in (
@@ -931,7 +965,8 @@ class App(tk.Tk):
                 try:
                     if msg == "__stopped__":
                         self._set_running(False)
-                        self._set_status("Durdu", C.dim)
+                        if self.status.cget("text") != "Hata":
+                            self._set_status("Durdu", C.dim)
                         self.worker = None
                         self.loop_obj = None
                         continue
@@ -979,6 +1014,8 @@ class App(tk.Tk):
                         elif kind == "latency":
                             if self.worker is not None and self.worker.is_alive():
                                 self._set_status(f"Çalışıyor ({int(payload)} ms)", C.live)
+                    else:
+                        self._append(str(msg))
                 except Exception as e:
                     self._append(f"[hata] Arayüz kuyruk hatası: {e}\n")
         except queue.Empty:
@@ -1074,9 +1111,13 @@ class App(tk.Tk):
                     root_err = getattr(e, "exceptions")[0]
                 if isinstance(root_err, asyncio.CancelledError):
                     break
-                retries += 1
                 log_exception(root_err, "Worker loop error")
                 self.log_queue.put(f"\n[hata] {format_user_error(root_err)}\n")
+                if not _is_retryable_error(root_err):
+                    self.log_queue.put(("status", "Hata", C.err))
+                    self.log_queue.put("[hata] Bağlantı kurulamadı.\n")
+                    break
+                retries += 1
                 if retries <= max_retries:
                     self.log_queue.put(("status", f"Yeniden bağlanılıyor ({retries}/{max_retries})", C.warn))
                     self.log_queue.put(f"[bilgi] Yeniden bağlanılıyor ({retries}/{max_retries})...\n")

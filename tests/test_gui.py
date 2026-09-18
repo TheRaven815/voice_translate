@@ -67,7 +67,7 @@ def test_app_name_version_and_about():
     try:
         assert app.title() == APP_TITLE == "Ahenk"
         assert app.brand["text"] == "Ahenk"
-        assert app.version_lbl["text"] == "v0.1.0"
+        assert app.version_lbl["text"] == "v0.5.0"
         assert ICON_ICO.is_file()
         assert ICON_PNG.is_file()
         assert getattr(app, "_ahenk_icon", None) is not None
@@ -77,7 +77,7 @@ def test_app_name_version_and_about():
         assert app._about is not None
         assert app._about.title() == "Hakkında"
         assert app.about_name["text"] == "Ahenk"
-        assert app.about_version["text"] == "v0.1.0"
+        assert app.about_version["text"] == "v0.5.0"
         assert app.about_author["text"] == APP_AUTHOR == "Enes Eliağır"
         first = app._about
         app._open_about()
@@ -401,11 +401,16 @@ def test_theme_toggle_and_persistence(tmp_path, monkeypatch):
         assert C.current == "dark"
         assert app.theme_btn.cget("text") == "☀️"
         assert app.cget("bg") == "#111111"
+        app.update_idletasks()
+        theme_btn_geometry = (app.theme_btn.winfo_x(), app.theme_btn.winfo_width())
 
         app.toggle_theme()
         assert C.current == "light"
         assert app.theme_btn.cget("text") == "🌙"
         assert app.cget("bg") == "#f5f6f8"
+        assert app.pin_btn.cget("bg") == C.rail
+        app.update_idletasks()
+        assert (app.theme_btn.winfo_x(), app.theme_btn.winfo_width()) == theme_btn_geometry
 
         import config
         assert config.load().theme == "light"
@@ -417,6 +422,52 @@ def test_theme_toggle_and_persistence(tmp_path, monkeypatch):
         assert config.load().theme == "dark"
     finally:
         app.destroy()
+
+def test_api_key_test_checks_live_access_and_reports_denial(monkeypatch):
+    async def deny_live(_key):
+        raise RuntimeError("1008 policy violation: project has been denied access")
+
+    monkeypatch.setattr("gui.app.validate_live_api_key", deny_live)
+    app = App()
+    try:
+        app.key_var.set("test_key")
+        app._test_api_key()
+        deadline = __import__("time").time() + 2
+        while "Live erişimi reddedildi" not in app.log.get("1.0", "end") and __import__("time").time() < deadline:
+            app.update()
+            __import__("time").sleep(0.01)
+        assert "Gemini Live erişim testi başarısız" in app.log.get("1.0", "end")
+        assert "Live erişimi reddedildi" in app.log.get("1.0", "end")
+    finally:
+        app.destroy()
+
+
+def test_permanent_live_access_error_is_not_retried(monkeypatch):
+    app = App()
+    try:
+        attempts = 0
+
+        class DeniedLoop:
+            def __init__(self, **_kwargs):
+                self._user_stop = __import__("threading").Event()
+
+            async def run(self):
+                nonlocal attempts
+                attempts += 1
+                raise RuntimeError("1008 policy violation: project has been denied access")
+
+        app.loop_obj = DeniedLoop()
+        app._loop_kwargs = {}
+        monkeypatch.setattr("gui.app.SystemAudioLoop", DeniedLoop)
+        app._run()
+        app._pump_log()
+
+        assert attempts == 1
+        assert app.status.cget("text") == "Hata"
+        assert "Live erişimi reddedildi" in app.log.get("1.0", "end")
+    finally:
+        app.destroy()
+
 
 def test_stop_during_retry_breaks_worker(monkeypatch):
     import time

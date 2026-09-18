@@ -331,10 +331,10 @@ def test_build_config_text_only():
     cfg = build_config("en", "tr", modalities=["TEXT"])
     assert cfg.response_modalities == ["TEXT"]
     assert cfg.output_audio_transcription is None
-
+    # Live Translation yalnız AUDIO yanıtını destekler; hoparlör yoksa ses yerelde atılır.
     loop_obj = SystemAudioLoop("en", "tr", FakeMic(), "dummy-key", output_speaker=None)
-    assert loop_obj.config.response_modalities == ["TEXT"]
-    assert loop_obj.config.output_audio_transcription is None
+    assert loop_obj.config.response_modalities == ["AUDIO"]
+    assert loop_obj.config.output_audio_transcription is not None
 
 
 def test_capture_thread_device_disconnect_raises():

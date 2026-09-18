@@ -4,7 +4,7 @@
 
 PC’de çalan sesi (sistem hoparlörü / loopback) veya mikrofonu [Gemini Live Translate](https://ai.google.dev/) ile canlı çevirir. Çeviri hem metin hem ses olarak gelir; metin-only mod da vardır.
 
-Sürüm **0.1.0**. Yazar: Enes Eliağır. Windows odaklı (WASAPI loopback). Python **3.11+**.
+Sürüm **0.5.0**. Yazar: Enes Eliağır. Windows odaklı (WASAPI loopback). Python **3.11+**.
 
 ## İçindekiler
 
