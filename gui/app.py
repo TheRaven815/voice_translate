@@ -1289,12 +1289,13 @@ class App(tk.Tk):
             self._append(f"[uyarı] API anahtarı diske güvenli kaydedilemedi: {e}\n")
         src, dst = source_code(self.src_var.get()), LANGS[self.dst_var.get()]
         if not preserve_transcript:
-            self._clear_pane(self.heard)
-            self._clear_pane(self.trans)
-            self.transcript_items = []
-            self._curr_heard_buf = ""
-            self._curr_trans_buf = ""
-            self._timeline_start_time = time.time()
+            # Geçmişi silme; yeni oturum paragraf olarak aşağıdan devam etsin.
+            for widget in (self.heard, self.trans):
+                if widget.get("1.0", "end-1c").strip():
+                    widget.insert(tk.END, "\n", ("body", "ltr"))
+                    widget.see(tk.END)
+            if getattr(self, "_timeline_start_time", None) is None:
+                self._timeline_start_time = time.time()
         else:
             if getattr(self, "_timeline_start_time", None) is None:
                 self._timeline_start_time = time.time()
