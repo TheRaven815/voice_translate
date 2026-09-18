@@ -12,3 +12,14 @@ build/
 config.json
 *.exe
 opencode.json
+*.log
+*.tmp
+*.bak
+*.part
+*.old
+.coverage
+.mypy_cache/
+.ruff_cache/
+Thumbs.db
+Desktop.ini
+.DS_Store

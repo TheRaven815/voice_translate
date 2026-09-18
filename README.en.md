@@ -4,7 +4,7 @@
 
 Live-translates whatever is playing on the PC (system loopback) or the microphone via [Gemini Live Translate](https://ai.google.dev/). You get both text and speech; text-only is available.
 
-Version **0.5.0**. Author: Enes Eliağır. Windows-first (WASAPI loopback). Python **3.11+**.
+Version **0.6.0**. Author: Enes Eliağır. Windows-first (WASAPI loopback). Python **3.11+**.
 
 Turkish is the source README ([README.md](README.md)). This file is the English option.
 
@@ -23,6 +23,7 @@ Turkish is the source README ([README.md](README.md)). This file is the English 
 - [Privacy and security](#privacy-and-security)
 - [Layout](#layout)
 - [Onefile build](#onefile-build)
+- [Automatic updates](#automatic-updates)
 - [Tests](#tests)
 - [Troubleshooting](#troubleshooting)
 - [License](#license)
@@ -245,6 +246,7 @@ audio.py         48k→16k, PCM16↔float
 devices.py       soundcard list, loopback pick
 languages.py     UI name → BCP-47
 meta.py          version, title, author
+updater.py       GitHub Release check, SHA-256 verification, atomic exe replacement
 gui/app.py       window, overlay, reconnect
 gui/theme.py     palette, icon, AppUserModelID
 gui/widgets.py   custom Select
@@ -258,10 +260,30 @@ tests/           pytest (no network; device test may skip)
 
 ```bat
 .venv\Scripts\python -m pip install pyinstaller
-.venv\Scripts\python -m PyInstaller --noconfirm --clean --onefile --windowed --name Ahenk --icon assets\ahenk.ico --add-data "assets;assets" --hidden-import soundcard --hidden-import google.genai --collect-submodules google.genai main.py
+.venv\Scripts\python -m PyInstaller --noconfirm --clean Ahenk.spec
 ```
 
-Output: `dist\Ahenk.exe`. `dist/`, `build/`, and `*.spec` are gitignored. The exe still asks for *your* Gemini key; nothing is baked in.
+Outputs: `dist\Ahenk.exe`, `dist\Ahenk.exe.sha256`, and `dist\Ahenk-cli.exe`. `dist/`, `build/`, and `*.exe` are gitignored. The exe still asks for *your* Gemini key; nothing is baked in.
+
+## Automatic updates
+
+Automatic updates run only in the Windows onefile `Ahenk.exe` distribution. The app checks the latest stable GitHub Release at startup; users can also select **About → Check for updates**. After approval:
+
+1. Only `Ahenk.exe` from `TheRaven815/voice_translate` is downloaded.
+2. File size and the GitHub asset digest or SHA-256 from `Ahenk.exe.sha256` are verified.
+3. The running app closes, the exe is replaced in place, and the new release starts.
+4. The previous exe is restored automatically when new-release startup cannot be confirmed.
+
+The repository must be **public** because clients call the GitHub API without credentials. To publish, set the same version in `meta.py`, `pyproject.toml`, and `version_info.txt`, then push a `vMAJOR.MINOR.PATCH` tag:
+
+```bat
+git tag v0.6.0
+git push origin v0.6.0
+```
+
+`.github/workflows/release.yml` runs tests, builds the onefile exe, creates its SHA-256 file, and uploads both to a GitHub Release. Drafts and prereleases are not offered to clients.
+
+> SHA-256 prevents transfer corruption and unexpected files. Add Windows Authenticode signing when a code-signing certificate is available.
 
 ## Tests
 
@@ -275,6 +297,7 @@ No network. The client is faked.
 | --- | --- |
 | `tests/test_config.py` | save, priority, corrupt JSON |
 | `tests/test_gui.py` | start, panes, overlay, prefs |
+| `tests/test_updater.py` | version selection, SHA-256, atomic replacement, rollback |
 | `tests/test_live_translate.py` | resample, merge, fake session |
 
 `test_duplex_with_real_devices_stays_alive` needs real devices; it skips otherwise.

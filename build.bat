@@ -56,6 +56,12 @@ if errorlevel 1 (
     if not defined NOPAUSE pause
     exit /b 1
 )
+"%VPY%" -c "import hashlib,pathlib; p=pathlib.Path(r'dist\Ahenk.exe'); pathlib.Path(r'dist\Ahenk.exe.sha256').write_text(hashlib.sha256(p.read_bytes()).hexdigest() + ' *Ahenk.exe\n', encoding='ascii')"
+if errorlevel 1 (
+    echo [HATA: SHA-256 dosyasi olusturulamadi.]
+    if not defined NOPAUSE pause
+    exit /b 1
+)
 
 echo.
 echo ========================================

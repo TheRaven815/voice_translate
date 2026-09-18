@@ -7,7 +7,7 @@ Ahenk projesine katkıda bulunmak istediğiniz için teşekkürler!
 1. Python 3.11 veya üzerinin kurulu olduğundan emin olun (`python --version`).
 2. Depoyu klonlayın:
    ```bash
-   git clone https://github.com/your-username/voice_translate.git
+   git clone https://github.com/TheRaven815/voice_translate.git
    cd voice_translate
    ```
 3. Sanal ortamı oluşturun ve bağımlılıkları yükleyin:

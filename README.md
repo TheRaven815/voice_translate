@@ -4,7 +4,7 @@
 
 PC’de çalan sesi (sistem hoparlörü / loopback) veya mikrofonu [Gemini Live Translate](https://ai.google.dev/) ile canlı çevirir. Çeviri hem metin hem ses olarak gelir; metin-only mod da vardır.
 
-Sürüm **0.5.0**. Yazar: Enes Eliağır. Windows odaklı (WASAPI loopback). Python **3.11+**.
+Sürüm **0.6.0**. Yazar: Enes Eliağır. Windows odaklı (WASAPI loopback). Python **3.11+**.
 
 ## İçindekiler
 
@@ -21,6 +21,7 @@ Sürüm **0.5.0**. Yazar: Enes Eliağır. Windows odaklı (WASAPI loopback). Pyt
 - [Gizlilik ve güvenlik](#gizlilik-ve-güvenlik)
 - [Proje yapısı](#proje-yapısı)
 - [Onefile derleme](#onefile-derleme)
+- [Otomatik güncelleme](#otomatik-güncelleme)
 - [Test](#test)
 - [Sorun giderme](#sorun-giderme)
 - [Lisans](#lisans)
@@ -243,6 +244,7 @@ audio.py         48k→16k, PCM16↔float
 devices.py       soundcard listesi, loopback seçimi
 languages.py     UI adı → BCP-47
 meta.py          sürüm, başlık, yazar
+updater.py       GitHub Release denetimi, SHA-256 doğrulama, atomik exe değişimi
 gui/app.py       pencere, overlay, yeniden bağlanma
 gui/theme.py     palet, ikon, AppUserModelID
 gui/widgets.py   özel Select
@@ -256,10 +258,30 @@ tests/           pytest (ağ yok; aygıt testi atlanabilir)
 
 ```bat
 .venv\Scripts\python -m pip install pyinstaller
-.venv\Scripts\python -m PyInstaller --noconfirm --clean --onefile --windowed --name Ahenk --icon assets\ahenk.ico --add-data "assets;assets" --hidden-import soundcard --hidden-import google.genai --collect-submodules google.genai main.py
+.venv\Scripts\python -m PyInstaller --noconfirm --clean Ahenk.spec
 ```
 
-Çıktı: `dist\Ahenk.exe`. `dist/`, `build/`, `*.spec` git’te yok. Exe hâlâ kendi Gemini anahtarınızı ister; anahtar gömülü değildir.
+Çıktılar: `dist\Ahenk.exe`, `dist\Ahenk.exe.sha256` ve `dist\Ahenk-cli.exe`. `dist/`, `build/` ve `*.exe` git’te yok. Exe hâlâ kendi Gemini anahtarınızı ister; anahtar gömülü değildir.
+
+## Otomatik güncelleme
+
+Otomatik güncelleme yalnız Windows onefile `Ahenk.exe` dağıtımında etkindir. Uygulama açılışta son kararlı GitHub Release sürümünü denetler; **Hakkında → Güncellemeleri denetle** ile elle de denetlenebilir. Yeni sürüm onaylanınca:
+
+1. Yalnız `TheRaven815/voice_translate` deposundaki `Ahenk.exe` indirilir.
+2. Dosya boyutu ve GitHub asset digest’i veya `Ahenk.exe.sha256` içindeki SHA-256 doğrulanır.
+3. Çalışan uygulama kapatılır, exe aynı dizinde değiştirilir ve yeni sürüm başlatılır.
+4. Yeni sürüm açılışı doğrulanamazsa önceki exe otomatik geri yüklenir.
+
+İstemciler GitHub API’ye anahtarsız eriştiği için depo **public** olmalı. Yayın oluşturmak için `meta.py`, `pyproject.toml` ve `version_info.txt` sürümlerini aynı değere getirip `vMAJOR.MINOR.PATCH` etiketi gönderin:
+
+```bat
+git tag v0.6.0
+git push origin v0.6.0
+```
+
+`.github/workflows/release.yml` testleri çalıştırır, onefile exe’yi derler, SHA-256 dosyasını üretir ve ikisini GitHub Release’e yükler. Taslak ve prerelease sürümler istemcilere sunulmaz.
+
+> SHA-256 aktarım bozulmasını ve beklenmeyen dosyayı engeller; yayımlanan exe’nin Windows kod imzası sertifika sağlandığında ayrıca eklenmelidir.
 
 ## Test
 
@@ -273,6 +295,7 @@ Ağ çağrısı yok. İstemci taklit edilir.
 | --- | --- |
 | `tests/test_config.py` | kayıt, öncelik, bozuk JSON |
 | `tests/test_gui.py` | başlat, paneller, overlay, tercihler |
+| `tests/test_updater.py` | sürüm seçimi, SHA-256, atomik değişim, geri alma |
 | `tests/test_live_translate.py` | resample, birleştirme, sahte oturum |
 
 `test_duplex_with_real_devices_stays_alive` gerçek aygıt ister; yoksa atlanır.

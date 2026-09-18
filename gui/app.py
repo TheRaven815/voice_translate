@@ -10,6 +10,7 @@ import threading
 import time
 import tkinter as tk
 from pathlib import Path
+from tkinter import messagebox
 
 from config import load as load_config, resolve_api_key, save_api_key, save_preferences
 from devices import NONE_OUTPUT, all_inputs, all_outputs, default_speaker, pick_loopback
@@ -19,6 +20,15 @@ from i18n import get_ui_lang, set_ui_lang, t
 from logger import append_history, log_exception, setup_logging
 from loop import SystemAudioLoop, validate_live_api_key
 from meta import APP_AUTHOR, APP_TITLE, __version__
+from updater import (
+    UpdateError,
+    UpdateInfo,
+    can_self_update,
+    check_for_update,
+    consume_update_error,
+    download_update,
+    launch_update_helper,
+)
 from .theme import C, ICON_PNG, apply_icon, dark_titlebar, pick_fonts, prepare_app_id
 from .widgets import Select
 
@@ -95,6 +105,9 @@ class App(tk.Tk):
         self.inputs: list = []
         self.outputs: list = []
         self._about: tk.Toplevel | None = None
+        self._update_info: UpdateInfo | None = None
+        self._update_check_running = False
+        self._update_installing = False
         self._overlay: tk.Toplevel | None = None
         self._rail_seps: list[tk.Frame] = []
         self.always_on_top = getattr(self._cfg, "always_on_top", False)
@@ -122,6 +135,12 @@ class App(tk.Tk):
         self.refresh_devices(async_scan=True)
         dark_titlebar(self, dark=(self._theme != "light"))
         self._pump_after_id = self.after(120, self._pump_log)
+        update_error = consume_update_error()
+        if update_error:
+            self._append(f"[hata] {update_error}\n")
+            self.after(250, lambda msg=update_error: messagebox.showerror("Güncelleme", msg, parent=self))
+        if can_self_update():
+            self.after(1500, self._check_for_updates)
 
     def _build(self):
         self.columnconfigure(2, weight=1)
@@ -1014,6 +1033,12 @@ class App(tk.Tk):
                         elif kind == "latency":
                             if self.worker is not None and self.worker.is_alive():
                                 self._set_status(f"Çalışıyor ({int(payload)} ms)", C.live)
+                        elif kind == "update_result":
+                            self._handle_update_result(payload, manual=bool(msg[2]))
+                        elif kind == "update_error":
+                            self._handle_update_error(str(payload), manual=bool(msg[2]))
+                        elif kind == "update_ready":
+                            self._apply_downloaded_update(payload, msg[2])
                     else:
                         self._append(str(msg))
                 except Exception as e:
@@ -1036,6 +1061,95 @@ class App(tk.Tk):
                 self._pump_after_id = self.after(120, self._pump_log)
             except tk.TclError:
                 self._pump_after_id = None
+
+    def _check_for_updates(self, manual: bool = False) -> None:
+        if self._update_check_running or self._update_installing:
+            if manual:
+                messagebox.showinfo("Güncelleme", "Güncelleme işlemi zaten çalışıyor.", parent=self)
+            return
+        if not can_self_update():
+            if manual:
+                messagebox.showinfo(
+                    "Güncelleme",
+                    "Otomatik güncelleme yalnız Ahenk.exe onefile sürümünde kullanılabilir.",
+                    parent=self,
+                )
+            return
+        self._update_check_running = True
+        if manual and not (self.worker is not None and self.worker.is_alive()):
+            self._set_status("Güncelleme denetleniyor", C.warn)
+
+        def check() -> None:
+            try:
+                self.log_queue.put(("update_result", check_for_update(), manual))
+            except UpdateError as exc:
+                self.log_queue.put(("update_error", str(exc), manual))
+            except Exception as exc:
+                log_exception(exc, "Update check error")
+                self.log_queue.put(("update_error", "Beklenmeyen güncelleme denetimi hatası.", manual))
+
+        threading.Thread(target=check, name="update-check", daemon=True).start()
+
+    def _handle_update_result(self, info: UpdateInfo | None, *, manual: bool) -> None:
+        self._update_check_running = False
+        self._update_info = info
+        if info is None:
+            if manual:
+                messagebox.showinfo("Güncelleme", f"Ahenk v{__version__} güncel.", parent=self)
+            if not (self.worker is not None and self.worker.is_alive()):
+                self._set_status("Hazır", C.dim)
+            return
+        self.version_lbl.configure(text=f"v{__version__}  •  v{info.version} hazır", fg=C.live)
+        if hasattr(self, "about_update_status") and self.about_update_status.winfo_exists():
+            self.about_update_status.configure(text=f"v{info.version} indirilmeye hazır", fg=C.live)
+        install = messagebox.askyesno(
+            "Ahenk güncellemesi",
+            f"Ahenk v{info.version} yayımlandı.\n\nGüncelleme şimdi indirilip kurulsun mu?\n"
+            "Uygulama kurulumdan sonra yeniden başlayacak.",
+            parent=self,
+        )
+        if install:
+            self._download_and_install_update(info)
+        elif not (self.worker is not None and self.worker.is_alive()):
+            self._set_status("Hazır", C.dim)
+
+    def _handle_update_error(self, error: str, *, manual: bool) -> None:
+        self._update_check_running = False
+        self._update_installing = False
+        self._append(f"[hata] Güncelleme: {error}\n")
+        if not (self.worker is not None and self.worker.is_alive()):
+            self._set_status("Hazır", C.dim)
+        if manual:
+            messagebox.showerror("Güncelleme denetlenemedi", error, parent=self)
+
+    def _download_and_install_update(self, info: UpdateInfo) -> None:
+        if self._update_installing:
+            return
+        self._update_installing = True
+        self._set_status("Güncelleme indiriliyor", C.warn)
+        self._append(f"[bilgi] Ahenk v{info.version} indiriliyor...\n")
+
+        def download() -> None:
+            try:
+                staged = download_update(info)
+                self.log_queue.put(("update_ready", staged, info))
+            except UpdateError as exc:
+                self.log_queue.put(("update_error", str(exc), True))
+            except Exception as exc:
+                log_exception(exc, "Update download error")
+                self.log_queue.put(("update_error", "Beklenmeyen güncelleme indirme hatası.", True))
+
+        threading.Thread(target=download, name="update-download", daemon=True).start()
+
+    def _apply_downloaded_update(self, staged: Path, info: UpdateInfo) -> None:
+        try:
+            launch_update_helper(staged, info)
+        except UpdateError as exc:
+            self._handle_update_error(str(exc), manual=True)
+            return
+        self._append("[bilgi] Güncelleme doğrulandı. Ahenk yeniden başlatılıyor...\n")
+        self._set_status("Güncelleme kuruluyor", C.warn)
+        self.after(100, self._on_close)
 
     def save_key(self):
         key = self.key_var.get().strip()
@@ -1206,6 +1320,14 @@ class App(tk.Tk):
             bg=C.panel,
         )
         desc.pack(anchor="w", pady=(3, 0))
+        self.about_update_status = tk.Label(
+            info,
+            text="Güncellemeler otomatik denetlenir" if can_self_update() else "Kaynak kod modu",
+            font=self.font_ui,
+            fg=C.dim,
+            bg=C.panel,
+        )
+        self.about_update_status.pack(anchor="w", pady=(5, 0))
 
         div = tk.Frame(main, bg=C.line, height=1)
         div.pack(fill=tk.X, pady=(14, 12))
@@ -1221,6 +1343,23 @@ class App(tk.Tk):
             bg=C.panel,
         )
         self.about_author.pack(side=tk.LEFT)
+        self.about_update_btn = tk.Button(
+            bottom,
+            text="Güncellemeleri denetle",
+            command=lambda: self._check_for_updates(manual=True),
+            font=self.font_ui,
+            bg=C.panel,
+            fg=C.text,
+            activebackground=C.hover,
+            activeforeground=C.text,
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+            padx=8,
+            pady=3,
+            cursor="hand2",
+        )
+        self.about_update_btn.pack(side=tk.LEFT, padx=(12, 0))
 
         btn_wrap = tk.Frame(bottom, bg=C.line, bd=0, highlightthickness=0)
         btn_wrap.pack(side=tk.RIGHT)
