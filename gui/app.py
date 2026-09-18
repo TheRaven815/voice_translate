@@ -157,7 +157,7 @@ class App(tk.Tk):
         self.columnconfigure(2, weight=1)
         self.rowconfigure(0, weight=1)
 
-        self.rail = tk.Frame(self, bg=C.rail, width=280, bd=0, highlightthickness=0)
+        self.rail = tk.Frame(self, bg=C.rail, width=296, bd=0, highlightthickness=0)
         self.rail.grid(row=0, column=0, sticky="nsw")
         self.rail.grid_propagate(False)
         self.rail.columnconfigure(0, weight=1)
@@ -186,7 +186,7 @@ class App(tk.Tk):
         self.bind("<Control-comma>", lambda _e: self._open_settings())
     def _build_rail(self, rail: tk.Frame):
         self._rail_head = tk.Frame(rail, bg=C.rail)
-        self._rail_head.grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 12))
+        self._rail_head.grid(row=0, column=0, sticky="ew", padx=16, pady=(18, 14))
 
         self._rail_title = tk.Frame(self._rail_head, bg=C.rail)
         self._rail_title.pack(fill=tk.X)
@@ -197,34 +197,37 @@ class App(tk.Tk):
         self.version_lbl = tk.Label(
             self._rail_title, text=f"v{__version__}", font=self.font_ui, fg=C.dim, bg=C.rail
         )
-        self.version_lbl.pack(side=tk.LEFT, padx=(8, 0))
-        self._rail_actions = tk.Frame(self._rail_title, bg=C.rail)
-        self._rail_actions.pack(side=tk.RIGHT)
+        self.version_lbl.pack(side=tk.LEFT, padx=(8, 0), pady=(2, 0))
 
-        self.overlay_btn = IconButton(
-            self._rail_actions, "subtitle", self.toggle_overlay, tooltip=t("subtitle")
-        )
-        self.overlay_btn.pack(side=tk.LEFT, padx=(0, 4))
-        self.pin_btn = IconButton(self._rail_actions, "pin", self.toggle_pin, tooltip=t("pin"))
-        self.pin_btn.pack(side=tk.LEFT, padx=(0, 4))
-        self.pin_btn.set_accent(self.always_on_top)
+        self._rail_actions = tk.Frame(self._rail_head, bg=C.rail)
+        self._rail_actions.pack(fill=tk.X, pady=(10, 0))
+
+        self.theme_btn = ThemeSwitch(self._rail_actions, self.toggle_theme)
+        self.theme_btn.pack(side=tk.LEFT)
+        self.info_btn = IconButton(self._rail_actions, "info", self._open_about, tooltip=t("about"))
+        self.info_btn.pack(side=tk.RIGHT)
         self.settings_btn = IconButton(
             self._rail_actions, "gear", self._open_settings, tooltip=t("settings")
         )
-        self.settings_btn.pack(side=tk.LEFT, padx=(0, 4))
-        self.info_btn = IconButton(self._rail_actions, "info", self._open_about, tooltip=t("about"))
-        self.info_btn.pack(side=tk.LEFT, padx=(0, 8))
-        self.theme_btn = ThemeSwitch(self._rail_actions, self.toggle_theme)
-        self.theme_btn.pack(side=tk.LEFT)
+        self.settings_btn.pack(side=tk.RIGHT, padx=(0, 6))
+        self.pin_btn = IconButton(self._rail_actions, "pin", self.toggle_pin, tooltip=t("pin"))
+        self.pin_btn.pack(side=tk.RIGHT, padx=(0, 6))
+        self.pin_btn.set_accent(self.always_on_top)
+        self.overlay_btn = IconButton(
+            self._rail_actions, "subtitle", self.toggle_overlay, tooltip=t("subtitle")
+        )
+        self.overlay_btn.pack(side=tk.RIGHT, padx=(0, 6))
 
         self._rail_st = tk.Frame(self._rail_head, bg=C.rail)
-        self._rail_st.pack(anchor="w", pady=(8, 0), fill=tk.X)
+        self._rail_st.pack(anchor="w", pady=(10, 0), fill=tk.X)
         self._dot = tk.Canvas(self._rail_st, width=10, height=10, bg=C.rail, highlightthickness=0, bd=0)
         self._dot.pack(side=tk.LEFT, pady=1)
         self._dot_id = self._dot.create_oval(1, 1, 9, 9, fill=C.dim, outline="")
         self.status = tk.Label(self._rail_st, text=t("ready"), font=self.font_ui, fg=C.muted, bg=C.rail)
         self.status.pack(side=tk.LEFT, padx=(7, 0))
-        self.timer_lbl = tk.Label(self._rail_st, text="", font=self.font_ui, fg=C.dim, bg=C.rail)
+        self.timer_lbl = tk.Label(
+            self._rail_st, text="", width=5, anchor="e", font=self.font_ui, fg=C.dim, bg=C.rail
+        )
         self.timer_lbl.pack(side=tk.RIGHT, padx=(8, 0))
         self.meter = tk.Canvas(self._rail_st, width=56, height=8, bg=C.line, highlightthickness=0, bd=0)
         self.meter.pack(side=tk.RIGHT, pady=2)
@@ -296,14 +299,14 @@ class App(tk.Tk):
         self._rail_sep(rail, 7)
 
         self._btns_frame = tk.Frame(rail, bg=C.rail)
-        self._btns_frame.grid(row=8, column=0, sticky="ew", padx=16, pady=16)
+        self._btns_frame.grid(row=8, column=0, sticky="ews", padx=16, pady=(0, 16))
         self._btns_frame.columnconfigure(0, weight=1)
         self._btns_frame.columnconfigure(1, weight=1)
 
         self.start_btn = self._btn(self._btns_frame, t("start"), self.start)
-        self.start_btn._edge.grid(row=0, column=0, sticky="ew", padx=(0, 4), ipady=2)
+        self.start_btn._edge.grid(row=0, column=0, sticky="ew", padx=(0, 4), ipady=4)
         self.stop_btn = self._btn(self._btns_frame, t("stop"), self.stop)
-        self.stop_btn._edge.grid(row=0, column=1, sticky="ew", padx=(4, 0), ipady=2)
+        self.stop_btn._edge.grid(row=0, column=1, sticky="ew", padx=(4, 0), ipady=4)
         self._paint(self.start_btn, filled=True, enabled=True)
         self._paint(self.stop_btn, filled=False, enabled=False)
 
@@ -884,6 +887,7 @@ class App(tk.Tk):
         self.brand.configure(fg=C.text, bg=C.rail)
         self.version_lbl.configure(fg=C.dim, bg=C.rail)
         self.status.configure(fg=C.muted, bg=C.rail)
+        self.timer_lbl.configure(fg=C.dim, bg=C.rail)
         self._dot.configure(bg=C.rail)
         running = self.worker is not None and self.worker.is_alive()
         self._dot.itemconfigure(self._dot_id, fill=C.live if running else C.dim)
@@ -932,9 +936,14 @@ class App(tk.Tk):
         # Main panes
         for f in (self.heard_h, self.trans_h, self.heard_wrap, self.trans_wrap, self.log_wrap):
             f.configure(bg=C.bg)
-        for lbl in (self.heard_lbl, self.trans_lbl):
+        for lbl in (self.heard_lbl, self.trans_lbl, self.detected_lbl):
             lbl.configure(fg=C.muted, bg=C.bg)
-        for btn in (self.heard_clear, self.heard_copy, self.trans_clear, self.trans_copy):
+        self.detected_lbl.configure(fg=C.dim)
+        for btn in (
+            self.heard_clear, self.heard_copy, self.heard_export,
+            self.trans_clear, self.trans_copy, self.trans_export,
+        ):
+            btn._rest_fg = C.dim
             btn.configure(fg=C.dim, bg=C.bg)
 
         for sep in (self._main_h_sep, self._main_v_sep):
@@ -974,6 +983,10 @@ class App(tk.Tk):
                     disabledbackground=C.rail,
                     disabledforeground=C.dim,
                 )
+            if self.mask_btn is not None and self.mask_btn.winfo_exists():
+                self.mask_btn.configure(bg=C.panel)
+            for child in self._settings.winfo_children():
+                self._retint_frame(child, bg=C.panel)
         self.log.tag_configure("err", foreground=C.err)
         dark_titlebar(self, dark=(C.current != "light"))
         if self._overlay is not None and self._overlay.winfo_exists():
@@ -995,6 +1008,31 @@ class App(tk.Tk):
         if self._about is not None and self._about.winfo_exists():
             self._about.configure(bg=C.panel)
             dark_titlebar(self._about, dark=(C.current != "light"))
+            for child in self._about.winfo_children():
+                self._retint_frame(child, bg=C.panel)
+
+    def _retint_frame(self, widget, *, bg: str) -> None:
+        """Açık diyaloglarda (Ayarlar/Hakkında) tema geçişini tüm içeriğe uygular."""
+        for child in widget.winfo_children():
+            if child in (self.key_edge, self.key_entry, self.mask_btn):
+                continue
+            if isinstance(child, tk.Frame):
+                try:
+                    if child.cget("bg") != C.line:
+                        child.configure(bg=bg)
+                except tk.TclError:
+                    pass
+                self._retint_frame(child, bg=bg)
+            elif isinstance(child, tk.Label):
+                try:
+                    child.configure(bg=bg)
+                except tk.TclError:
+                    pass
+            elif isinstance(child, tk.Button):
+                try:
+                    child.configure(bg=bg, fg=C.text, activebackground=C.hover, activeforeground=C.text)
+                except tk.TclError:
+                    pass
     def _pump_log(self):
         try:
             while True:

@@ -161,7 +161,7 @@ def pick_fonts(root: tk.Tk) -> dict[str, tuple]:
     )
     return {
         "ui": (ui, 9),
-        "brand": (ui, 11),
+        "brand": (ui, 12, "bold"),
         "body": (ui, 10),
         "log": (mono, 8),
     }

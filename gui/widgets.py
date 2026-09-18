@@ -134,16 +134,15 @@ class IconButton(tk.Canvas):
     # -- 24x24 icerisinde izdusumlu ikonlar (merkez 12,12) ----------------
 
     def _glyph_pin(self, fg: str) -> None:
-        # Harita pini: dolu daire + sivri alt uc (nokta konum gosterir)
-        cx, cy, r = 12.0, 9.4, 4.8
-        pts: list[float] = []
-        for i in range(14):
-            ang = math.radians(105.0 + i * 25.0)  # alt kisim acik kalir
-            pts.extend((cx + r * math.cos(ang), cy + r * math.sin(ang)))
-        pts.extend((cx, 19.8))
-        self.create_polygon(*pts, fill=fg, outline="", smooth=True, splinesteps=24)
-        inner = mix(fg, self._bg, 0.75)
-        self.create_oval(cx - 1.7, cy - 1.7, cx + 1.7, cy + 1.7, fill=inner, outline="")
+        # Harita pini: yuvarlak bas + sivri alt uc + ic delik
+        cx, cy, r = 12.0, 9.6, 5.0
+        self.create_oval(cx - r, cy - r, cx + r, cy + r, fill=fg, outline="")
+        self.create_polygon(
+            cx - 3.4, cy + r * 0.72, cx + 3.4, cy + r * 0.72, cx, 20.0,
+            fill=fg, outline="",
+        )
+        hole = mix(fg, self._bg, 0.85)
+        self.create_oval(cx - 1.8, cy - 1.8, cx + 1.8, cy + 1.8, fill=hole, outline="")
 
     def _glyph_close(self, fg: str) -> None:
         self.create_line(7.5, 7.5, 16.5, 16.5, fill=fg, width=1.7, capstyle=tk.ROUND)
@@ -172,8 +171,8 @@ class IconButton(tk.Canvas):
     def _glyph_gear(self, fg: str) -> None:
         cx = cy = 12.0
         teeth = 8
-        r_out, r_in = 7.4, 5.4
-        half_out, half_in = math.radians(10.0), math.radians(13.5)
+        r_out, r_in = 7.6, 5.6
+        half_out, half_in = math.radians(11.0), math.radians(12.5)
         pts: list[float] = []
         for i in range(teeth):
             ang = math.radians(i * (360.0 / teeth) - 90.0)
@@ -181,8 +180,8 @@ class IconButton(tk.Canvas):
             pts.extend((cx + r_out * math.cos(ang - half_out), cy + r_out * math.sin(ang - half_out)))
             pts.extend((cx + r_out * math.cos(ang + half_out), cy + r_out * math.sin(ang + half_out)))
             pts.extend((cx + r_in * math.cos(ang + half_in), cy + r_in * math.sin(ang + half_in)))
-        self.create_polygon(*pts, fill="", outline=fg, width=1.5, joinstyle=tk.MITER)
-        self.create_oval(cx - 2.7, cy - 2.7, cx + 2.7, cy + 2.7, outline=fg, width=1.5)
+        self.create_polygon(*pts, fill="", outline=fg, width=1.4, joinstyle=tk.MITER)
+        self.create_oval(cx - 2.8, cy - 2.8, cx + 2.8, cy + 2.8, outline=fg, width=1.4)
 
     def _glyph_info(self, fg: str) -> None:
         self.create_oval(5, 5, 19, 19, outline=fg, width=1.5)
@@ -199,13 +198,14 @@ class IconButton(tk.Canvas):
         self.create_line(9, 18, 6, 15, fill=fg, width=1.6, capstyle=tk.ROUND)
 
     def _glyph_subtitle(self, fg: str) -> None:
-        # Altyazi balonu: cerceve + iki satir
+        # Altyazi balonu: konusma balonu + iki satir
         self.create_polygon(
-            *_rounded_rect_points(4.5, 6.5, 19.5, 17.5, 2.5),
-            fill="", outline=fg, width=1.4, smooth=True,
+            *_rounded_rect_points(4.0, 5.5, 20.0, 16.5, 3.0),
+            fill="", outline=fg, width=1.5, smooth=True,
         )
-        self.create_line(8, 11, 16, 11, fill=fg, width=1.5, capstyle=tk.ROUND)
-        self.create_line(8, 14.5, 13, 14.5, fill=fg, width=1.5, capstyle=tk.ROUND)
+        self.create_polygon(9.0, 16.2, 13.5, 16.2, 9.0, 20.0, fill=fg, outline="")
+        self.create_line(7.6, 9.3, 16.4, 9.3, fill=fg, width=1.5, capstyle=tk.ROUND)
+        self.create_line(7.6, 12.7, 13.2, 12.7, fill=fg, width=1.5, capstyle=tk.ROUND)
 
 
 class ThemeSwitch(tk.Canvas):
