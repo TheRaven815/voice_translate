@@ -1851,9 +1851,12 @@ class App(tk.Tk):
         )
         self.overlay_label.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Sağ kenar: genişlik tutamacı
-        grip = tk.Label(wrap, text="⋮⋮", font=(self.font_ui[0], 7), fg=C.dim, bg=C.overlay_bg, cursor="size_we", padx=2)
-        grip.pack(side=tk.RIGHT, fill=tk.Y)
+        # Sağ alt köşe: yeniden boyutlandırma tutamacı (belirgin çubuk)
+        grip = tk.Label(
+            wrap, text="◢", font=(self.font_ui[0], 12), fg=C.dim,
+            bg=C.overlay_bg, cursor="size_nw_se", padx=4, pady=2,
+        )
+        grip.place(relx=1.0, rely=1.0, anchor="se")
         self._overlay_grip = grip
 
         def start_resize(e):
