@@ -17,7 +17,7 @@ from languages import LANGS, dest_code, source_code
 from gui.app import format_user_error
 from loop import SystemAudioLoop
 from meta import APP_TITLE, __version__
-def main() -> None:
+def main(argv: list[str] | None = None) -> int:
     try:
         cfg = load_config()
         default_src = source_code(cfg.src_lang) or "auto"
@@ -43,18 +43,18 @@ def main() -> None:
     parser.add_argument("--volume", type=float, default=1.0, help="çeviri ses seviyesi (0.0 - 2.0)")
     parser.add_argument("--api-key", default=None, help="Gemini API anahtarı")
     parser.add_argument("--model", default=None, help="Gemini Live model adı")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.list_devices:
         list_devices()
-        return
+        return 0
 
     if args.list_langs:
         print("Desteklenen diller:")
         print("  auto : Otomatik kaynak dil algılama (yalnızca --src)")
         for name, code in LANGS.items():
             print(f"  {code:<5}: {name}")
-        return
+        return 0
 
     def info(msg: str) -> None:
         print(msg, file=sys.stderr if args.json else sys.stdout, flush=True)
@@ -81,16 +81,21 @@ def main() -> None:
             print("Hata: Loopback ses aygıtı bulunamadı.", file=sys.stderr)
             sys.exit(2)
         info(f"Sistem sesi yakalanıyor (loopback): {source.name}")
-    valid_codes = set(LANGS.values())
-    src_clean = args.src.strip().lower()
-    if src_clean != "auto" and src_clean not in valid_codes:
+    code_map = {v.lower(): v for v in LANGS.values()}
+    src_raw = args.src.strip()
+    if src_raw.lower() in ("auto", ""):
+        src = None
+    elif src_raw.lower() in code_map:
+        src = code_map[src_raw.lower()]
+    else:
         print(f"Hata: Geçersiz kaynak dil '{args.src}'. Desteklenen kodlar için --list-langs kullanın.", file=sys.stderr)
         sys.exit(1)
-    dst_clean = args.dst.strip().lower()
-    if dst_clean not in valid_codes:
+    dst_raw = args.dst.strip()
+    if dst_raw.lower() in code_map:
+        dst_clean = code_map[dst_raw.lower()]
+    else:
         print(f"Hata: Geçersiz hedef dil '{args.dst}'. Desteklenen kodlar için --list-langs kullanın.", file=sys.stderr)
         sys.exit(1)
-
     if args.text_only:
         speaker = None
         info("Çıkış: Yok (metin-only)")
@@ -108,7 +113,6 @@ def main() -> None:
     stop_hint = "Ctrl+C" if args.no_interactive else "q + Enter veya Ctrl+C"
     info(f"{args.src} -> {args.dst} çeviri başlıyor. Durdurmak: {stop_hint}")
 
-    src = None if src_clean in ("auto", "") else src_clean
     log_file = open(args.log, "a", encoding="utf-8") if args.log else None
 
     loop_holder: list[SystemAudioLoop | None] = [None]
@@ -161,18 +165,19 @@ def main() -> None:
     try:
         asyncio.run(loop.run())
     except (KeyboardInterrupt, asyncio.CancelledError):
-        print("\nDurduruldu.")
+        info("\nDurduruldu.")
     except BaseException as e:
         root: BaseException = e
         while hasattr(root, "exceptions") and getattr(root, "exceptions"):
             root = getattr(root, "exceptions")[0]
         if isinstance(root, (KeyboardInterrupt, asyncio.CancelledError)):
-            print("\nDurduruldu.")
+            info("\nDurduruldu.")
         else:
             print(f"\nHata: {format_user_error(root)}", file=sys.stderr)
-            sys.exit(1)
+            return 1
     finally:
         if log_file:
             log_file.close()
+    return 0
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

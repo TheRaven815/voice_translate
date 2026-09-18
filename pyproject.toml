@@ -21,6 +21,22 @@ dependencies = [
 ahenk = "main:main"
 ahenk-cli = "cli:main"
 
+[tool.setuptools]
+packages = ["gui"]
+py-modules = [
+    "audio",
+    "cli",
+    "config",
+    "devices",
+    "export",
+    "i18n",
+    "languages",
+    "logger",
+    "loop",
+    "main",
+    "meta",
+    "updater",
+]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

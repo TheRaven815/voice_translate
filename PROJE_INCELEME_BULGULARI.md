@@ -21,7 +21,7 @@ Dosya ve satır referansları inceleme anındaki kaynaklara aittir; sonraki değ
 - **H06 düzeltildi (18 Eylül 2026).**
 - **H07 düzeltildi (18 Eylül 2026).** 1. maddedeki (Yüksek öncelikli hatalar) tüm bulgular (H01-H07) tamamlandı.
 - **H08–H17 düzeltildi (18 Eylül 2026).** 2. maddedeki (Diğer doğrulanmış hatalar) tüm bulgular (H08-H17) tamamlandı.
-## Doğrulama kapsamı ve sınırlar
+- **H18–H23 düzeltildi (18 Eylül 2026).** 3. maddedeki (Paketleme ve CLI hataları) tüm bulgular (H18-H23) tamamlandı.
 
 - Ortam: Windows, Python 3.14.7.
 - Çalıştırılan mevcut test komutu: `venv/Scripts/python.exe -m pytest -q -m "not device"`.
@@ -150,12 +150,12 @@ Dosya ve satır referansları inceleme anındaki kaynaklara aittir; sonraki değ
 
 | Kimlik | Sorun ve konum | Kanıt | Önerilen düzeltme |
 | --- | --- | --- | --- |
-| H18 | Wheel/pip paketleme bozuk. `pyproject.toml:1-22`, `main.py:12-22`. | İzole derleme `Multiple top-level packages discovered in a flat-layout: ['gui', 'assets']` hatası verdi. Ayrıca tanımlanan `main:main` için `main.py` içinde `main()` yok. | Paket/modül/veri keşfini açık tanımla; mevcut başlangıç ve helper yönlendirmesini kapsayan gerçek giriş işlevi oluştur. |
-| H19 | Temiz ortamda doğrudan `build.bat` başlangıcı bozuk. `build.bat:15-23`. | Aynı parantez bloğunda set edilen `%SYSPY%` erken genişletiliyor. Kontrol senaryosu `'-m' is not recognized` verdi. Tetikleyici: mevcut venv ve kalıtılmış `SYSPY` yok. | Değişkeni ayrı alt yordamda kullan veya doğru gecikmeli genişletme uygula. |
-| H20 | Başlatıcı hata kodunu kaybediyor. `ahenk.bat:17-27`. | Alt komutun `7` çıkış kodu izole başlatıcı kontrolünde `0` döndü. | Çıkış kodunu çocuk işlem bittikten sonra değerlendir. |
-| H21 | Başlatıcı argümanları kesiyor. `ahenk.bat:17-23`. | `cli` yolunda yalnız `%2`–`%9` iletiliyor; dokuzuncu CLI tokenı doğrulamada kayboldu. | Tüm argümanları tırnaklarını koruyarak aktar. `SHIFT` işleminin `%*` değerini değiştirmediğini dikkate al. |
-| H22 | Çince dil kodları CLI'da reddediliyor. `cli.py:84-92`, `languages.py:20-21`. | Girdi küçük harfe çevriliyor; geçerli kümede `zh-CN/zh-TW` kalıyor. `--dst zh-CN` kontrollü çalıştırmada çıkış kodu 1 verdi. | Normalize anahtardan kanonik koda eşleme yap. |
-| H23 | `--json` çıktısı normal duruşta bozuluyor. `cli.py:163-170`. | stdout'a JSON yerine `Durduruldu.` yazılıyor. İptal senaryosunda doğrulandı. | Bilgi mesajını stderr'e veya yapılandırılmış olaya taşı. |
+| H18 (Düzeltildi) | Wheel/pip paketleme bozuk. `pyproject.toml:1-22`, `main.py:12-22`. | İzole derleme `Multiple top-level packages discovered in a flat-layout: ['gui', 'assets']` hatası verdi. Ayrıca tanımlanan `main:main` için `main.py` içinde `main()` yok. | `pyproject.toml` içinde `tool.setuptools` paket ve modül listesi açık tanımlandı. `main.py` içine CLI helper yönlendirmesini içeren `main()` işlevi eklendi. Regresyon testi: `tests/test_cli.py::test_h18_main_entrypoint_exists_and_routes_helper`. |
+| H19 (Düzeltildi) | Temiz ortamda doğrudan `build.bat` başlangıcı bozuk. `build.bat:15-23`. | Aynı parantez bloğunda set edilen `%SYSPY%` erken genişletiliyor. Kontrol senaryosu `'-m' is not recognized` verdi. Tetikleyici: mevcut venv ve kalıtılmış `SYSPY` yok. | venv oluşturma adımı ayrı bir alt yordama (`:init_venv`) taşındı; erken blok genişletme hatası giderildi. |
+| H20 (Düzeltildi) | Başlatıcı hata kodunu kaybediyor. `ahenk.bat:17-27`. | Alt komutun `7` çıkış kodu izole başlatıcı kontrolünde `0` döndü. | Parantez içi `%errorlevel%` erken genişletmesi kaldırıldı; işlem bittikten sonra doğrudan alt işlem çıkış kodu döndürülüyor. Regresyon testi: `tests/test_cli.py::test_h20_h21_batch_launcher_preserves_exit_code_and_arguments`. |
+| H21 (Düzeltildi) | Başlatıcı argümanları kesiyor. `ahenk.bat:17-23`. | `cli` yolunda yalnız `%2`–`%9` iletiliyor; dokuzuncu CLI tokenı doğrulamada kayboldu. | `%*` argümanları Python çalıştırıcısı üzerinden tırnakları ve sayısı korunarak kayıpsız iletiliyor. Regresyon testi: `tests/test_cli.py::test_h20_h21_batch_launcher_preserves_exit_code_and_arguments`. |
+| H22 (Düzeltildi) | Çince dil kodları CLI'da reddediliyor. `cli.py:84-92`, `languages.py:20-21`. | Girdi küçük harfe çevriliyor; geçerli kümede `zh-CN/zh-TW` kalıyor. `--dst zh-CN` kontrollü çalıştırmada çıkış kodu 1 verdi. | `cli.py` içinde büyük/küçük harf duyarsız normalizasyondan kanonik BCP-47 koduna (`zh-CN`, `zh-TW`) eşleme eklendi. Regresyon testi: `tests/test_cli.py::test_h22_chinese_language_codes_accepted`. |
+| H23 (Düzeltildi) | `--json` çıktısı normal duruşta bozuluyor. `cli.py:163-170`. | stdout'a JSON yerine `Durduruldu.` yazılıyor. İptal senaryosunda doğrulandı. | `--json` modunda durdurma mesajı `stderr`'e yönlendirildi; stdout saf JSON akışı olarak korundu. Regresyon testi: `tests/test_cli.py::test_h23_json_mode_routes_stop_message_to_stderr`. |
 
 ## 4. Güvenlik, test ve bakım geliştirmeleri
 
@@ -265,4 +265,4 @@ Aşağıdaki maddeler kesin üretim arızası olarak değerlendirilmemeli.
 7. **Test, gizlilik ve dağıtım sınırları:** G01–G06. Özellikle G02 test izolasyonunu yeni test çalıştırmalarından önce güvenceye al.
 8. **Canlı servis ve platform doğrulaması:** R01–R05. Hipotezleri gerçek Gemini, fiziksel aygıtlar ve hedef Windows ölçeklerinde doğrula.
 
-Bu sıralama özgün düzeltme önerisidir. İnceleme sırasında düzeltme uygulanmadı; inceleme sonrasında H01–H17 arasındaki tüm yüksek öncelikli ve doğrulanmış hatalar tamamlandı. Kalan paketleme ve CLI maddeleri (H18–H23) açık kaldı.
+Bu sıralama özgün düzeltme önerisidir. İnceleme sırasında düzeltme uygulanmadı; inceleme sonrasında H01–H23 arasındaki tüm yüksek öncelikli, doğrulanmış, paketleme ve CLI hataları tamamlandı. Güvenlik, test ve bakım geliştirmeleri (G01–G06) açık kaldı.

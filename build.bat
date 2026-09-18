@@ -12,29 +12,17 @@ set "VPY="
 if exist ".venv\Scripts\python.exe" set "VPY=.venv\Scripts\python.exe"
 if not defined VPY if exist "venv\Scripts\python.exe" set "VPY=venv\Scripts\python.exe"
 if not defined VPY set "VPY=.venv\Scripts\python.exe"
-if not exist "%VPY%" (
-    echo [.venv bulunamadi, olusturuluyor...]
-    where py >nul 2>&1 && (set "SYSPY=py -3") || (where python >nul 2>&1 && set "SYSPY=python")
-    if not defined SYSPY (
-        echo [HATA: Python bulunamadi! Lutfen Python yukleyin.]
-        pause
-        exit /b 1
-    )
-    %SYSPY% -m venv .venv
-    if not exist "%VPY%" (
-        echo [HATA: .venv olusturulamadi.]
-        pause
-        exit /b 1
-    )
-    "%VPY%" -m pip install -q --upgrade pip
-    "%VPY%" -m pip install -q -r requirements.txt
+if not exist "%VPY%" call :init_venv
+if errorlevel 1 (
+    if not defined NOPAUSE pause
+    exit /b 1
 )
 
 echo [PyInstaller kontrol ediliyor...]
 "%VPY%" -m pip install -q pyinstaller
 if errorlevel 1 (
     echo [HATA: PyInstaller yuklenemedi.]
-    pause
+    if not defined NOPAUSE pause
     exit /b 1
 )
 
@@ -71,3 +59,22 @@ echo   CLI Cikti: %cd%\dist\Ahenk-cli.exe
 echo ========================================
 echo.
 if not defined NOPAUSE pause
+exit /b 0
+
+:init_venv
+echo [.venv bulunamadi, olusturuluyor...]
+set "SYSPY="
+where py >nul 2>&1 && set "SYSPY=py -3"
+if not defined SYSPY where python >nul 2>&1 && set "SYSPY=python"
+if not defined SYSPY (
+    echo [HATA: Python bulunamadi! Lutfen Python yukleyin.]
+    exit /b 1
+)
+%SYSPY% -m venv .venv
+if not exist "%VPY%" (
+    echo [HATA: .venv olusturulamadi.]
+    exit /b 1
+)
+"%VPY%" -m pip install -q --upgrade pip
+"%VPY%" -m pip install -q -r requirements.txt
+exit /b 0

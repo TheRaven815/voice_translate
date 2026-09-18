@@ -14,18 +14,22 @@ if errorlevel 1 goto :fail
 call :ensure_venv
 if errorlevel 1 goto :fail
 
-if "%~1"=="cli" (
-  "%VPY%" cli.py %2 %3 %4 %5 %6 %7 %8 %9
-  exit /b %errorlevel%
-)
-if "%~1"=="run" (
-  "%VPY%" main.py %2 %3 %4 %5 %6 %7 %8 %9
-  exit /b %errorlevel%
-)
-if not "%~1"=="" (
-  "%VPY%" cli.py %*
-  exit /b %errorlevel%
-)
+if "%~1"=="cli" goto :exec_cli
+if "%~1"=="run" goto :exec_run
+if not "%~1"=="" goto :exec_passthru
+goto :menu
+
+:exec_cli
+"%VPY%" -c "import sys, cli; sys.argv = ['cli.py'] + sys.argv[2:]; sys.exit(cli.main(sys.argv[1:]))" %*
+exit /b %errorlevel%
+
+:exec_run
+"%VPY%" -c "import sys, main; sys.argv = ['main.py'] + sys.argv[2:]; sys.exit(main.main(sys.argv[1:]))" %*
+exit /b %errorlevel%
+
+:exec_passthru
+"%VPY%" -c "import sys, cli; sys.argv = ['cli.py'] + sys.argv[1:]; sys.exit(cli.main(sys.argv[1:]))" %*
+exit /b %errorlevel%
 :menu
 echo.
 echo  Ahenk

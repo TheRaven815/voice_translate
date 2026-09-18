@@ -238,3 +238,72 @@ def test_cli_handles_exception_group_cancelled(monkeypatch, capsys):
         cli.main()
     out = capsys.readouterr().out
     assert "Durduruldu." in out
+
+def test_h18_main_entrypoint_exists_and_routes_helper(monkeypatch):
+    """H18: main.py içinde main() fonksiyonu bulunmalı ve CLI helper'a yönlendirebilmeli."""
+    import main
+    from updater import HELPER_ARG
+    assert callable(main.main)
+    with patch("main.run_update_helper", return_value=42) as mock_helper:
+        code = main.main(["main.py", HELPER_ARG, "123", "target.exe", "sha256"])
+        assert code == 42
+        mock_helper.assert_called_once_with("123", "target.exe", "sha256")
+
+def test_h22_chinese_language_codes_accepted(monkeypatch):
+    """H22: zh-CN ve zh-TW dil kodları (büyük/küçük harf duyarsız) kabul edilmeli."""
+    for code in ("zh-CN", "zh-cn", "zh-TW", "zh-tw"):
+        monkeypatch.setattr(sys, "argv", ["cli.py", "--src", code, "--dst", code, "--mic", "--api-key", "key"])
+        monkeypatch.setattr("cli.default_microphone", lambda: MagicMock(name="Mic"))
+        monkeypatch.setattr("cli.default_speaker", lambda: MagicMock(name="Spk"))
+        mock_loop_cls = MagicMock()
+        monkeypatch.setattr("cli.SystemAudioLoop", mock_loop_cls)
+        with patch("asyncio.run"):
+            cli.main()
+            mock_loop_cls.assert_called_once()
+            src_arg, dst_arg = mock_loop_cls.call_args.args[0], mock_loop_cls.call_args.args[1]
+            # Canonical BCP-47 kodlarına eşlenmiş olmalı
+            expected = "zh-CN" if "cn" in code.lower() else "zh-TW"
+            assert src_arg == expected
+            assert dst_arg == expected
+
+
+def test_h23_json_mode_routes_stop_message_to_stderr(monkeypatch, capsys):
+    """H23: --json modunda normal duruş mesajı stdout'a değil stderr'e gitmeli (JSON akışı bozulmamalı)."""
+    monkeypatch.setattr(sys, "argv", ["cli.py", "--api-key", "test_key", "--mic", "--json"])
+    fake_source = MagicMock(name="FakeMic")
+    fake_source.name = "FakeMic"
+    monkeypatch.setattr("cli.default_microphone", lambda: fake_source)
+    monkeypatch.setattr("cli.default_speaker", lambda: MagicMock())
+    monkeypatch.setattr("cli.SystemAudioLoop", MagicMock())
+
+    with patch("asyncio.run", side_effect=KeyboardInterrupt()):
+        cli.main()
+    captured = capsys.readouterr()
+    # stdout tamamen JSON veya boş olmalı, "Durduruldu." içermemeli
+    assert "Durduruldu." not in captured.out
+    assert "Durduruldu." in captured.err
+
+def test_h20_h21_batch_launcher_preserves_exit_code_and_arguments():
+    """H20 & H21: ahenk.bat alt işlem hata kodunu kaybetmemeli ve 9'dan fazla argümanı kesmemeli."""
+    import subprocess
+    import os
+    if os.name != "nt":
+        pytest.skip("Windows batch test")
+
+    # H20: Hata kodu (örneğin argparse bilinmeyen argümanda 2 döner) sıfırlanmamalı
+    res = subprocess.run(
+        ["cmd.exe", "/c", "ahenk.bat", "cli", "--nonexistent-flag-for-testing"],
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 2
+
+    # H21: 9'dan fazla argüman verildiğinde (%2-%9 sınırı) tüm argümanlar aktarılmalı
+    args = [f"--test-arg-{i}" for i in range(12)]
+    res = subprocess.run(
+        ["cmd.exe", "/c", "ahenk.bat", "cli", *args],
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 2
+    assert "--test-arg-11" in res.stderr
