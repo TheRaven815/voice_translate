@@ -1143,3 +1143,102 @@ def test_r05_select_widget_measures_font_and_bounds_popup():
     finally:
         app.destroy()
 
+
+def test_preview_monitor_is_inert_and_safe():
+    """Önizleme: aygıtsız/geçersiz aygıtta çökmez, seviyeyi sıfırlar."""
+    import time
+
+    app = App()
+    try:
+        assert app._preview.get_level() == 0.0
+        app._preview.set_device(object())  # geçersiz aygıt: sessizce yutulmalı
+        time.sleep(0.3)
+        assert app._preview.get_level() == 0.0
+        app._preview.set_device(None)
+        assert app._preview.get_level() == 0.0
+    finally:
+        app.destroy()
+
+
+def test_input_hotswap_calls_swap_without_restart(monkeypatch):
+    """Çalışırken giriş değişimi swap_input çağırır, restart tetiklemez."""
+    app = App()
+    try:
+        from types import SimpleNamespace
+        dev1 = SimpleNamespace(id="1", name="Hoparlör 1", isloopback=True)
+        dev2 = SimpleNamespace(id="2", name="Hoparlör 2", isloopback=True)
+        app._apply_devices([dev1, dev2], [dev1, dev2], stopping=False)
+        app.in_var.set("[Sistem] Hoparlör 1")
+
+        calls = []
+
+        class FakeLoop:
+            def swap_input(self, dev):
+                calls.append(dev)
+                return True
+
+            def swap_output(self, dev):
+                return False
+
+        app.loop_obj = FakeLoop()
+        app.worker = type("MockWorker", (), {"is_alive": lambda self: True})()
+        restarts = []
+        monkeypatch.setattr(app, "restart", lambda: restarts.append(True))
+
+        app.in_var.set("[Sistem] Hoparlör 2")
+
+        assert calls == [dev2]
+        assert restarts == []
+    finally:
+        app.destroy()
+
+
+def test_output_hotswap_calls_swap_without_restart():
+    """Çalışırken çıkış değişimi swap_output çağırır (Hiçbiri dahil)."""
+    app = App()
+    try:
+        from types import SimpleNamespace
+        dev1 = SimpleNamespace(id="1", name="Hoparlör 1")
+        outs = [dev1]
+        app.inputs = []
+        app.outputs = outs
+        app.out_box["values"] = [NONE_OUTPUT, "Hoparlör 1"]
+
+        calls = []
+
+        class FakeLoop:
+            def swap_input(self, dev):
+                return False
+
+            def swap_output(self, dev):
+                calls.append(dev)
+                return True
+
+        app.loop_obj = FakeLoop()
+        app.worker = type("MockWorker", (), {"is_alive": lambda self: True})()
+
+        app.out_var.set("Hoparlör 1")
+        assert calls == [dev1]
+
+        app.out_var.set(NONE_OUTPUT)
+        assert calls == [dev1, None]
+    finally:
+        app.destroy()
+
+
+def test_idle_meter_shows_preview_level():
+    """Oturum kapalıyken VU, önizleme seviyesini gösterir."""
+    app = App()
+    try:
+        app.loop_obj = None
+        app.worker = None
+        app._preview._set_level(0.8)
+        app._pump_log()
+        coords = app.meter.coords(app._meter_bar)
+        assert coords[2] > 40.0
+        app._preview._set_level(0.0)
+        app._pump_log()
+        assert app.meter.coords(app._meter_bar)[2] == 0.0
+    finally:
+        app.destroy()
+

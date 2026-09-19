@@ -41,6 +41,54 @@ def pick_loopback(device_substr: str | None):
     return loops[0]
 
 
+def device_key(dev) -> tuple:
+    """Aygıt kimliği: hot-swap karşılaştırmalarında yeniden taramada bile stabil."""
+    if dev is None:
+        return (None, None, None)
+    return (
+        getattr(dev, "id", None),
+        getattr(dev, "name", None),
+        bool(getattr(dev, "isloopback", False)),
+    )
+
+
+def display_input_label(dev) -> str:
+    """GUI listesindeki görünen ad: '[Sistem] X' ya da '[Mikrofon] X'."""
+    prefix = "[Sistem] " if getattr(dev, "isloopback", False) else "[Mikrofon] "
+    return prefix + str(getattr(dev, "name", "?"))
+
+
+def find_input_by_label(devices, label: str | None):
+    """Görünen ada göre giriş aygıtını bulur (önekli ya da çıplak ad)."""
+    if not label or not devices:
+        return None
+    text = str(label).strip()
+    for dev in devices:
+        if text == display_input_label(dev) or text == str(getattr(dev, "name", "")):
+            return dev
+    # Önek değişmiş olabilir; ada göre gevşek eşleşme.
+    bare = text
+    for prefix in ("[Sistem] ", "[Mikrofon] "):
+        if bare.startswith(prefix):
+            bare = bare[len(prefix):]
+            break
+    for dev in devices:
+        if str(getattr(dev, "name", "")) == bare:
+            return dev
+    return None
+
+
+def find_output_by_label(devices, label: str | None):
+    """Görünen ada göre çıkış aygıtını bulur (NONE_OUTPUT -> None)."""
+    if not label or label == NONE_OUTPUT:
+        return None
+    text = str(label).strip()
+    for dev in (devices or []):
+        if str(getattr(dev, "name", "")) == text:
+            return dev
+    return None
+
+
 def all_inputs():
     return list(sc.all_microphones(include_loopback=True))
 

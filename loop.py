@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import queue
 import threading
 import os
@@ -193,6 +194,25 @@ class SystemAudioLoop:
         self._active_stream: str | None = None
         self.last_level: float = 0.0
         self._playback_until: float = 0.0
+        # --- Hot-swap + dayanıklılık durumu ---------------------------------
+        # Ses thread'leri tek sahiplidir: soundcard COM nesneleri yalnızca
+        # kendisini açan thread'de kapatılır. GUI/başka thread yalnızca
+        # bekleyen aygıtı yazar; açma/kapama kararı ses thread'indedir.
+        self._io_lock = threading.Lock()
+        self._pending_input = None
+        self._has_pending_input: bool = False
+        self._pending_output = None
+        self._has_pending_output: bool = False
+        self._input_generation: int = 0
+        self._output_generation: int = 0
+        self._capture_heartbeat: float = time.monotonic()
+        self._play_heartbeat: float = time.monotonic()
+        self._capture_opened_once: bool = False
+        self._play_opened_once: bool = False
+        self._watch_warned_capture: bool = False
+        self._watch_warned_play: bool = False
+        self._play_task = None
+        self._tg = None
 
     def pause(self) -> None:
         self._paused.set()
@@ -209,6 +229,93 @@ class SystemAudioLoop:
 
     def set_muted(self, muted: bool) -> None:
         self.muted = bool(muted)
+
+    # -- Hot-swap API (thread-safe; çeviri oturumunu öldürmez) --------------
+    @staticmethod
+    def _device_key(dev) -> tuple:
+        if dev is None:
+            return (None, None, None)
+        return (
+            getattr(dev, "id", None),
+            getattr(dev, "name", None),
+            bool(getattr(dev, "isloopback", False)),
+        )
+
+    def _same_device(self, a, b) -> bool:
+        ka, kb = self._device_key(a), self._device_key(b)
+        if ka[0] is not None and kb[0] is not None:
+            return ka == kb
+        return ka[1] == kb[1] and ka[2] == kb[2] and ka[1] is not None
+
+    def swap_input(self, new_mic) -> bool:
+        """Çalışan yakalamayı yeni giriş aygıtına geçirir (oturum sağ kalır).
+
+        Eski recorder yalnızca yakalama thread'i içinde kapatılır; burada
+        yalnızca bekleyen aygıt kuyruğa yazılır. Aynı aygıt ise False döner.
+        """
+        if new_mic is None:
+            return False
+        with self._io_lock:
+            if self._same_device(new_mic, self.source_mic) and not self._has_pending_input:
+                return False
+            self._pending_input = new_mic
+            self._has_pending_input = True
+            return True
+
+    def swap_output(self, new_speaker) -> bool:
+        """Çalışan oynatmayı yeni çıkış aygıtına geçirir (None=text-only).
+
+        Aynı aygıt (None dahil) ise False döner.
+        """
+        with self._io_lock:
+            cur = self.output_speaker
+            if new_speaker is None and cur is None and not self._has_pending_output:
+                return False
+            if new_speaker is not None and self._same_device(new_speaker, cur) and not self._has_pending_output:
+                return False
+            self._pending_output = new_speaker
+            self._has_pending_output = True
+            return True
+
+    def _take_pending_input(self):
+        with self._io_lock:
+            if not self._has_pending_input:
+                return None, False
+            dev = self._pending_input
+            self._pending_input = None
+            self._has_pending_input = False
+            return dev, True
+
+    def _take_pending_output(self):
+        with self._io_lock:
+            if not self._has_pending_output:
+                return None, False
+            dev = self._pending_output
+            self._pending_output = None
+            self._has_pending_output = False
+            return dev, True
+
+    def _peek_pending_output(self) -> bool:
+        with self._io_lock:
+            return self._has_pending_output
+
+    def _peek_pending_input(self) -> bool:
+        with self._io_lock:
+            return self._has_pending_input
+
+    @staticmethod
+    def _rms_to_level(rms: float) -> float:
+        if rms <= 1e-4:
+            return 0.0
+        db = 20.0 * math.log10(max(rms, 1e-9))
+        return max(0.0, min(1.0, (db + 50.0) / 50.0))
+
+    def _note(self, text: str) -> None:
+        try:
+            if callable(self._emit):
+                self._emit(("log", text))
+        except Exception:
+            pass
 
     def request_stop(self):
         """GUI'den thread-safe durdurma; worker zaten ölmüşse sessiz geç."""
@@ -284,41 +391,101 @@ class SystemAudioLoop:
 
         soundcard COM nesneleri thread'ler arası paylaşılamaz; her
         chunk'ta ayrı to_thread kullanmak erişim ihlaline yol açar.
+        Bu thread aynı zamanda hot-swap ve hata toleransı sahibidir:
+        bekleyen giriş aygıtı bloklar arasında devreye alınır, aygıt
+        hataları oturumu öldürmeden aynı/bekleyen aygıtta yeniden dener.
+        İlk açılış hatası hızlı başarısızlık için yükseltilir.
         """
+        delay = 0.25
+        while not self._cap_stop.is_set():
+            # Hot-swap: bekleyen giriş varsa onu devral.
+            pending_dev, has_pending = self._take_pending_input()
+            if has_pending and pending_dev is not None:
+                old_name = getattr(self.source_mic, "name", "?")
+                self.source_mic = pending_dev
+                self._input_generation += 1
+                self._vad_silence_chunks = 0
+                self._watch_warned_capture = False
+                self._note(
+                    f"[bilgi] Giriş aygıtı değiştirildi: {old_name} -> "
+                    f"{getattr(pending_dev, 'name', '?')}\n"
+                )
+            try:
+                self._capture_inner()
+            except Exception as e:
+                if self._cap_stop.is_set() or self._user_stop.is_set():
+                    break
+                if not self._capture_opened_once:
+                    # İlk açılış hatası: yanlış aygıt hızlı ve net bildirilmeli.
+                    raise
+                # Çalışırken kopma: oturumu öldürmeden bekle + yeniden dene.
+                self.last_level = 0.0
+                self._note(
+                    f"[uyarı] Giriş aygıtı sorunu ({e}); yeniden deneniyor...\n"
+                )
+                if self._cap_stop.wait(min(delay, 5.0)):
+                    break
+                delay = min(delay * 2.0, 5.0)
+                continue
+            # Normal çıkış: durdurma mı yoksa hot-swap mı?
+            if self._cap_stop.is_set():
+                break
+            if self._peek_pending_input():
+                delay = 0.25
+                continue
+            # Beklenmedik iç çıkış (kayıt nesnesi kapandıysa): kısa bekleyip aç.
+            if self._cap_stop.wait(0.25):
+                break
+            delay = 0.25
+
+    def _capture_inner(self):
         is_loopback = getattr(self.source_mic, "isloopback", False)
         same_endpoint = is_loopback and _is_same_endpoint(self.source_mic, self.output_speaker)
+        seen_output_gen = self._output_generation
         conv = AudioConverter(in_rate=CAPTURE_RATE, out_rate=SEND_SAMPLE_RATE)
         ch = 1 if getattr(self.source_mic, "channels", 2) == 1 else 2
         with self.source_mic.recorder(
             samplerate=CAPTURE_RATE, channels=ch, blocksize=CAPTURE_BLOCK
         ) as mic:
+            self._capture_opened_once = True
+            self._capture_heartbeat = time.monotonic()
             while not self._cap_stop.is_set():
-                frame = mic.record(numframes=CAPTURE_BLOCK)
+                if self._peek_pending_input():
+                    # Eski akış `with` çıkışında düzgün kapatılır.
+                    return
+                try:
+                    frame = mic.record(numframes=CAPTURE_BLOCK)
+                except Exception:
+                    # Kayıt hatası: iç bağlamı kapatıp dış döngüde yeniden aç.
+                    raise
+                self._capture_heartbeat = time.monotonic()
                 if frame is None or len(frame) == 0:
-                    continue
-                if self._paused.is_set():
                     self.last_level = 0.0
                     continue
-                if same_endpoint:
-                    if time.monotonic() < self._playback_until + 0.15:
-                        continue
                 arr = np.asarray(frame, dtype=np.float32)
-                pcm = conv.process(arr)
-                if not pcm:
-                    continue
                 mono = arr.mean(axis=1) if arr.ndim > 1 else arr
                 rms = (
                     float(np.sqrt(np.dot(mono, mono) / len(mono)))
                     if len(mono) > 0
                     else 0.0
                 )
-                if rms > 1e-4:
-                    import math
-                    db = 20.0 * math.log10(rms)
-                    lvl = max(0.0, min(1.0, (db + 50.0) / 50.0))
-                else:
-                    lvl = 0.0
-                self.last_level = lvl
+                # VU her blokta güncellenir; yankı bastırma yalnızca gönderimi
+                # keser, göstergeyi dondurmaz.
+                self.last_level = self._rms_to_level(rms)
+                if self._paused.is_set():
+                    continue
+                # Çıkış hot-swap olduysa yankı bastırma hedefini tazele.
+                if seen_output_gen != self._output_generation:
+                    seen_output_gen = self._output_generation
+                    same_endpoint = is_loopback and _is_same_endpoint(
+                        self.source_mic, self.output_speaker
+                    )
+                if same_endpoint:
+                    if time.monotonic() < self._playback_until + 0.15:
+                        continue
+                pcm = conv.process(arr)
+                if not pcm:
+                    continue
 
                 HANGOVER_CHUNKS = 15  # ~300 ms ses kesildikten sonra devam eden sessizlik tamponu (R01)
                 if self.vad_threshold > 0.0 and rms < self.vad_threshold:
@@ -452,34 +619,130 @@ class SystemAudioLoop:
             # kuyruk silinince ses kesik kesik kalır.
 
     def _play_thread(self):
-        speaker = self.output_speaker
-        if speaker is None:
-            return
+        """Tek thread'de oynatma; hot-swap ve hata toleranslı.
+
+        Bekleyen çıkış aygıtı bloklar arasında devreye alınır, eski player
+        yalnızca bu thread içinde kapatılır. İlk açılış hatası yükseltilir,
+        sonraki kopmalar oturumu öldürmeden yeniden denenir.
+        """
+        delay = 0.25
+        while not self._play_stop.is_set() and not self._user_stop.is_set():
+            pending_dev, has_pending = self._take_pending_output()
+            if has_pending:
+                old = self.output_speaker
+                self.output_speaker = pending_dev
+                self._output_generation += 1
+                old_name = getattr(old, "name", "Hiçbiri") if old is not None else "Hiçbiri"
+                new_name = getattr(pending_dev, "name", "Hiçbiri") if pending_dev is not None else "Hiçbiri"
+                self._watch_warned_play = False
+                if old_name != new_name:
+                    self._note(f"[bilgi] Çıkış aygıtı değiştirildi: {old_name} -> {new_name}\n")
+            speaker = self.output_speaker
+            if speaker is None:
+                self._play_drain_until_speaker_or_stop()
+                if self._play_stop.is_set() or self._user_stop.is_set():
+                    break
+                # Bekleyen aygıt geldi (veya stop): döngü başı yeniden değerlendirir.
+                continue
+            try:
+                done_reason = self._play_inner(speaker)
+            except Exception as e:
+                if self._play_stop.is_set() or self._user_stop.is_set():
+                    break
+                if not self._play_opened_once:
+                    raise
+                self._note(f"[uyarı] Çıkış aygıtı sorunu ({e}); yeniden deneniyor...\n")
+                # Yeniden denemeden önce kısa bekle; beklerken swap/stop gözet.
+                deadline = time.monotonic() + min(delay, 5.0)
+                delay = min(delay * 2.0, 5.0)
+                while time.monotonic() < deadline:
+                    if self._play_stop.is_set() or self._user_stop.is_set():
+                        break
+                    if self._peek_pending_output():
+                        break
+                    time.sleep(0.05)
+                continue
+            delay = 0.25
+            if self._play_stop.is_set() or self._user_stop.is_set():
+                break
+            if self._peek_pending_output():
+                continue
+            if done_reason == "swap":
+                continue
+            # Temiz kapanış (kuyruktaki None): test ve teardown davranışını koru.
+            break
+
+    def _play_drain_until_speaker_or_stop(self):
+        """Text-only modu: gelen sesi çalmadan tüket, aygıt/stop bekle."""
+        while not self._play_stop.is_set() and not self._user_stop.is_set():
+            if self._peek_pending_output():
+                return
+            q = self._play_q
+            if q is None:
+                time.sleep(0.05)
+                self._play_heartbeat = time.monotonic()
+                continue
+            try:
+                item = q.get(timeout=0.1)
+            except queue.Empty:
+                self._play_heartbeat = time.monotonic()
+                continue
+            self._play_heartbeat = time.monotonic()
+            if item is None:
+                return
+
+    def _play_inner(self, speaker) -> str:
+        """Tek player ömrü; 'done' (None) ya da 'swap' ile döner."""
         preroll_n = int(RECEIVE_SAMPLE_RATE * 0.08)  # ~80 ms jitter tamponu
+        split_n = 2048  # hot-swap tepkisi için oynatma dilimi
         pending: list[np.ndarray] = []
         pending_n = 0
         started = False
         with speaker.player(
             samplerate=RECEIVE_SAMPLE_RATE, channels=1, blocksize=2048
         ) as sp:
-            def _play_chunk(audio_raw: np.ndarray) -> None:
+            self._play_opened_once = True
+            self._play_heartbeat = time.monotonic()
+
+            def _play_chunk(audio_raw: np.ndarray) -> bool:
+                """Dilimli oynatma; swap/stop görülürse False döner."""
                 if self.muted or self.volume <= 0.0 or audio_raw.size == 0:
-                    return
+                    return True
                 if abs(self.volume - 1.0) > 1e-3:
                     audio_raw = np.clip(audio_raw * self.volume, -1.0, 1.0)
-                self._playback_until = time.monotonic() + len(audio_raw) / RECEIVE_SAMPLE_RATE
-                sp.play(audio_raw)
+                pos = 0
+                total = int(audio_raw.size)
+                while pos < total:
+                    if self._play_stop.is_set() or self._user_stop.is_set():
+                        return False
+                    if self._peek_pending_output():
+                        return False
+                    piece = audio_raw[pos:pos + split_n]
+                    self._playback_until = time.monotonic() + len(piece) / RECEIVE_SAMPLE_RATE
+                    sp.play(piece)
+                    self._play_heartbeat = time.monotonic()
+                    pos += split_n
+                return True
 
-            while not self._play_stop.is_set():
+            while not self._play_stop.is_set() and not self._user_stop.is_set():
+                if self._peek_pending_output():
+                    return "swap"
                 try:
                     pcm = self._play_q.get(timeout=0.05)
                 except queue.Empty:
+                    self._play_heartbeat = time.monotonic()
                     if pending:
-                        _play_chunk(np.concatenate(pending))
+                        if not _play_chunk(np.concatenate(pending)):
+                            return "swap"
                         pending.clear()
                         pending_n = 0
                     started = False
                     continue
+                except AttributeError:
+                    # _play_q henüz yok (teardown yarışı): bekle.
+                    time.sleep(0.05)
+                    continue
+                self._play_heartbeat = time.monotonic()
                 if pcm is None:
                     break
                 audio = pcm16_to_float(pcm)
@@ -494,12 +757,53 @@ class SystemAudioLoop:
                     pending.clear()
                     pending_n = 0
                     started = True
-                _play_chunk(audio)
-            if pending:
+                if not _play_chunk(audio):
+                    return "swap"
+            if pending and not self._peek_pending_output():
                 _play_chunk(np.concatenate(pending))
                 pending.clear()
+            return "done"
+        return "done"
+
+    async def _watch_audio(self):
+        """Gözetmen: kalp atışı uyarıları + text-only'den hoparlöre geçişte
+        oynatma hattını oturumu öldürmeden ayağa kaldırır."""
+        try:
+            while True:
+                await asyncio.sleep(0.5)
+                if self._cap_stop.is_set() or self._user_stop.is_set():
+                    return
+                if self._stop is not None and self._stop.is_set():
+                    return
+                now = time.monotonic()
+                # Yakalama duraksama uyarısı (ölçülü: stall başına bir kez).
+                if now - self._capture_heartbeat > 6.0 and not self._watch_warned_capture:
+                    self._watch_warned_capture = True
+                    self._note("[uyarı] Giriş ses akışı duraksadı; aygıt denetleniyor...\n")
+                elif now - self._capture_heartbeat <= 6.0:
+                    self._watch_warned_capture = False
+                play_task = self._play_task
+                play_alive = play_task is not None and not play_task.done()
+                if play_alive and now - self._play_heartbeat > 6.0 and not self._watch_warned_play:
+                    self._watch_warned_play = True
+                    self._note("[uyarı] Çıkış ses akışı duraksadı; aygıt denetleniyor...\n")
+                elif play_alive and now - self._play_heartbeat <= 6.0:
+                    self._watch_warned_play = False
+                # Text-only başladıktan sonra hoparlör seçildiyse hattı kur.
+                wants_audio = self.output_speaker is not None or self._peek_pending_output()
+                tg = getattr(self, "_tg", None)
+                if wants_audio and not play_alive and tg is not None:
+                    if self.audio_in_queue is None:
+                        self.audio_in_queue = asyncio.Queue(maxsize=200)
+                    try:
+                        self._play_task = tg.create_task(self.play())
+                    except Exception:
+                        pass
+        except asyncio.CancelledError:
+            pass
 
     async def play(self):
+        self._play_task = asyncio.current_task()
         self._play_q = BoundedByteQueue(max_bytes=int(RECEIVE_SAMPLE_RATE * 2 * 2.5))
         done = asyncio.Event()
         err: list[BaseException] = []
@@ -519,6 +823,12 @@ class SystemAudioLoop:
         done_task = asyncio.create_task(done.wait())
         try:
             while True:
+                if self.audio_in_queue is None:
+                    # Henüz kuyruk yok (text-only başlangıç yarışı): bekle.
+                    await asyncio.sleep(0.1)
+                    if done_task.done():
+                        break
+                    continue
                 get_task = asyncio.create_task(self.audio_in_queue.get())
                 finished, _ = await asyncio.wait(
                     [get_task, done_task],
@@ -545,7 +855,8 @@ class SystemAudioLoop:
             if not done_task.done():
                 done_task.cancel()
             try:
-                self._play_q.put_nowait(None)
+                if self._play_q is not None:
+                    self._play_q.put_nowait(None)
             except queue.Full:
                 try:
                     self._play_q.get_nowait()
@@ -555,10 +866,14 @@ class SystemAudioLoop:
                     self._play_q.put_nowait(None)
                 except queue.Full:
                     pass
+            except AttributeError:
+                pass
             try:
                 await asyncio.wait_for(done.wait(), timeout=0.8)
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 pass
+            if self._play_task is asyncio.current_task():
+                self._play_task = None
             if err and not self._user_stop.is_set():
                 raise RuntimeError(f"Çıkış ses aygıtı hatası: {err[0]}") from err[0]
     async def run(self):
@@ -589,11 +904,14 @@ class SystemAudioLoop:
                     asyncio.Queue(maxsize=200) if self.output_speaker is not None else None
                 )
                 self.out_queue = asyncio.Queue(maxsize=50)
+                self._tg = tg
+                self._play_task = None
                 tg.create_task(self.send_realtime())
                 tg.create_task(self.listen_system())
                 tg.create_task(self.receive())
+                tg.create_task(self._watch_audio())
                 if self.output_speaker is not None:
-                    tg.create_task(self.play())
+                    self._play_task = tg.create_task(self.play())
                 if self.console_input:
                     await self.send_text()
                 else:
@@ -602,6 +920,7 @@ class SystemAudioLoop:
         finally:
             self._cap_stop.set()
             self._play_stop.set()
+            self._tg = None
             stop_task.cancel()
             await asyncio.gather(stop_task, return_exceptions=True)
             self.session = None

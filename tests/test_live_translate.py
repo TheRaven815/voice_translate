@@ -789,3 +789,232 @@ def test_r04_loop_close_and_finally_closes_client():
     loop_obj.client = mock_client
     loop_obj.close()
     mock_client.close.assert_called_once()
+
+
+class _NamedMic(FakeMic):
+    def __init__(self, name):
+        self.name = name
+        self.isloopback = False
+        self.channels = 2
+        self.calls = 0
+
+    def record(self, numframes):
+        self.calls += 1
+        return super().record(numframes)
+
+
+def test_hotswap_input_keeps_session_alive():
+    """Giriş hot-swap: çeviri oturumu ölmeden yeni cihaz devreye girer."""
+    mic_a = _NamedMic("Mic A")
+    mic_b = _NamedMic("Mic B")
+    session = FakeSession()
+    loop_obj = SystemAudioLoop(
+        "en", "tr", mic_a, "dummy-key",
+        output_speaker=FakeSpeaker(),
+        on_text=lambda *_: None,
+        console_input=False,
+    )
+    loop_obj.client = _stub_client(session)
+    errors: list = []
+    t = threading.Thread(target=_run_worker, args=(loop_obj, errors), daemon=True)
+    t.start()
+    try:
+        deadline = time.time() + 15
+        while session.send_realtime_input.await_count == 0 and time.time() < deadline:
+            time.sleep(0.05)
+        assert session.send_realtime_input.await_count > 0
+        assert loop_obj.swap_input(mic_b) is True
+        deadline = time.time() + 5
+        while loop_obj.source_mic is not mic_b and time.time() < deadline:
+            time.sleep(0.05)
+        assert loop_obj.source_mic is mic_b
+        assert loop_obj.swap_input(mic_b) is False  # aynı aygıt: no-op
+        before = session.send_realtime_input.await_count
+        time.sleep(0.4)
+        assert session.send_realtime_input.await_count > before
+        assert mic_b.calls > 0
+        assert t.is_alive()
+    finally:
+        loop_obj.request_stop()
+        t.join(timeout=20)
+    assert not t.is_alive(), "worker durmadı"
+    assert errors == [], f"worker hatası: {errors}"
+
+
+def test_hotswap_output_to_none_and_back():
+    """Çıkış hot-swap: hoparlör -> Hiçbiri -> hoparlör, oturum sağ kalır."""
+    spk_a = FakeSpeaker()
+    spk_b = FakeSpeaker()
+    session = FakeSession()
+    loop_obj = SystemAudioLoop(
+        "en", "tr", FakeMic(), "dummy-key",
+        output_speaker=spk_a,
+        on_text=lambda *_: None,
+        console_input=False,
+    )
+    loop_obj.client = _stub_client(session)
+    errors: list = []
+    t = threading.Thread(target=_run_worker, args=(loop_obj, errors), daemon=True)
+    t.start()
+    try:
+        deadline = time.time() + 15
+        while (loop_obj.audio_in_queue is None or loop_obj._loop is None) and time.time() < deadline:
+            time.sleep(0.05)
+        assert loop_obj.audio_in_queue is not None
+        pcm = (np.full(2400, 16384, dtype=np.int16)).tobytes()
+        loop_obj._loop.call_soon_threadsafe(loop_obj.audio_in_queue.put_nowait, pcm)
+        deadline = time.time() + 5
+        while not spk_a.played and time.time() < deadline:
+            time.sleep(0.05)
+        assert spk_a.played, "ilk hoparlör çalmadı"
+        assert loop_obj.swap_output(None) is True
+        deadline = time.time() + 5
+        while loop_obj.output_speaker is not None and time.time() < deadline:
+            time.sleep(0.05)
+        assert loop_obj.output_speaker is None
+        time.sleep(0.3)
+        assert t.is_alive(), "drain modunda oturum öldü"
+        assert loop_obj.swap_output(spk_b) is True
+        deadline = time.time() + 5
+        while loop_obj.output_speaker is not spk_b and time.time() < deadline:
+            time.sleep(0.05)
+        assert loop_obj.output_speaker is spk_b
+        loop_obj._loop.call_soon_threadsafe(loop_obj.audio_in_queue.put_nowait, pcm)
+        deadline = time.time() + 5
+        while not spk_b.played and time.time() < deadline:
+            time.sleep(0.05)
+        assert spk_b.played, "yeni hoparlör devreye girmedi"
+    finally:
+        loop_obj.request_stop()
+        t.join(timeout=20)
+    assert not t.is_alive(), "worker durmadı"
+    assert errors == [], f"worker hatası: {errors}"
+
+
+def test_vu_level_updates_during_echo_suppression():
+    """Yankı bastırma gönderimi keser ama VU göstergesini dondurmaz."""
+    frames_recorded = []
+
+    class MockRecorder:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def record(self, numframes):
+            frames_recorded.append(True)
+            return np.ones((numframes, 2), dtype=np.float32) * 0.1
+
+    class TestMic:
+        id = "dev_A"
+        name = "Hoparlör A"
+        isloopback = True
+        channels = 2
+
+        def recorder(self, **kwargs):
+            return MockRecorder()
+
+    class Spk:
+        id = "dev_A"
+        name = "Hoparlör A"
+
+    posted: list = []
+    loop_obj = SystemAudioLoop("en", "tr", TestMic(), "dummy-key", output_speaker=Spk())
+    loop_obj._post = lambda msg: posted.append(msg)
+    loop_obj._playback_until = time.monotonic() + 10.0  # aktif çalma
+
+    t = threading.Thread(target=loop_obj._capture_thread, daemon=True)
+    t.start()
+    time.sleep(0.15)
+    loop_obj._cap_stop.set()
+    t.join(timeout=2.0)
+
+    assert len(frames_recorded) > 0
+    assert posted == [], "yankı bastırma gönderimi kesmeli"
+    assert loop_obj.last_level > 0.3, f"VU dondu: {loop_obj.last_level}"
+
+
+class _FlakyRec:
+    def __init__(self, mic):
+        self._mic = mic
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def record(self, numframes):
+        self._mic.calls += 1
+        if self._mic.calls <= 2:
+            raise RuntimeError("kısa kopma")
+        time.sleep(0.005)
+        t = np.arange(numframes) / 48000
+        tone = 0.3 * np.sin(2 * np.pi * 440 * t)
+        return np.stack([tone, tone], axis=1).astype(np.float32)
+
+
+class _FlakyMic:
+    name = "Flaky"
+    isloopback = False
+    channels = 2
+
+    def __init__(self):
+        self.calls = 0
+
+    def recorder(self, **kwargs):
+        return _FlakyRec(self)
+
+
+def test_capture_recovers_after_transient_error():
+    """Kısa giriş kopması oturumu öldürmez; akış kendiliğinden döner."""
+    heard: list = []
+    session = FakeSession()
+    loop_obj = SystemAudioLoop(
+        "en", "tr", _FlakyMic(), "dummy-key",
+        output_speaker=FakeSpeaker(),
+        on_text=heard.append,
+        console_input=False,
+    )
+    loop_obj.client = _stub_client(session)
+    errors: list = []
+    t = threading.Thread(target=_run_worker, args=(loop_obj, errors), daemon=True)
+    t.start()
+    try:
+        deadline = time.time() + 15
+        while session.send_realtime_input.await_count == 0 and time.time() < deadline:
+            time.sleep(0.05)
+        assert session.send_realtime_input.await_count > 0, "akış geri dönmedi"
+        assert t.is_alive()
+        assert any("yeniden deneniyor" in str(m) for m in heard), f"uyarı loglanmadı: {heard}"
+    finally:
+        loop_obj.request_stop()
+        t.join(timeout=20)
+    assert not t.is_alive(), "worker durmadı"
+    assert errors == [], f"worker hatası: {errors}"
+
+
+def test_device_label_helpers():
+    """devices: görünen ad eşleme ve kimlik karşılaştırma."""
+    from types import SimpleNamespace
+
+    from devices import (
+        NONE_OUTPUT,
+        device_key,
+        display_input_label,
+        find_input_by_label,
+        find_output_by_label,
+    )
+
+    loop_dev = SimpleNamespace(id="1", name="Hoparlör X", isloopback=True)
+    mic_dev = SimpleNamespace(id="2", name="Mikrofon Y", isloopback=False)
+    assert display_input_label(loop_dev) == "[Sistem] Hoparlör X"
+    assert display_input_label(mic_dev) == "[Mikrofon] Mikrofon Y"
+    assert find_input_by_label([loop_dev, mic_dev], "[Sistem] Hoparlör X") is loop_dev
+    assert find_input_by_label([loop_dev, mic_dev], "Mikrofon Y") is mic_dev
+    assert find_output_by_label([loop_dev], NONE_OUTPUT) is None
+    assert find_output_by_label([loop_dev], "Hoparlör X") is loop_dev
+    assert find_output_by_label([loop_dev], "Yok") is None
+    assert device_key(None) == (None, None, None)
+    assert device_key(loop_dev) != device_key(mic_dev)

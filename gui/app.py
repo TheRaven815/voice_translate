@@ -14,8 +14,19 @@ from pathlib import Path
 from tkinter import messagebox
 import webbrowser
 
+import numpy as np
+
 from config import load as load_config, resolve_api_key, save_api_key, save_preferences
-from devices import NONE_OUTPUT, all_inputs, all_outputs, default_speaker, pick_loopback
+from devices import (
+    NONE_OUTPUT,
+    all_inputs,
+    all_outputs,
+    default_speaker,
+    device_key,
+    find_input_by_label,
+    find_output_by_label,
+    pick_loopback,
+)
 from export import TranscriptItem, export_jsonl, export_srt, export_txt
 from languages import AUTO_SRC, LANGS, is_rtl, lang_code_to_name, source_code, source_names, src_code_to_name
 from i18n import get_ui_lang, set_ui_lang, t
@@ -56,6 +67,121 @@ def _is_retryable_error(err: BaseException) -> bool:
         return True
     kind = type(err).__name__.lower()
     return any(token in kind or token in msg for token in ("connection", "socket", "timeout", "gaierror", "network"))
+
+
+class _InputPreviewMonitor:
+    """Oturum kapalıyken seçili girişten VU seviyesi üretir.
+
+    Kendi daemon thread'inde kısa bloklarla okur; asıl yakalama/çeviri
+    hattına dokunmaz. Oturum çalışırken aygıt boşaltılır (set_device(None)),
+    böylece ses aygıtı çakışması ve yan etki olmaz. Hatalar sessizce
+    yutulur: seviye 0'a düşer, arayüz asla bozulmaz.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._level: float = 0.0
+        self._current = None
+        self._pending = None
+        self._has_pending: bool = False
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self._run, name="input-preview", daemon=True
+        )
+        self._thread.start()
+
+    def shutdown(self) -> None:
+        self._stop.set()
+
+    def set_device(self, dev) -> None:
+        with self._lock:
+            if device_key(dev) == device_key(self._current) and not self._has_pending:
+                return
+            self._pending = dev
+            self._has_pending = True
+
+    def get_level(self) -> float:
+        with self._lock:
+            return float(self._level)
+
+    def _set_level(self, val: float) -> None:
+        with self._lock:
+            try:
+                v = float(val)
+            except (TypeError, ValueError):
+                v = 0.0
+            self._level = max(0.0, min(1.0, v))
+
+    def _take_pending(self):
+        with self._lock:
+            if not self._has_pending:
+                return None, False
+            dev = self._pending
+            self._pending = None
+            self._has_pending = False
+            self._current = dev
+            return dev, True
+
+    def _run(self) -> None:
+        from audio import CAPTURE_BLOCK, CAPTURE_RATE
+
+        delay = 0.25
+        while not self._stop.is_set():
+            dev, changed = self._take_pending()
+            if not changed:
+                with self._lock:
+                    dev = self._current
+                if dev is None:
+                    self._set_level(0.0)
+                    if self._stop.wait(0.1):
+                        break
+                    continue
+            elif dev is None:
+                self._set_level(0.0)
+                delay = 0.25
+                continue
+            try:
+                self._inner(dev, CAPTURE_RATE, CAPTURE_BLOCK)
+                delay = 0.25
+            except Exception:
+                self._set_level(0.0)
+                if self._stop.wait(min(delay, 2.0)):
+                    break
+                delay = min(delay * 2.0, 2.0)
+                continue
+            if self._stop.is_set():
+                break
+
+    def _inner(self, dev, samplerate: int, blocksize: int) -> None:
+        ch = 1 if getattr(dev, "channels", 2) == 1 else 2
+        with dev.recorder(samplerate=samplerate, channels=ch, blocksize=blocksize) as mic:
+            while not self._stop.is_set():
+                with self._lock:
+                    if self._has_pending:
+                        return
+                try:
+                    frame = mic.record(numframes=blocksize)
+                except Exception:
+                    raise
+                if frame is None or len(frame) == 0:
+                    self._set_level(0.0)
+                    continue
+                try:
+                    arr = np.asarray(frame, dtype=np.float32)
+                    mono = arr.mean(axis=1) if arr.ndim > 1 else arr
+                    if len(mono) == 0:
+                        self._set_level(0.0)
+                        continue
+                    rms = float(np.sqrt(np.dot(mono, mono) / len(mono)))
+                    self._set_level(SystemAudioLoop._rms_to_level(rms))
+                except Exception:
+                    self._set_level(0.0)
 
 
 def format_user_error(err: BaseException) -> str:
@@ -132,6 +258,10 @@ class App(tk.Tk):
         self._timeline_start_time: float | None = None
         self._curr_heard_buf = ""
         self._curr_trans_buf = ""
+        # Başlatmadan önce girişten VU besleyen bağımsız önizleme izleyicisi.
+        # Oturum çalışırken durdurulur; yakalama/çeviri hattına dokunmaz.
+        self._preview = _InputPreviewMonitor()
+        self._preview.start()
         setup_logging()
         if self.always_on_top:
             try:
@@ -296,10 +426,10 @@ class App(tk.Tk):
 
         for var in (self.src_var, self.dst_var):
             var.trace_add("write", self._on_runtime_pref_change)
-        for var in (self.in_var, self.out_var):
-            # Aygıt değişimi çalışan oturumu durdurup yeniden başlatmaz;
-            # yalnızca kaydedilir, bir sonraki başlatmada geçerli olur.
-            var.trace_add("write", lambda *_: self._save_user_prefs())
+        # Aygıt değişimi oturumu öldürmez: çalışırken hot-swap yapılır,
+        # boşta iken VU önizlemesi yeni cihaza geçer; seçim diske yazılır.
+        self.in_var.trace_add("write", lambda *_: self._on_input_selected())
+        self.out_var.trace_add("write", lambda *_: self._on_output_selected())
 
         self._rail_sep(rail, 7)
 
@@ -314,6 +444,79 @@ class App(tk.Tk):
         self.stop_btn._edge.grid(row=0, column=1, sticky="ew", padx=(4, 0), ipady=4)
         self._paint(self.start_btn, filled=True, enabled=True)
         self._paint(self.stop_btn, filled=False, enabled=False)
+
+    def _worker_alive(self) -> bool:
+        try:
+            return self.worker is not None and self.worker.is_alive()
+        except Exception:
+            return False
+
+    def _resolve_input_device(self):
+        try:
+            return find_input_by_label(getattr(self, "inputs", []), self.in_var.get())
+        except Exception:
+            return None
+
+    def _resolve_output_device(self):
+        try:
+            return find_output_by_label(getattr(self, "outputs", []), self.out_var.get())
+        except Exception:
+            return None
+
+    def _sync_preview_device(self) -> None:
+        """Boşta iken önizlemeyi seçili girişe bağla; çalışırken boşalt."""
+        preview = getattr(self, "_preview", None)
+        if preview is None:
+            return
+        try:
+            if self._worker_alive():
+                preview.set_device(None)
+            else:
+                preview.set_device(self._resolve_input_device())
+        except Exception:
+            pass
+
+    def _on_input_selected(self) -> None:
+        try:
+            self._save_user_prefs()
+        except Exception:
+            pass
+        try:
+            dev = self._resolve_input_device()
+            if dev is None:
+                return
+            loop_obj = getattr(self, "loop_obj", None)
+            if self._worker_alive() and loop_obj is not None:
+                # Çalışan yakalamayı oturumu öldürmeden yeni cihaza geçir.
+                try:
+                    loop_obj.swap_input(dev)
+                except Exception:
+                    pass
+            else:
+                preview = getattr(self, "_preview", None)
+                if preview is not None:
+                    try:
+                        preview.set_device(dev)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def _on_output_selected(self) -> None:
+        try:
+            self._save_user_prefs()
+        except Exception:
+            pass
+        try:
+            loop_obj = getattr(self, "loop_obj", None)
+            if self._worker_alive() and loop_obj is not None:
+                # None (Hiçbiri) dahildir: oynatma hattı text-only'e geçer.
+                try:
+                    loop_obj.swap_output(self._resolve_output_device())
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def _build_main(self, main: tk.Frame):
         self.heard_h = tk.Frame(main, bg=C.bg)
@@ -595,6 +798,11 @@ class App(tk.Tk):
                     self.out_var.set(default_speaker().name)
                 except Exception:
                     self.out_var.set(NONE_OUTPUT)
+        # Liste yenilendi: boşta iken önizleme seçili girişi izler.
+        try:
+            self._sync_preview_device()
+        except Exception:
+            pass
     def _selected_speaker(self):
         i = self.out_box.current()
         if i <= 0:
@@ -1117,6 +1325,11 @@ class App(tk.Tk):
                         self._set_running(False)
                         self.worker = None
                         self.loop_obj = None
+                        # Oturum kapandı: VU önizlemesi seçili girişe geri döner.
+                        try:
+                            self._sync_preview_device()
+                        except Exception:
+                            pass
                         if getattr(self, "_pending_restart", False):
                             self._pending_restart = False
                             try:
@@ -1201,9 +1414,17 @@ class App(tk.Tk):
             elif hasattr(self, "timer_lbl"):
                 self.timer_lbl.configure(text="")
             if self.loop_obj is not None:
-                self._update_meter(getattr(self.loop_obj, "last_level", 0.0))
+                try:
+                    self._update_meter(getattr(self.loop_obj, "last_level", 0.0) or 0.0)
+                except Exception:
+                    pass
             elif not (self.worker is not None and self.worker.is_alive()):
-                self._update_meter(0.0)
+                # Oturum kapalıyken VU, seçili girişin bağımsız önizlemesidir.
+                try:
+                    preview = getattr(self, "_preview", None)
+                    self._update_meter(preview.get_level() if preview is not None else 0.0)
+                except Exception:
+                    pass
             try:
                 self._pump_after_id = self.after(120, self._pump_log)
             except tk.TclError:
@@ -1357,6 +1578,12 @@ class App(tk.Tk):
         else:
             if getattr(self, "_timeline_start_time", None) is None:
                 self._timeline_start_time = time.time()
+        # Önizleme aygıtı bırakır; asıl yakalama tek sahip olarak açılır.
+        try:
+            if getattr(self, "_preview", None) is not None:
+                self._preview.set_device(None)
+        except Exception:
+            pass
         self._stopping.clear()
         self.session_start_time = time.time()
         current_session_id = self._session_id
@@ -1924,6 +2151,11 @@ class App(tk.Tk):
             except Exception:
                 pass
             self._pump_after_id = None
+        try:
+            if getattr(self, "_preview", None) is not None:
+                self._preview.shutdown()
+        except Exception:
+            pass
         self.stop()
         self._close_about()
         self._close_settings()
