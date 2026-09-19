@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import math
 import queue
+import re
 import threading
 import os
 import sys
 import time
+import warnings
 from types import SimpleNamespace
 
 import numpy as np
@@ -25,6 +27,69 @@ from audio import (
     to_16k_mono,
 )
 DEFAULT_MODEL = "models/gemini-3.5-live-translate-preview"
+
+# Kayıt tamponu: okuma yine 20 ms bloklarla yapılır, ancak WASAPI tarafında
+# ~100 ms'lik tampon tutulur; zamanlama dalgalanmalarında "data
+# discontinuity" kesintileri azalır.
+CAPTURE_BUFFER_BLOCKS = CAPTURE_BLOCK * 5
+
+try:  # yalnızca Windows WASAPI arka ucunda bulunur
+    from soundcard.mediafoundation import SoundcardRuntimeWarning as _SoundcardRuntimeWarning
+except Exception:
+    _SoundcardRuntimeWarning = None
+
+
+_DISC_RE = re.compile(r"data discontinuity", re.IGNORECASE)
+
+
+def _is_discontinuity_warning(message, category=None) -> bool:
+    """WASAPI 'data discontinuity' uyarısı mı? (mesaj esastır, kategori değil).
+
+    Eskiden `or` ile kategori tek başına yeterli sayılıyordu; bu, kesintiyle
+    ilgisiz tüm SoundcardRuntimeWarning'leri de yutuyordu. Artık mesaj şart:
+    kategori ne olursa olsun mesaj eşleşmeli.
+    """
+    try:
+        text = str(message)
+    except Exception:
+        return False
+    return bool(_DISC_RE.search(text))
+
+
+def ensure_discontinuity_suppressed() -> None:
+    """Konsol selini tek seferde keser (soundcard importundan SONRA çağrılmalı).
+
+    soundcard, import sırasında `simplefilter('always',
+    SoundcardRuntimeWarning)` koyar; bu ignore filtresi onun önüne geçip
+    "data discontinuity" uyarılarının stderr'e düşmesini engeller. Blok başına
+    değil, oturum başında bir kez kurulur (thread-safe, ucuz).
+    """
+    try:
+        warnings.filterwarnings("ignore", message=".*data discontinuity.*")
+    except Exception:
+        pass
+
+
+# Modül importunda da dene; asıl garanti __init__'teki çağrıdır (sıralama için).
+try:
+    if _SoundcardRuntimeWarning is not None:
+        ensure_discontinuity_suppressed()
+except Exception:
+    pass
+
+
+def _record_block(mic):
+    """Tek 20 ms kayıt bloğu (uyarı yakalama YOK; sayım dış hook'tadır).
+
+    Uyarı bastırma/sayım `_capture_inner` içindeki oturum-seviyesi
+    `showwarning` hook'unda yapılır. Burada blok başına `catch_warnings`
+    kullanılmaz: o desen global filtre listesini saniyede ~50 kez değiştirir,
+    thread-safe değildir ve diğer thread'lerin uyarılarını yutar/geçirir
+    (sızıntının asıl sebebi buydu). Geriye uyumluluk için (frame, bool)
+    döner; bool her zaman False'tur, gerçek sayım hook'tadır.
+    """
+    frame = mic.record(numframes=CAPTURE_BLOCK)
+    return frame, False
 
 
 def build_config(
@@ -78,6 +143,33 @@ def merge_transcript(prev: str, incoming: str) -> tuple[str, str]:
     if prev and len(incoming) > len(prev) and incoming.startswith(prev):
         return incoming, incoming[len(prev) :]
     return prev + incoming, incoming
+
+
+def describe_audio_error(err: BaseException, dev=None) -> str:
+    """Ses aygıtı hatasını tipi boş olsa bile açıklayıcı Türkçe mesaja çevirir.
+
+    soundcard, bazı fiziksel mikrofonların sürücü mix biçimini
+    (WAVE_FORMAT_EXTENSIBLE değil) `assert` ile reddeder; `str(e)` boş
+    (`AssertionError: `) kalır ve kullanıcı `()` görür. Bu deterministik
+    uyumsuzluk yeniden denemeyle düzelmez; paylaşımlı sürücü biçimini
+    48000 Hz yapmak gerekir.
+    """
+    name = type(err).__name__
+    try:
+        msg = str(err).strip()
+    except Exception:
+        msg = ""
+    base = f"{name}: {msg}" if msg else name
+    if isinstance(err, AssertionError):
+        devname = getattr(dev, "name", "?") if dev is not None else "?"
+        return (
+            f"{base} — '{devname}' aygıtı ses katmanında açılamadı "
+            "(sürücü mix biçimi desteklenmiyor, yeniden denemek işe yaramaz). "
+            "Windows Ses → Kayıt → Mikrofon → Özellikler → Gelişmiş → "
+            "Varsayılan Biçimi '48000 Hz' yapıp yeniden dene; olmazsa çalışan "
+            "bir [Sistem] girişine dön."
+        )
+    return base
 
 def _is_same_endpoint(source, target) -> bool:
     """Giriş (loopback) ile çıkış aygıtının aynı fiziksel ses ucuna ait olup olmadığını doğrular."""
@@ -213,6 +305,15 @@ class SystemAudioLoop:
         self._watch_warned_play: bool = False
         self._play_task = None
         self._tg = None
+        # WASAPI kesinti sayacı: 10 sn pencerede 20'yi bulunca aygıt başına
+        # tek satır uyarı (kilitli; swap'e kadar tekrarlamaz).
+        self._disc_count: int = 0
+        self._disc_window_start: float = time.monotonic()
+        self._disc_notice_given: bool = False
+        self._disc_lock = threading.Lock()
+        # soundcard importundaki 'always' filtresinin önüne geçen global susturma;
+        # blok başına değil, bir kez kurulur.
+        ensure_discontinuity_suppressed()
 
     def pause(self) -> None:
         self._paused.set()
@@ -317,6 +418,24 @@ class SystemAudioLoop:
         except Exception:
             pass
 
+    def _note_discontinuity(self) -> None:
+        """Tek kesinti kaydı: sayaç + 10 sn pencerede 20 olunca tek satır uyarı."""
+        with self._disc_lock:
+            now = time.monotonic()
+            if now - self._disc_window_start > 10.0:
+                self._disc_window_start = now
+                self._disc_count = 0
+            self._disc_count += 1
+            if self._disc_count == 20 and not self._disc_notice_given:
+                self._disc_notice_given = True
+            else:
+                return
+        self._note(
+            "[uyarı] Giriş aygıtında kısa ses kesintileri oluyor "
+            "(kablosuz aygıtlarda sık görülür, akış sürer); "
+            "sürerse aygıt/sürücü gözden geçirilebilir.\n"
+        )
+
     def request_stop(self):
         """GUI'den thread-safe durdurma; worker zaten ölmüşse sessiz geç."""
         if hasattr(self, "_user_stop"):
@@ -405,6 +524,9 @@ class SystemAudioLoop:
                 self.source_mic = pending_dev
                 self._input_generation += 1
                 self._vad_silence_chunks = 0
+                self._disc_count = 0
+                self._disc_window_start = time.monotonic()
+                self._disc_notice_given = False
                 self._watch_warned_capture = False
                 self._note(
                     f"[bilgi] Giriş aygıtı değiştirildi: {old_name} -> "
@@ -415,13 +537,21 @@ class SystemAudioLoop:
             except Exception as e:
                 if self._cap_stop.is_set() or self._user_stop.is_set():
                     break
+                if isinstance(e, AssertionError):
+                    # Deterministik uyumsuzluk (örn. mikrofonun sürücü mix biçimi
+                    # soundcard ile açılamıyor): yeniden denemek hiç işe yaramaz,
+                    # sonsuz "yeniden deneniyor" seline girmeden net bildir.
+                    raise RuntimeError(
+                        describe_audio_error(e, getattr(self, "source_mic", None))
+                    ) from e
                 if not self._capture_opened_once:
                     # İlk açılış hatası: yanlış aygıt hızlı ve net bildirilmeli.
                     raise
                 # Çalışırken kopma: oturumu öldürmeden bekle + yeniden dene.
                 self.last_level = 0.0
                 self._note(
-                    f"[uyarı] Giriş aygıtı sorunu ({e}); yeniden deneniyor...\n"
+                    f"[uyarı] Giriş aygıtı sorunu "
+                    f"({describe_audio_error(e)}); yeniden deneniyor...\n"
                 )
                 if self._cap_stop.wait(min(delay, 5.0)):
                     break
@@ -445,69 +575,97 @@ class SystemAudioLoop:
         conv = AudioConverter(in_rate=CAPTURE_RATE, out_rate=SEND_SAMPLE_RATE)
         ch = 1 if getattr(self.source_mic, "channels", 2) == 1 else 2
         with self.source_mic.recorder(
-            samplerate=CAPTURE_RATE, channels=ch, blocksize=CAPTURE_BLOCK
+            samplerate=CAPTURE_RATE, channels=ch, blocksize=CAPTURE_BUFFER_BLOCKS
         ) as mic:
             self._capture_opened_once = True
             self._capture_heartbeat = time.monotonic()
-            while not self._cap_stop.is_set():
-                if self._peek_pending_input():
-                    # Eski akış `with` çıkışında düzgün kapatılır.
-                    return
-                try:
-                    frame = mic.record(numframes=CAPTURE_BLOCK)
-                except Exception:
-                    # Kayıt hatası: iç bağlamı kapatıp dış döngüde yeniden aç.
-                    raise
-                self._capture_heartbeat = time.monotonic()
-                if frame is None or len(frame) == 0:
-                    self.last_level = 0.0
-                    continue
-                arr = np.asarray(frame, dtype=np.float32)
-                mono = arr.mean(axis=1) if arr.ndim > 1 else arr
-                rms = (
-                    float(np.sqrt(np.dot(mono, mono) / len(mono)))
-                    if len(mono) > 0
-                    else 0.0
-                )
-                # VU her blokta güncellenir; yankı bastırma yalnızca gönderimi
-                # keser, göstergeyi dondurmaz.
-                self.last_level = self._rms_to_level(rms)
-                if self._paused.is_set():
-                    continue
-                # Çıkış hot-swap olduysa yankı bastırma hedefini tazele.
-                if seen_output_gen != self._output_generation:
-                    seen_output_gen = self._output_generation
-                    same_endpoint = is_loopback and _is_same_endpoint(
-                        self.source_mic, self.output_speaker
-                    )
-                if same_endpoint:
-                    if time.monotonic() < self._playback_until + 0.15:
-                        continue
-                pcm = conv.process(arr)
-                if not pcm:
-                    continue
+            # Oturum-seviyesi uyarı hook'u: recorder ömrü boyunca BİR kez kurulur.
+            # Blok başına catch_warnings global filtreyi saniyede ~50 kez
+            # değiştirip diğer thread'lerin uyarılarını yutuyor/sızdırıyordu.
+            with warnings.catch_warnings():
+                # Yalnızca kesinti mesajı 'always' yapılır; diğer uyarılar dış
+                # filtrelere (örn. testteki 'error') aynen düşer.
+                warnings.filterwarnings("always", message=".*data discontinuity.*")
+                orig_show = warnings.showwarning
 
-                HANGOVER_CHUNKS = 15  # ~300 ms ses kesildikten sonra devam eden sessizlik tamponu (R01)
-                if self.vad_threshold > 0.0 and rms < self.vad_threshold:
-                    self._vad_silence_chunks += 1
-                    if self._vad_silence_chunks > HANGOVER_CHUNKS and self._vad_silence_chunks % 75 != 0:
-                        continue
-                else:
-                    self._vad_silence_chunks = 0
-                    if rms >= max(0.005, self.vad_threshold):
-                        if not self._waiting_response:
-                            self._last_speech_time = time.monotonic()
-                            self._waiting_response = True
+                def _showwarning(message, category, filename, lineno, file=None, line=None):
+                    try:
+                        if _is_discontinuity_warning(message, category):
+                            self._note_discontinuity()
+                            return
+                    except Exception:
+                        pass
+                    try:
+                        orig_show(message, category, filename, lineno, file, line)
+                    except Exception:
+                        pass
 
+                warnings.showwarning = _showwarning
                 try:
-                    if self._loop is not None and not self._loop.is_closed():
-                        self._loop.call_soon_threadsafe(
-                            self._post, {"data": pcm, "mime_type": f"audio/pcm;rate={SEND_SAMPLE_RATE}"}
+                    while not self._cap_stop.is_set():
+                        if self._peek_pending_input():
+                            # Eski akış `with` çıkışında düzgün kapatılır.
+                            return
+                        try:
+                            frame, _discontinued = _record_block(mic)
+                        except Exception:
+                            # Kayıt hatası: iç bağlamı kapatıp dış döngüde yeniden aç.
+                            raise
+                        self._capture_heartbeat = time.monotonic()
+                        if frame is None or len(frame) == 0:
+                            self.last_level = 0.0
+                            continue
+                        arr = np.asarray(frame, dtype=np.float32)
+                        mono = arr.mean(axis=1) if arr.ndim > 1 else arr
+                        rms = (
+                            float(np.sqrt(np.dot(mono, mono) / len(mono)))
+                            if len(mono) > 0
+                            else 0.0
                         )
-                    else:
-                        self._post({"data": pcm, "mime_type": f"audio/pcm;rate={SEND_SAMPLE_RATE}"})
-                except RuntimeError:
-                    break
+                        # VU her blokta güncellenir; yankı bastırma yalnızca gönderimi
+                        # keser, göstergeyi dondurmaz.
+                        self.last_level = self._rms_to_level(rms)
+                        if self._paused.is_set():
+                            continue
+                        # Çıkış hot-swap olduysa yankı bastırma hedefini tazele.
+                        if seen_output_gen != self._output_generation:
+                            seen_output_gen = self._output_generation
+                            same_endpoint = is_loopback and _is_same_endpoint(
+                                self.source_mic, self.output_speaker
+                            )
+                        if same_endpoint:
+                            if time.monotonic() < self._playback_until + 0.15:
+                                continue
+                        pcm = conv.process(arr)
+                        if not pcm:
+                            continue
+
+                        HANGOVER_CHUNKS = 15  # ~300 ms ses kesildikten sonra devam eden sessizlik tamponu (R01)
+                        if self.vad_threshold > 0.0 and rms < self.vad_threshold:
+                            self._vad_silence_chunks += 1
+                            if self._vad_silence_chunks > HANGOVER_CHUNKS and self._vad_silence_chunks % 75 != 0:
+                                continue
+                        else:
+                            self._vad_silence_chunks = 0
+                            if rms >= max(0.005, self.vad_threshold):
+                                if not self._waiting_response:
+                                    self._last_speech_time = time.monotonic()
+                                    self._waiting_response = True
+
+                        try:
+                            if self._loop is not None and not self._loop.is_closed():
+                                self._loop.call_soon_threadsafe(
+                                    self._post, {"data": pcm, "mime_type": f"audio/pcm;rate={SEND_SAMPLE_RATE}"}
+                                )
+                            else:
+                                self._post({"data": pcm, "mime_type": f"audio/pcm;rate={SEND_SAMPLE_RATE}"})
+                        except RuntimeError:
+                            break
+                finally:
+                    try:
+                        warnings.showwarning = orig_show
+                    except Exception:
+                        pass
 
     async def listen_system(self):
         # to_thread'in executor thread'i non-daemon: bloklanan record()
@@ -649,9 +807,16 @@ class SystemAudioLoop:
             except Exception as e:
                 if self._play_stop.is_set() or self._user_stop.is_set():
                     break
+                if isinstance(e, AssertionError):
+                    raise RuntimeError(
+                        describe_audio_error(e, getattr(self, "output_speaker", None))
+                    ) from e
                 if not self._play_opened_once:
                     raise
-                self._note(f"[uyarı] Çıkış aygıtı sorunu ({e}); yeniden deneniyor...\n")
+                self._note(
+                    f"[uyarı] Çıkış aygıtı sorunu "
+                    f"({describe_audio_error(e)}); yeniden deneniyor...\n"
+                )
                 # Yeniden denemeden önce kısa bekle; beklerken swap/stop gözet.
                 deadline = time.monotonic() + min(delay, 5.0)
                 delay = min(delay * 2.0, 5.0)

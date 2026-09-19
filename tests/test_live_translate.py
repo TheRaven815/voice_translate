@@ -995,6 +995,113 @@ def test_capture_recovers_after_transient_error():
     assert errors == [], f"worker hatası: {errors}"
 
 
+def test_capture_suppresses_discontinuity_warnings():
+    """WASAPI kesinti uyarısı log'a taşmaz, sayaçta izlenir, akış sürer."""
+    import warnings
+
+    class WarnMic:
+        name = "WarnMic"
+        isloopback = False
+        channels = 2
+
+        def __init__(self):
+            self.calls = 0
+
+        def recorder(self, **kwargs):
+            return WarnMic._Rec(self)
+
+        class _Rec:
+            def __init__(self, mic):
+                self._mic = mic
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def record(self, numframes):
+                self._mic.calls += 1
+                warnings.warn("data discontinuity in recording", RuntimeWarning)
+                time.sleep(0.005)
+                t = np.arange(numframes) / 48000
+                tone = 0.3 * np.sin(2 * np.pi * 440 * t)
+                return np.stack([tone, tone], axis=1).astype(np.float32)
+
+    posted: list = []
+    emitted: list = []
+    loop_obj = SystemAudioLoop(
+        "en", "tr", WarnMic(), "dummy-key",
+        output_speaker=FakeSpeaker(), on_text=emitted.append, console_input=False,
+    )
+    loop_obj._post = lambda msg: posted.append(msg)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # sızan uyarı burada patlardı
+        t = threading.Thread(target=loop_obj._capture_thread, daemon=True)
+        t.start()
+        deadline = time.time() + 10
+        while loop_obj._disc_count < 30 and time.time() < deadline:
+            time.sleep(0.05)
+        loop_obj._cap_stop.set()
+        t.join(timeout=2.0)
+    assert not t.is_alive()
+    assert len(posted) > 0, "uyarı bastırma akışı kesmemeli"
+    assert loop_obj._disc_count >= 30, f"kesinti sayılmadı: {loop_obj._disc_count}"
+    notices = [m for m in emitted if "kesinti" in str(m)]
+    assert len(notices) == 1, f"sürekli kesinti tek satırda kısılmalı: {notices}"
+
+
+def test_unsupported_mic_fails_fast_with_guidance():
+    """soundcard'ın açamadığı mikrofon sonsuz 'yeniden deneniyor' seline girmez.
+
+    Gerçek raporda: `[Sistem] 24G4HA` -> `[Mikrofon]` swap'inden sonra
+    `[uyarı] Giriş aygıtı sorunu (); ...` satırları art arda geldi; `str(e)`
+    boş `AssertionError` idi (sürücü mix biçimi WAVE_FORMAT_EXTENSIBLE değil).
+    Deterministik uyumsuzluk hızlı ve yol gösterici hataya dönüşmeli.
+    """
+    from loop import describe_audio_error
+
+    class AssertMic:
+        name = "Mikrofon (High Definition Audio Device)"
+        isloopback = False
+        channels = 2
+
+        def recorder(self, **kwargs):
+            raise AssertionError()
+
+    emitted: list = []
+    loop_obj = SystemAudioLoop(
+        "en", "tr", AssertMic(), "dummy-key",
+        output_speaker=FakeSpeaker(), on_text=emitted.append, console_input=False,
+    )
+    # Önce çalışan bir aygıt varmış gibi yap (hot-swap senaryosu: retry yolu).
+    loop_obj._capture_opened_once = True
+    errors: list = []
+    t = threading.Thread(
+        target=lambda: errors.append(_run_capture_expect_raise(loop_obj)),
+        daemon=True,
+    )
+    t.start()
+    t.join(timeout=5.0)
+    assert not t.is_alive(), "desteklenmeyen aygıt thread'i kilitledi"
+    assert errors and isinstance(errors[0], RuntimeError), f"beklenen RuntimeError: {errors}"
+    text = str(errors[0])
+    assert "48000" in text, f"yol gösterici mesaj yok: {text}"
+    assert "()" not in text, f"boş hata metni sızdı: {text}"
+
+    # Yardımcı da boş AssertionError'i açıklasın.
+    hint = describe_audio_error(AssertionError(), AssertMic())
+    assert "Mikrofon" in hint and "48000" in hint, f"ipucu yetersiz: {hint}"
+
+
+def _run_capture_expect_raise(loop_obj):
+    try:
+        loop_obj._capture_thread()
+    except BaseException as e:  # noqa: BLE001 - test bilerek yakalar
+        return e
+    return None
+
+
 def test_device_label_helpers():
     """devices: görünen ad eşleme ve kimlik karşılaştırma."""
     from types import SimpleNamespace

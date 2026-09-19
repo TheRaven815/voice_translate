@@ -129,7 +129,8 @@ class _InputPreviewMonitor:
             return dev, True
 
     def _run(self) -> None:
-        from audio import CAPTURE_BLOCK, CAPTURE_RATE
+        from audio import CAPTURE_RATE
+        from loop import CAPTURE_BUFFER_BLOCKS
 
         delay = 0.25
         while not self._stop.is_set():
@@ -147,7 +148,7 @@ class _InputPreviewMonitor:
                 delay = 0.25
                 continue
             try:
-                self._inner(dev, CAPTURE_RATE, CAPTURE_BLOCK)
+                self._inner(dev, CAPTURE_RATE, CAPTURE_BUFFER_BLOCKS)
                 delay = 0.25
             except Exception:
                 self._set_level(0.0)
@@ -158,30 +159,46 @@ class _InputPreviewMonitor:
             if self._stop.is_set():
                 break
 
-    def _inner(self, dev, samplerate: int, blocksize: int) -> None:
+    def _inner(self, dev, samplerate: int, buffer_blocks: int) -> None:
+        from audio import CAPTURE_BLOCK
+
+        from loop import ensure_discontinuity_suppressed
+
         ch = 1 if getattr(dev, "channels", 2) == 1 else 2
-        with dev.recorder(samplerate=samplerate, channels=ch, blocksize=blocksize) as mic:
-            while not self._stop.is_set():
-                with self._lock:
-                    if self._has_pending:
-                        return
-                try:
-                    frame = mic.record(numframes=blocksize)
-                except Exception:
-                    raise
-                if frame is None or len(frame) == 0:
-                    self._set_level(0.0)
-                    continue
-                try:
-                    arr = np.asarray(frame, dtype=np.float32)
-                    mono = arr.mean(axis=1) if arr.ndim > 1 else arr
-                    if len(mono) == 0:
+        # Tek seferlik global susturma (soundcard 'always' filtresinin önüne geçer).
+        try:
+            ensure_discontinuity_suppressed()
+        except Exception:
+            pass
+        with dev.recorder(samplerate=samplerate, channels=ch, blocksize=buffer_blocks) as mic:
+            # Oturum-seviyesi susturma: recorder ömrü boyunca BİR kez kurulur.
+            # Blok başına catch_warnings global filtreyi saniyede ~50 kez
+            # değiştirip yakalama thread'iyle yarışıyordu (sızıntının sebebi).
+            import warnings
+
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message=".*data discontinuity.*")
+                while not self._stop.is_set():
+                    with self._lock:
+                        if self._has_pending:
+                            return
+                    try:
+                        frame = mic.record(numframes=CAPTURE_BLOCK)
+                    except Exception:
+                        raise
+                    if frame is None or len(frame) == 0:
                         self._set_level(0.0)
                         continue
-                    rms = float(np.sqrt(np.dot(mono, mono) / len(mono)))
-                    self._set_level(SystemAudioLoop._rms_to_level(rms))
-                except Exception:
-                    self._set_level(0.0)
+                    try:
+                        arr = np.asarray(frame, dtype=np.float32)
+                        mono = arr.mean(axis=1) if arr.ndim > 1 else arr
+                        if len(mono) == 0:
+                            self._set_level(0.0)
+                            continue
+                        rms = float(np.sqrt(np.dot(mono, mono) / len(mono)))
+                        self._set_level(SystemAudioLoop._rms_to_level(rms))
+                    except Exception:
+                        self._set_level(0.0)
 
 
 def format_user_error(err: BaseException) -> str:
@@ -189,6 +206,17 @@ def format_user_error(err: BaseException) -> str:
     msg = str(err)
     err_type = type(err).__name__
     msg_lower = msg.lower()
+    if isinstance(err, AssertionError) or (not msg.strip() and err_type == "AssertionError"):
+        return (
+            "Ses aygıtı açılamadı (soundcard WASAPI uyumsuzluğu — bazı mikrofonların "
+            "sürücü mix biçimi desteklenmiyor). Windows Ses → Kayıt → Mikrofon → "
+            "Özellikler → Gelişmiş → Varsayılan Biçimi '48000 Hz' yapıp yeniden dene; "
+            "olmazsa çalışan bir [Sistem] girişine dön."
+        )
+    if not msg.strip():
+        return f"{err_type} (ayrıntı yok; dosya günlüğüne bakın)."
+    if "mix bi" in msg_lower and "48000" in msg:
+        return f"Ses aygıtı hatası: {msg}"
     if "denied access" in msg_lower or "policy violation" in msg_lower or "1008" in msg:
         return "Google projesinin Gemini Live erişimi reddedildi (1008). Google AI Studio'da başka bir proje/anahtar oluşturun veya proje erişimi için Google desteğe başvurun."
 
