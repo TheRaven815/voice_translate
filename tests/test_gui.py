@@ -741,6 +741,34 @@ def test_gui_key_mask_toggle():
         app.destroy()
 
 
+def test_icon_tooltips_eye_glyph_and_mask_tooltip():
+    """IconButton baloncukları + göz ikonu + maske tooltip geçişi."""
+    from i18n import t
+
+    app = App()
+    try:
+        assert app.pin_btn.tooltip == t("pin")
+        assert app.overlay_btn.tooltip == t("subtitle")
+        assert app.info_btn.tooltip == t("about")
+        assert app.settings_btn.tooltip == t("settings")
+        assert app.swap_btn.tooltip == t("swap")
+        app._open_settings()
+        # Göz ikonu canvas'a çiziliyor (badem + iris).
+        assert len(app.mask_btn.find_all()) >= 2
+        assert app.mask_btn.tooltip == t("show_key")
+        app.mask_btn._schedule_tip()
+        app.mask_btn._hide_tip()
+        assert app.mask_btn._tip_win is None
+        app._toggle_key_mask()
+        assert app.mask_btn.kind == "eye_off"
+        assert app.mask_btn.tooltip == t("hide_key")
+        app._toggle_key_mask()
+        assert app.mask_btn.kind == "eye"
+        assert app.mask_btn.tooltip == t("show_key")
+    finally:
+        app.destroy()
+
+
 def test_settings_dialog_open_and_close():
     app = App()
     try:

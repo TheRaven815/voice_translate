@@ -443,7 +443,9 @@ class App(tk.Tk):
         )
         self.src_box.grid(row=0, column=0, sticky="ew")
 
-        self.swap_btn = IconButton(self._langs_frame, "swap", self._swap_langs, bg=C.rail)
+        self.swap_btn = IconButton(
+            self._langs_frame, "swap", self._swap_langs, bg=C.rail, tooltip=t("swap")
+        )
         self.swap_btn.grid(row=0, column=1, padx=2)
 
         self.dst_var = tk.StringVar(value=dst_val)
@@ -995,11 +997,13 @@ class App(tk.Tk):
             if self.mask_btn is not None and self.mask_btn.winfo_exists():
                 self.mask_btn.kind = "eye_off"
                 self.mask_btn.redraw()
+                self.mask_btn.set_tooltip(t("hide_key", "Gizle"))
         else:
             self.key_entry.configure(show="•")
             if self.mask_btn is not None and self.mask_btn.winfo_exists():
                 self.mask_btn.kind = "eye"
                 self.mask_btn.redraw()
+                self.mask_btn.set_tooltip(t("show_key", "Göster"))
 
     def _test_api_key(self) -> None:
         key = self.key_var.get().strip()
@@ -1283,6 +1287,26 @@ class App(tk.Tk):
                 self.mask_btn.configure(bg=C.panel)
             for child in self._settings.winfo_children():
                 self._retint_frame(child, bg=C.panel)
+            # Ayarlar diyalog butonlarının (özellikle birincil Kaydet) stilini koru.
+            for attr in ("test_key_btn", "save_key_btn", "_settings_close_btn"):
+                btn = getattr(self, attr, None)
+                try:
+                    if btn is not None and btn.winfo_exists():
+                        primary = bool(getattr(btn, "_primary", False))
+                        btn._rest_bg = C.fill if primary else C.panel
+                        btn._hover_bg = C.fill_hover if primary else C.hover
+                        btn.configure(
+                            bg=btn._rest_bg,
+                            fg=C.fill_fg if primary else C.text,
+                            activebackground=btn._hover_bg,
+                            activeforeground=C.fill_fg if primary else C.text,
+                        )
+                        try:
+                            btn.master.configure(bg=C.fill if primary else C.line)
+                        except tk.TclError:
+                            pass
+                except tk.TclError:
+                    pass
         self.log.tag_configure("err", foreground=C.err)
         dark_titlebar(self, dark=(C.current != "light"))
         if self._overlay is not None and self._overlay.winfo_exists():
@@ -1849,7 +1873,7 @@ class App(tk.Tk):
             return
         pop = tk.Toplevel(self)
         self._settings = pop
-        pop.title("Ayarlar")
+        pop.title(t("settings", "Ayarlar"))
         pop.configure(bg=C.panel)
         pop.resizable(False, False)
         pop.transient(self)
@@ -1858,19 +1882,11 @@ class App(tk.Tk):
         pop.protocol("WM_DELETE_WINDOW", self._close_settings)
         pop.bind("<Escape>", lambda _e: self._close_settings())
 
-        main = tk.Frame(pop, bg=C.panel, padx=20, pady=16)
+        main = tk.Frame(pop, bg=C.panel, padx=22, pady=16)
         main.pack(fill=tk.BOTH, expand=True)
 
-        title_lbl = tk.Label(
-            main, text="Ayarlar", font=(self.font_brand[0], 12, "bold"), fg=C.text, bg=C.panel
-        )
-        title_lbl.pack(anchor="w")
-
-        sep = tk.Frame(main, bg=C.line, height=1)
-        sep.pack(fill=tk.X, pady=(8, 14))
-
         sec_h = tk.Frame(main, bg=C.panel)
-        sec_h.pack(fill=tk.X)
+        sec_h.pack(fill=tk.X, pady=(2, 0))
         tk.Label(
             sec_h,
             text="Gemini API Anahtarı",
@@ -1895,8 +1911,9 @@ class App(tk.Tk):
             bg=C.panel,
             anchor="w",
             justify="left",
+            wraplength=440,
         )
-        desc_lbl.pack(anchor="w", pady=(4, 8))
+        desc_lbl.pack(anchor="w", fill=tk.X, pady=(4, 10))
 
         self.key_edge = tk.Frame(main, bg=C.line, bd=0, highlightthickness=0)
         self.key_edge.pack(fill=tk.X)
@@ -1918,7 +1935,10 @@ class App(tk.Tk):
         self.key_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(1, 0), pady=1, ipady=4)
         self.key_entry.bind("<Return>", lambda _e: self.save_key())
 
-        self.mask_btn = IconButton(self.key_edge, "eye", self._toggle_key_mask, bg=C.panel)
+        self.mask_btn = IconButton(
+            self.key_edge, "eye", self._toggle_key_mask, bg=C.panel,
+            tooltip=t("show_key", "Göster"),
+        )
         self.mask_btn.pack(side=tk.RIGHT, fill=tk.Y, pady=1, padx=(0, 1))
 
         running = self.worker is not None and self.worker.is_alive()
@@ -1928,79 +1948,49 @@ class App(tk.Tk):
         self._settings_status = tk.Label(
             main, text="", font=self.font_ui, fg=C.dim, bg=C.panel, anchor="w"
         )
-        self._settings_status.pack(anchor="w", pady=(6, 0))
+        self._settings_status.pack(anchor="w", fill=tk.X, pady=(8, 0))
 
         btn_row = tk.Frame(main, bg=C.panel)
-        btn_row.pack(fill=tk.X, pady=(14, 0))
+        btn_row.pack(fill=tk.X, pady=(16, 0))
 
-        test_wrap = tk.Frame(btn_row, bg=C.line, bd=0, highlightthickness=0)
-        test_wrap.pack(side=tk.LEFT)
-        self.test_key_btn = tk.Button(
-            test_wrap,
-            text="Test Et",
-            font=self.font_ui,
-            bg=C.panel,
-            fg=C.text,
-            activebackground=C.hover,
-            activeforeground=C.text,
-            relief="flat",
-            bd=0,
-            highlightthickness=0,
-            padx=12,
-            pady=3,
-            cursor="hand2",
-            command=self._test_api_key,
-        )
-        self.test_key_btn.pack(padx=1, pady=1)
-        self.test_key_btn.bind("<Enter>", lambda _e: self.test_key_btn.configure(bg=C.hover))
-        self.test_key_btn.bind("<Leave>", lambda _e: self.test_key_btn.configure(bg=C.panel))
+        def _dialog_btn(parent, label: str, command, *, primary: bool = False,
+                          side: str = tk.LEFT, padx: tuple = (0, 0)) -> tk.Button:
+            wrap = tk.Frame(parent, bg=C.fill if primary else C.line, bd=0, highlightthickness=0)
+            wrap.pack(side=side, padx=padx)
+            btn = tk.Button(
+                wrap,
+                text=label,
+                font=self.font_ui,
+                bg=C.fill if primary else C.panel,
+                fg=C.fill_fg if primary else C.text,
+                activebackground=C.fill_hover if primary else C.hover,
+                activeforeground=C.fill_fg if primary else C.text,
+                relief="flat",
+                bd=0,
+                highlightthickness=0,
+                padx=14,
+                pady=4,
+                cursor="hand2",
+                command=command,
+            )
+            btn.pack(padx=1, pady=1)
+            btn._rest_bg = C.fill if primary else C.panel
+            btn._hover_bg = C.fill_hover if primary else C.hover
+            btn._primary = primary
+            btn.bind("<Enter>", lambda _e, b=btn: b.configure(bg=b._hover_bg))
+            btn.bind("<Leave>", lambda _e, b=btn: b.configure(bg=b._rest_bg))
+            return btn
 
-        save_wrap = tk.Frame(btn_row, bg=C.line, bd=0, highlightthickness=0)
-        save_wrap.pack(side=tk.LEFT, padx=(8, 0))
-        self.save_key_btn = tk.Button(
-            save_wrap,
-            text="Kaydet",
-            font=self.font_ui,
-            bg=C.panel,
-            fg=C.text,
-            activebackground=C.hover,
-            activeforeground=C.text,
-            relief="flat",
-            bd=0,
-            highlightthickness=0,
-            padx=12,
-            pady=3,
-            cursor="hand2",
-            command=self.save_key,
+        self.test_key_btn = _dialog_btn(btn_row, "Test Et", self._test_api_key)
+        self.save_key_btn = _dialog_btn(
+            btn_row, "Kaydet", self.save_key, primary=True, padx=(8, 0)
         )
-        self.save_key_btn.pack(padx=1, pady=1)
-        self.save_key_btn.bind("<Enter>", lambda _e: self.save_key_btn.configure(bg=C.hover))
-        self.save_key_btn.bind("<Leave>", lambda _e: self.save_key_btn.configure(bg=C.panel))
-
-        close_wrap = tk.Frame(btn_row, bg=C.line, bd=0, highlightthickness=0)
-        close_wrap.pack(side=tk.RIGHT)
-        self._settings_close_btn = tk.Button(
-            close_wrap,
-            text="Kapat",
-            font=self.font_ui,
-            bg=C.panel,
-            fg=C.text,
-            activebackground=C.hover,
-            activeforeground=C.text,
-            relief="flat",
-            bd=0,
-            highlightthickness=0,
-            padx=14,
-            pady=3,
-            cursor="hand2",
-            command=self._close_settings,
+        self._settings_close_btn = _dialog_btn(
+            btn_row, "Kapat", self._close_settings, side=tk.RIGHT
         )
-        self._settings_close_btn.pack(padx=1, pady=1)
-        self._settings_close_btn.bind("<Enter>", lambda _e: self._settings_close_btn.configure(bg=C.hover))
-        self._settings_close_btn.bind("<Leave>", lambda _e: self._settings_close_btn.configure(bg=C.panel))
 
         pop.update_idletasks()
-        w = max(420, pop.winfo_reqwidth())
+        w = max(480, pop.winfo_reqwidth())
         h = pop.winfo_reqheight()
         x = self.winfo_rootx() + (self.winfo_width() - w) // 2
         y = self.winfo_rooty() + (self.winfo_height() - h) // 2

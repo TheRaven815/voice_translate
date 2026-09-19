@@ -68,6 +68,8 @@ class IconButton(tk.Canvas):
         self._hover = False
         self._accent = False
         self.tooltip = tooltip
+        self._tip_after: str | None = None
+        self._tip_win: tk.Toplevel | None = None
         self.bind("<Button-1>", self._on_click)
         self.bind("<Enter>", self._on_enter)
         self.bind("<Leave>", self._on_leave)
@@ -102,16 +104,95 @@ class IconButton(tk.Canvas):
         self.redraw()
 
     def _on_click(self, _e):
+        self._hide_tip()
         if self._enabled:
             self._command()
 
     def _on_enter(self, _e):
         self._hover = True
         self.redraw()
+        self._schedule_tip()
 
     def _on_leave(self, _e):
         self._hover = False
         self.redraw()
+        self._hide_tip()
+
+    def set_tooltip(self, text: str) -> None:
+        """Baloncuk metnini günceller (boşsa baloncuk gösterilmez)."""
+        self.tooltip = text or ""
+        if not self.tooltip:
+            self._hide_tip()
+
+    # -- Hover baloncuğu (tooltip) -------------------------------------
+    _TIP_DELAY_MS = 450
+
+    def _schedule_tip(self) -> None:
+        self._hide_tip()
+        if not (self.tooltip or "").strip():
+            return
+        try:
+            self._tip_after = self.after(self._TIP_DELAY_MS, self._show_tip)
+        except (tk.TclError, RuntimeError):
+            self._tip_after = None
+
+    def _show_tip(self) -> None:
+        self._tip_after = None
+        text = (self.tooltip or "").strip()
+        if not text:
+            return
+        try:
+            if not self.winfo_exists():
+                return
+            # Fare hızlıca geçip gittiyse baloncuğu gösterme.
+            x0, y0 = self.winfo_rootx(), self.winfo_rooty()
+            px, py = self.winfo_pointerx(), self.winfo_pointery()
+            if not (x0 <= px <= x0 + self.winfo_width() and y0 <= py <= y0 + self.winfo_height()):
+                return
+        except tk.TclError:
+            return
+        try:
+            win = tk.Toplevel(self)
+            win.wm_overrideredirect(True)
+            try:
+                win.attributes("-topmost", True)
+            except tk.TclError:
+                pass
+            win.configure(bg=C.line)
+            lbl = tk.Label(
+                win, text=text, bg=C.panel, fg=C.text,
+                font=("Segoe UI", 8), padx=8, pady=3, justify="left",
+            )
+            lbl.pack(padx=1, pady=1)
+            self._tip_win = win
+            tx, ty = px + 12, py + 16
+            win.update_idletasks()
+            tw, th = win.winfo_reqwidth(), win.winfo_reqheight()
+            try:
+                sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+                if tx + tw > sw:
+                    tx = max(0, sw - tw - 4)
+                if ty + th > sh:
+                    ty = max(0, py - th - 12)
+            except tk.TclError:
+                pass
+            win.geometry(f"+{tx}+{ty}")
+        except (tk.TclError, RuntimeError):
+            self._tip_win = None
+
+    def _hide_tip(self) -> None:
+        if self._tip_after is not None:
+            try:
+                self.after_cancel(self._tip_after)
+            except (tk.TclError, RuntimeError):
+                pass
+            self._tip_after = None
+        win, self._tip_win = self._tip_win, None
+        if win is not None:
+            try:
+                win.destroy()
+            except tk.TclError:
+                pass
 
     def redraw(self) -> None:
         self.delete("all")
@@ -149,10 +230,14 @@ class IconButton(tk.Canvas):
         self.create_line(16.5, 7.5, 7.5, 16.5, fill=fg, width=1.7, capstyle=tk.ROUND)
 
     def _glyph_eye(self, fg: str) -> None:
-        # Goz: iki yaydan lens + iris
-        self.create_arc(4.5, 5.5, 19.5, 18.5, start=25, extent=130, style=tk.ARC, outline=fg, width=1.5)
-        self.create_arc(4.5, 5.5, 19.5, 18.5, start=205, extent=130, style=tk.ARC, outline=fg, width=1.5)
-        self.create_oval(10.3, 10.3, 13.7, 13.7, fill=fg, outline="")
+        # Badem formu: kapalı eğri + iris. (İki ayrı yay köşelerde açık
+        # kalıp bozuk görünüyordu.)
+        self.create_polygon(
+            4.5, 12.0, 7.5, 8.4, 12.0, 7.2, 16.5, 8.4, 19.5, 12.0,
+            16.5, 15.6, 12.0, 16.8, 7.5, 15.6,
+            fill="", outline=fg, width=1.6, smooth=True,
+        )
+        self.create_oval(10.1, 10.1, 13.9, 13.9, fill=fg, outline="")
 
     def _glyph_eye_off(self, fg: str) -> None:
         self._glyph_eye(fg)
