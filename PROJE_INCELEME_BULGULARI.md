@@ -99,7 +99,8 @@ Dosya ve satır referansları inceleme anındaki kaynaklara aittir; sonraki değ
 
 - **Durum:** Düzeltildi — 18 Eylül 2026. Aşağıdaki sorun ve kanıt özgün inceleme durumunu anlatır.
 - **Uygulanan değişiklik:** `_is_same_endpoint()` fonksiyonu eklendi; giriş (loopback) ile çıkış aygıtının aygıt kimliği (`id`) veya adı (`name`) üzerinden aynı fiziksel uca ait olup olmadığı denetleniyor. Yalnızca giriş loopback VE çıkış aynı uç ise oynatma sırasında yakalanan blok bastırılıyor; çıkış farklı bir aygıtsa (ör. kulaklık) kaynak ses kesintisiz yakalanıyor.
-- **Regresyon kapsamı:** `tests/test_live_translate.py::test_capture_does_not_drop_when_output_speaker_is_different_device`.
+- **Regresyon kapsamı:** `tests/test_live_translate.py::test_capture_routes_echo_to_silence_without_stopping_stream`.
+- **19 Eylül 2026 ek düzeltmesi:** Sessiz çıkış paketleri yankı korumasını sürekli uzatıyordu; aynı aygıtta giriş bloklarının tamamen atılması canlı çeviri akışını kesiyordu. Koruma artık yalnız duyulabilir oynatmayla uzatılıyor; bastırılan giriş aynı süreli sessizlik olarak gönderiliyor. WASAPI'nin tamponlu oynatma süresi hesaba katılıyor; çıkış değişiminde/hatasında eski koruma süresi temizleniyor. `test_silent_playback_keeps_capture_flowing_after_speech` eski kodda başarısız, düzeltmeyle başarılı. Sentetik konuşmayla gerçek Gemini ve fiziksel hoparlörde 56 saniyelik kontrol: aynı çıkışta iki ardışık konuşma, Hiçbiri, yeniden hoparlör; dört aşamada da metin geldi ve giriş paketleri kesilmedi. Bu kontrol kişisel mikrofon sesi kullanmadı ve gerçek loopback karışımındaki yankı kalitesini ölçmedi.
 
 - **Konum:** `loop.py:240-255`.
 - **Sorun:** Yankı önleme yalnız loopback giriş ve herhangi bir çıkış olup olmadığını kontrol ediyor. Giriş ve çıkışın aynı fiziksel uç olması aranmıyor.
@@ -197,7 +198,7 @@ Aşağıdaki maddeler kesin üretim arızası olarak değerlendirilmemeli.
 
 - **Durum:** Düzeltildi — 18 Eylül 2026.
 - **Konum:** `loop.py:323-328`.
-- **Uygulanan değişiklik:** Konuşma kesildiğinde ilk 15 parça (~300 ms hangover) atlanmadan Gemini VAD'e gönderiliyor; böylece cümlenin bittiği sunucu tarafında gecikmeksizin algılanıyor ve ardından paket tasarrufuna geçiliyor. Regresyon testi: `tests/test_live_translate.py::test_r01_vad_hangover_silence_chunks_sent_before_dropping`.
+- **Uygulanan değişiklik (19 Eylül 2026 güncellemesi):** İlk 15 sessizlik bloğundan sonra paket atma kaldırıldı. Live Translate sürekli ses işlediği için VAD eşik altındaki giriş aynı süreli sessiz PCM olarak gönderiliyor; uzun sessizlik de akışı kesmiyor. `tests/test_live_translate.py::test_vad_preserves_audio_timing_and_resumes_speech`, gerçek yakalama yolunda konuşma–uzun sessizlik–konuşma geçişini doğruluyor. Kullanıcının açıkça duraklatması bu değişikliğin dışında.
 ### R02 (Düzeltildi) — Tekrarlı transkript parçaları kaybolabilir
 
 - **Durum:** Düzeltildi — 18 Eylül 2026.

@@ -86,6 +86,7 @@ def test_save_preferences(tmp_path, monkeypatch):
     _isolate(tmp_path, monkeypatch)
     config.save_preferences(
         input_device="Mic 1",
+        input_application=r"C:\Program Files\Browser\browser.exe",
         output_device="Speaker 1",
         src_lang="en",
         dst_lang="tr",
@@ -94,6 +95,7 @@ def test_save_preferences(tmp_path, monkeypatch):
     )
     loaded = config.load()
     assert loaded.input_device == "Mic 1"
+    assert loaded.input_application == r"C:\Program Files\Browser\browser.exe"
     assert loaded.output_device == "Speaker 1"
     assert loaded.src_lang == "en"
     assert loaded.dst_lang == "tr"

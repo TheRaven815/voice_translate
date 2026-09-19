@@ -53,7 +53,9 @@ def device_key(dev) -> tuple:
 
 
 def display_input_label(dev) -> str:
-    """GUI listesindeki görünen ad: '[Sistem] X' ya da '[Mikrofon] X'."""
+    """GUI giriş etiketi; uygulamalar sistem sesinden ayrı gösterilir."""
+    if getattr(dev, "is_application", False):
+        return "[Uygulama] " + str(dev.name)
     prefix = "[Sistem] " if getattr(dev, "isloopback", False) else "[Mikrofon] "
     return prefix + str(getattr(dev, "name", "?"))
 
@@ -63,6 +65,9 @@ def find_input_by_label(devices, label: str | None):
     if not label or not devices:
         return None
     text = str(label).strip()
+    if text.startswith("[Uygulama] "):
+        return next((dev for dev in devices if getattr(dev, "is_application", False)
+                     and text == display_input_label(dev)), None)
     for dev in devices:
         if text == display_input_label(dev) or text == str(getattr(dev, "name", "")):
             return dev

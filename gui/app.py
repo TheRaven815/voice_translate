@@ -16,6 +16,8 @@ import webbrowser
 
 import numpy as np
 
+from applications import application_inputs
+from process_audio import process_audio_supported
 from config import load as load_config, resolve_api_key, save_api_key, save_preferences
 from devices import (
     NONE_OUTPUT,
@@ -23,6 +25,7 @@ from devices import (
     all_outputs,
     default_speaker,
     device_key,
+    display_input_label,
     find_input_by_label,
     find_output_by_label,
     pick_loopback,
@@ -215,6 +218,8 @@ def format_user_error(err: BaseException) -> str:
         )
     if not msg.strip():
         return f"{err_type} (ayrıntı yok; dosya günlüğüne bakın)."
+    if isinstance(err, ProcessLookupError) or "application process" in msg_lower:
+        return "Seçili uygulama kapandı veya yeniden başladı. Uygulamayı açın, Yenile'ye basıp yeniden seçin."
     if "mix bi" in msg_lower and "48000" in msg:
         return f"Ses aygıtı hatası: {msg}"
     if "denied access" in msg_lower or "policy violation" in msg_lower or "1008" in msg:
@@ -240,6 +245,7 @@ class App(tk.Tk):
         prepare_app_id()
         cfg = load_config()
         self._cfg = cfg
+        self._input_application_path = getattr(cfg, "input_application", "")
         self._theme = getattr(cfg, "theme", "dark") or "dark"
         C.apply_theme(self._theme)
         set_ui_lang(getattr(cfg, "ui_lang", "tr"))
@@ -265,6 +271,13 @@ class App(tk.Tk):
         self.outputs: list = []
         self._about: tk.Toplevel | None = None
         self._settings: tk.Toplevel | None = None
+        self._application_picker: tk.Toplevel | None = None
+        self._application_picker_sources: list = []
+        self._application_list: tk.Listbox | None = None
+        self._application_select_btn: tk.Button | None = None
+        self._applications: list = []
+        self._last_input_label = ""
+        self._handling_input_selection = False
         self.key_var: tk.StringVar = tk.StringVar(value=resolve_api_key())
         self.key_entry: tk.Entry | None = None
         self.mask_btn: tk.Label | None = None
@@ -414,14 +427,23 @@ class App(tk.Tk):
         )
         self.in_var = tk.StringVar()
         self.in_box = Select(self._fields_frame, textvariable=self.in_var, values=["[Sistem]"], font=self.font_ui)
-        self.in_box.grid(row=1, column=0, sticky="ew", pady=(3, 10))
+        self.in_box.grid(row=1, column=0, sticky="ew", pady=(3, 4))
+        self.input_hint = tk.Label(
+            self._fields_frame, text="", font=self.font_ui, fg=C.muted,
+            bg=C.rail, anchor="w", justify=tk.LEFT, wraplength=250,
+        )
+        self.input_hint.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        self._fields_frame.bind(
+            "<Configure>", lambda event: self.input_hint.configure(wraplength=max(100, event.width))
+        )
+        self._update_input_hint()
 
         tk.Label(self._fields_frame, text=t("output"), font=self.font_ui, fg=C.muted, bg=C.rail).grid(
-            row=2, column=0, sticky="w"
+            row=3, column=0, sticky="w"
         )
         self.out_var = tk.StringVar()
         self.out_box = Select(self._fields_frame, textvariable=self.out_var, values=[NONE_OUTPUT], font=self.font_ui)
-        self.out_box.grid(row=3, column=0, sticky="ew", pady=(3, 0))
+        self.out_box.grid(row=4, column=0, sticky="ew", pady=(3, 0))
 
         self._rail_sep(rail, 4)
 
@@ -487,6 +509,20 @@ class App(tk.Tk):
         except Exception:
             return None
 
+    def _visible_input_values(self, selected=None) -> list[str]:
+        values = [
+            display_input_label(source)
+            for source in getattr(self, "inputs", [])
+            if not getattr(source, "is_application", False)
+        ]
+        if selected is not None:
+            values.append(display_input_label(selected))
+        elif self.in_var.get().startswith("[Uygulama] "):
+            values.append(self.in_var.get())
+        if process_audio_supported():
+            values.append(t("application_picker"))
+        return values
+
     def _resolve_output_device(self):
         try:
             return find_output_by_label(getattr(self, "outputs", []), self.out_var.get())
@@ -506,30 +542,210 @@ class App(tk.Tk):
         except Exception:
             pass
 
+    def _update_input_hint(self) -> None:
+        if not process_audio_supported():
+            key = "application_unsupported"
+        elif self.in_var.get().startswith("[Uygulama] "):
+            key = "application_input_hint" if self._resolve_input_device() else "application_unavailable"
+        else:
+            key = "application_picker_hint"
+        self.input_hint.configure(text=t(key))
+
     def _on_input_selected(self) -> None:
+        if self._handling_input_selection:
+            return
+        if self.in_var.get() == t("application_picker"):
+            self._handling_input_selection = True
+            self.in_var.set(self._last_input_label)
+            self._handling_input_selection = False
+            self.after_idle(self._open_application_picker)
+            return
+        dev = self._resolve_input_device()
+        if dev is not None:
+            self._last_input_label = self.in_var.get()
+            if getattr(dev, "is_application", False):
+                self._input_application_path = getattr(dev, "executable", "")
+                self.in_box["values"] = self._visible_input_values(dev)
+            else:
+                self._input_application_path = ""
+                self.in_box["values"] = self._visible_input_values()
+        elif self.in_var.get().startswith("[Uygulama] "):
+            self._last_input_label = self.in_var.get()
+        else:
+            self._last_input_label = self.in_var.get()
+            self._input_application_path = ""
+        self._update_input_hint()
+        self._save_user_prefs()
+        if dev is None:
+            self._sync_preview_device()
+            return
+        loop_obj = getattr(self, "loop_obj", None)
+        if self._worker_alive() and loop_obj is not None:
+            loop_obj.swap_input(dev)
+            if hasattr(self, "_loop_kwargs"):
+                self._loop_kwargs["source_mic"] = dev
+        elif getattr(self, "_preview", None) is not None:
+            self._preview.set_device(dev)
+
+    def _open_application_picker(self) -> None:
+        if self._application_picker is not None and self._application_picker.winfo_exists():
+            self._application_picker.deiconify()
+            self._application_picker.lift()
+            self._application_picker.focus_set()
+            return
+        pop = tk.Toplevel(self)
+        self._application_picker = pop
+        pop.title(t("application_picker_title"))
+        pop.configure(bg=C.panel)
+        pop.resizable(False, False)
+        pop.transient(self)
+        apply_icon(pop)
+        dark_titlebar(pop, dark=(self._theme != "light"))
+        pop.protocol("WM_DELETE_WINDOW", self._close_application_picker)
+        pop.bind("<Escape>", lambda _e: self._close_application_picker())
+
+        main = tk.Frame(pop, bg=C.panel, padx=18, pady=16)
+        main.pack(fill=tk.BOTH, expand=True)
+        tk.Label(
+            main, text=t("application_picker_title"),
+            font=(self.font_ui[0], self.font_ui[1] + 1, "bold"),
+            fg=C.text, bg=C.panel, anchor="w",
+        ).pack(fill=tk.X)
+        tk.Label(
+            main, text=t("application_picker_description"), font=self.font_ui,
+            fg=C.dim, bg=C.panel, anchor="w", justify=tk.LEFT,
+        ).pack(fill=tk.X, pady=(4, 10))
+
+        list_edge = tk.Frame(main, bg=C.line, bd=0, highlightthickness=0)
+        list_edge.pack(fill=tk.BOTH, expand=True)
+        self._application_list = tk.Listbox(
+            list_edge, height=min(8, max(4, len(self._applications))),
+            font=self.font_ui, bg=C.panel, fg=C.text,
+            selectbackground=C.select, selectforeground=C.text,
+            activestyle="none", relief="flat", bd=0, highlightthickness=0,
+            exportselection=False, cursor="hand2",
+        )
+        self._application_list.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
+        self._application_list.bind("<Double-Button-1>", lambda _e: self._select_application())
+        self._application_list.bind("<Return>", lambda _e: self._select_application())
+        self._application_list.bind("<<ListboxSelect>>", lambda _e: self._update_application_select_state())
+        self._fill_application_picker(self._applications)
+
+        actions = tk.Frame(main, bg=C.panel)
+        actions.pack(fill=tk.X, pady=(12, 0))
+        refresh = tk.Button(
+            actions, text=t("refresh"), command=self._refresh_application_picker,
+            font=self.font_ui, bg=C.panel, fg=C.text,
+            activebackground=C.hover, activeforeground=C.text,
+            relief="flat", bd=0, highlightthickness=0, padx=8, pady=5,
+            cursor="hand2", takefocus=1,
+        )
+        refresh.pack(side=tk.LEFT)
+        cancel = tk.Button(
+            actions, text=t("cancel"), command=self._close_application_picker,
+            font=self.font_ui, bg=C.panel, fg=C.text,
+            activebackground=C.hover, activeforeground=C.text,
+            relief="flat", bd=0, highlightthickness=0, padx=12, pady=5,
+            cursor="hand2", takefocus=1,
+        )
+        cancel.pack(side=tk.RIGHT, padx=(8, 0))
+        self._application_select_btn = tk.Button(
+            actions, text=t("application_picker_select"), command=self._select_application,
+            font=self.font_ui, bg=C.disabled_bg, fg=C.dim,
+            activebackground=C.disabled_bg, activeforeground=C.dim,
+            disabledforeground=C.dim, relief="flat", bd=0, highlightthickness=0,
+            padx=14, pady=5, cursor="arrow", takefocus=1, state=tk.DISABLED,
+        )
+        self._application_select_btn.pack(side=tk.RIGHT)
+
+        pop.update_idletasks()
+        w, h = max(360, pop.winfo_reqwidth()), pop.winfo_reqheight()
+        x = self.winfo_rootx() + (self.winfo_width() - w) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - h) // 2
+        pop.geometry(f"{w}x{h}+{x}+{y}")
         try:
-            self._save_user_prefs()
-        except Exception:
+            pop.grab_set()
+        except tk.TclError:
+            pass
+        if self._application_list.size():
+            current = self._resolve_input_device()
+            index = next(
+                (i for i, source in enumerate(self._application_picker_sources)
+                 if device_key(source) == device_key(current)), 0,
+            )
+            self._application_list.selection_set(index)
+            self._application_list.activate(index)
+            self._application_list.see(index)
+            self._update_application_select_state()
+            self._application_list.focus_set()
+        else:
+            cancel.focus_set()
+
+    def _fill_application_picker(self, sources) -> None:
+        if self._application_list is None:
+            return
+        self._application_picker_sources = list(sources)
+        self._application_list.delete(0, tk.END)
+        if not self._application_picker_sources:
+            self._application_list.insert(tk.END, t("application_picker_empty"))
+            self._application_list.configure(state=tk.DISABLED, fg=C.dim)
+            self._update_application_select_state()
+            return
+        self._application_list.configure(state=tk.NORMAL, fg=C.text)
+        for source in self._application_picker_sources:
+            self._application_list.insert(tk.END, source.name)
+
+    def _refresh_application_picker(self) -> None:
+        try:
+            self._applications = application_inputs()
+            physical = [source for source in self.inputs if not getattr(source, "is_application", False)]
+            self.inputs = physical + self._applications
+            self._fill_application_picker(self._applications)
+            if self._application_list is not None and self._applications:
+                self._application_list.selection_set(0)
+                self._application_list.activate(0)
+        except OSError as err:
+            self._append(f"[hata] {format_user_error(err)}\n")
+        self._update_application_select_state()
+
+    def _update_application_select_state(self) -> None:
+        if self._application_select_btn is None:
+            return
+        selected = bool(self._application_list is not None and self._application_list.curselection() and self._application_picker_sources)
+        self._application_select_btn.configure(
+            state=tk.NORMAL if selected else tk.DISABLED,
+            bg=C.fill if selected else C.disabled_bg,
+            fg=C.fill_fg if selected else C.dim,
+            activebackground=C.fill_hover if selected else C.disabled_bg,
+            activeforeground=C.fill_fg if selected else C.dim,
+            cursor="hand2" if selected else "arrow",
+        )
+
+    def _select_application(self) -> None:
+        if self._application_list is None or not self._application_list.curselection():
+            return
+        index = self._application_list.curselection()[0]
+        if index >= len(self._application_picker_sources):
+            return
+        source = self._application_picker_sources[index]
+        self.in_box["values"] = self._visible_input_values(source)
+        self.in_var.set(display_input_label(source))
+        self._close_application_picker()
+
+    def _close_application_picker(self) -> None:
+        pop, self._application_picker = self._application_picker, None
+        self._application_list = None
+        self._application_select_btn = None
+        self._application_picker_sources = []
+        if pop is None:
+            return
+        try:
+            pop.grab_release()
+        except tk.TclError:
             pass
         try:
-            dev = self._resolve_input_device()
-            if dev is None:
-                return
-            loop_obj = getattr(self, "loop_obj", None)
-            if self._worker_alive() and loop_obj is not None:
-                # Çalışan yakalamayı oturumu öldürmeden yeni cihaza geçir.
-                try:
-                    loop_obj.swap_input(dev)
-                except Exception:
-                    pass
-            else:
-                preview = getattr(self, "_preview", None)
-                if preview is not None:
-                    try:
-                        preview.set_device(dev)
-                    except Exception:
-                        pass
-        except Exception:
+            pop.destroy()
+        except tk.TclError:
             pass
 
     def _on_output_selected(self) -> None:
@@ -543,6 +759,8 @@ class App(tk.Tk):
                 # None (Hiçbiri) dahildir: oynatma hattı text-only'e geçer.
                 try:
                     loop_obj.swap_output(self._resolve_output_device())
+                    if hasattr(self, "_loop_kwargs"):
+                        self._loop_kwargs["output_speaker"] = self._resolve_output_device()
                 except Exception:
                     pass
         except Exception:
@@ -770,6 +988,7 @@ class App(tk.Tk):
             def _scan():
                 try:
                     ins = all_inputs()
+                    ins.extend(application_inputs())
                     outs = all_outputs()
                     self.log_queue.put(("devices_scanned", ins, outs, stopping))
                 except Exception as e:
@@ -778,46 +997,73 @@ class App(tk.Tk):
             return
 
         ins = all_inputs()
+        ins.extend(application_inputs())
         outs = all_outputs()
         self._apply_devices(ins, outs, stopping)
 
     def _apply_devices(self, ins, outs, stopping: bool):
-        self.inputs = ins
+        previous_input = self._resolve_input_device()
+        stopping = self._worker_alive()
+        self.inputs = list(ins)
+        self._applications = [source for source in self.inputs if getattr(source, "is_application", False)]
+        physical_inputs = [source for source in self.inputs if not getattr(source, "is_application", False)]
         self.outputs = outs
-        self.in_box["values"] = [
-            ("[Sistem] " if m.isloopback else "[Mikrofon] ") + m.name for m in ins
-        ]
         self.out_box["values"] = [NONE_OUTPUT] + [s.name for s in outs]
-        if not stopping:
-            cfg = getattr(self, "_cfg", None) or load_config()
-            cur_in = self.in_var.get()
-            if cur_in and cur_in in self.in_box["values"]:
+
+        cfg = getattr(self, "_cfg", None) or load_config()
+        cur_in = self.in_var.get()
+        application_path = (
+            getattr(previous_input, "executable", "")
+            or (self._input_application_path if not cur_in or cur_in.startswith("[Uygulama] ") else "")
+        )
+        selected_application = None
+        if application_path:
+            candidates = [
+                source for source in self._applications
+                if os.path.normcase(source.executable) == os.path.normcase(application_path)
+            ]
+            selected_application = next(
+                (source for source in candidates if device_key(source) == device_key(previous_input)),
+                None,
+            )
+            if selected_application is None and len(candidates) == 1:
+                selected_application = candidates[0]
+
+        if application_path:
+            label = display_input_label(selected_application) if selected_application else (
+                "[Uygulama] " + Path(application_path).name + " — " + t("input_unavailable")
+            )
+            self.in_box["values"] = [display_input_label(source) for source in physical_inputs] + [label, t("application_picker")]
+            self.in_var.set(label)
+        else:
+            self.in_box["values"] = [display_input_label(source) for source in physical_inputs]
+            if process_audio_supported():
+                self.in_box["values"] = [*self.in_box["values"], t("application_picker")]
+            if cur_in and cur_in in self.in_box["values"] and cur_in != t("application_picker"):
                 pass
-            elif cfg.input_device and cfg.input_device in self.in_box["values"]:
+            elif not stopping and cfg.input_device in self.in_box["values"] and cfg.input_device != t("application_picker"):
                 self.in_var.set(cfg.input_device)
-            else:
-                loops = [m for m in ins if getattr(m, "isloopback", False)]
+            elif not stopping:
+                loops = [source for source in physical_inputs if getattr(source, "isloopback", False)]
                 default_in = None
                 if loops:
                     try:
                         default_sp = default_speaker()
                         if default_sp is not None:
-                            for m in loops:
-                                if default_sp.name in m.name or m.name in default_sp.name:
-                                    default_in = m
-                                    break
+                            default_in = next(
+                                (source for source in loops if default_sp.name in source.name or source.name in default_sp.name),
+                                None,
+                            )
                     except Exception:
                         pass
                     if default_in is None:
                         default_in = loops[0]
-                elif ins:
-                    default_in = ins[0]
-
+                elif physical_inputs:
+                    default_in = physical_inputs[0]
                 if default_in is not None:
-                    self.in_var.set(
-                        ("[Sistem] " if getattr(default_in, "isloopback", False) else "[Mikrofon] ") + default_in.name
-                    )
+                    self.in_var.set(display_input_label(default_in))
 
+        if not stopping:
             cur_out = self.out_var.get()
             if cur_out and cur_out in self.out_box["values"]:
                 pass
@@ -828,7 +1074,7 @@ class App(tk.Tk):
                     self.out_var.set(default_speaker().name)
                 except Exception:
                     self.out_var.set(NONE_OUTPUT)
-        # Liste yenilendi: boşta iken önizleme seçili girişi izler.
+        self._update_input_hint()
         try:
             self._sync_preview_device()
         except Exception:
@@ -965,6 +1211,7 @@ class App(tk.Tk):
         try:
             save_preferences(
                 input_device=self.in_var.get(),
+                input_application=self._input_application_path,
                 output_device=self.out_var.get(),
                 src_lang=src_code,
                 dst_lang=dst_code,
@@ -1137,6 +1384,7 @@ class App(tk.Tk):
             self._overlay_thru_btn.kind = "target" if self.overlay_click_through else "cursor"
             self._overlay_thru_btn.redraw()
         self._save_user_prefs()
+
     def restart(self) -> None:
         """Çalışırken ayarları nazikçe yeniden başlatarak uygular."""
         if self.worker is not None and self.worker.is_alive():
@@ -1327,6 +1575,16 @@ class App(tk.Tk):
                 self._overlay_fminus.configure(bg=C.overlay_bg, fg=C.dim)
             if hasattr(self, "_overlay_grip") and self._overlay_grip.winfo_exists():
                 self._overlay_grip.configure(bg=C.overlay_bg, fg=C.dim)
+        if self._application_picker is not None and self._application_picker.winfo_exists():
+            self._application_picker.configure(bg=C.panel)
+            dark_titlebar(self._application_picker, dark=(C.current != "light"))
+            for child in self._application_picker.winfo_children():
+                self._retint_frame(child, bg=C.panel)
+            if self._application_list is not None and self._application_list.winfo_exists():
+                self._application_list.configure(
+                    bg=C.panel, fg=C.text, selectbackground=C.select, selectforeground=C.text
+                )
+            self._update_application_select_state()
         if self._about is not None and self._about.winfo_exists():
             self._about.configure(bg=C.panel)
             dark_titlebar(self._about, dark=(C.current != "light"))
@@ -1606,13 +1864,16 @@ class App(tk.Tk):
             if self.status.cget("text") not in ("Hata", "Error"):
                 self._set_status("Durdu", C.dim)
             return
-        idx = self.in_box.current()
-        if idx < 0 or idx >= len(self.inputs):
+        source = self._resolve_input_device()
+        if source is None:
+            if self.in_var.get().startswith("[Uygulama] "):
+                self._append(f"[hata] {t('application_unavailable')}\n")
+                self._set_status("Durdu", C.dim)
+                return
             self._append("[hata] Geçerli giriş aygıtı seçin.\n")
             if self.status.cget("text") not in ("Hata", "Error"):
                 self._set_status("Durdu", C.dim)
             return
-        source = self.inputs[idx]
         speaker = self._selected_speaker()
         try:
             save_api_key(api_key)
@@ -2177,6 +2438,7 @@ class App(tk.Tk):
         self.stop()
         self._close_about()
         self._close_settings()
+        self._close_application_picker()
         if self._overlay is not None and self._overlay.winfo_exists():
             self._overlay.destroy()
             self._overlay = None

@@ -268,7 +268,6 @@ class SystemAudioLoop:
         self.muted = bool(muted)
         self.vad_threshold = max(0.0, float(vad_threshold))
         self._paused = threading.Event()
-        self._vad_silence_chunks: int = 0
         self.detected_src: str | None = None
         self._last_speech_time: float = 0.0
         self.last_latency_ms: float = 0.0
@@ -523,7 +522,6 @@ class SystemAudioLoop:
                 old_name = getattr(self.source_mic, "name", "?")
                 self.source_mic = pending_dev
                 self._input_generation += 1
-                self._vad_silence_chunks = 0
                 self._disc_count = 0
                 self._disc_window_start = time.monotonic()
                 self._disc_notice_given = False
@@ -537,6 +535,12 @@ class SystemAudioLoop:
             except Exception as e:
                 if self._cap_stop.is_set() or self._user_stop.is_set():
                     break
+                if isinstance(e, ProcessLookupError):
+                    # Kapanan uygulamanın PID'si yeniden kullanılabilir; yeniden
+                    # bağlanma veya sistem sesine geri dönüş güvenli değildir.
+                    if self._peek_pending_input():
+                        continue
+                    raise
                 if isinstance(e, AssertionError):
                     # Deterministik uyumsuzluk (örn. mikrofonun sürücü mix biçimi
                     # soundcard ile açılamıyor): yeniden denemek hiç işe yaramaz,
@@ -622,8 +626,8 @@ class SystemAudioLoop:
                             if len(mono) > 0
                             else 0.0
                         )
-                        # VU her blokta güncellenir; yankı bastırma yalnızca gönderimi
-                        # keser, göstergeyi dondurmaz.
+                        # VU ham giriş seviyesini gösterir; yankı yalnızca Gemini'ye
+                        # gönderilen PCM'de susturulur.
                         self.last_level = self._rms_to_level(rms)
                         if self._paused.is_set():
                             continue
@@ -633,24 +637,20 @@ class SystemAudioLoop:
                             same_endpoint = is_loopback and _is_same_endpoint(
                                 self.source_mic, self.output_speaker
                             )
-                        if same_endpoint:
-                            if time.monotonic() < self._playback_until + 0.15:
-                                continue
-                        pcm = conv.process(arr)
+                        suppress_echo = same_endpoint and time.monotonic() < self._playback_until + 0.15
+                        pcm = conv.process(np.zeros_like(mono) if suppress_echo else mono)
                         if not pcm:
                             continue
 
-                        HANGOVER_CHUNKS = 15  # ~300 ms ses kesildikten sonra devam eden sessizlik tamponu (R01)
-                        if self.vad_threshold > 0.0 and rms < self.vad_threshold:
-                            self._vad_silence_chunks += 1
-                            if self._vad_silence_chunks > HANGOVER_CHUNKS and self._vad_silence_chunks % 75 != 0:
-                                continue
-                        else:
-                            self._vad_silence_chunks = 0
-                            if rms >= max(0.005, self.vad_threshold):
-                                if not self._waiting_response:
-                                    self._last_speech_time = time.monotonic()
-                                    self._waiting_response = True
+                        if suppress_echo or (self.vad_threshold > 0.0 and rms < self.vad_threshold):
+                            # Live Translate sürekli ses akışı bekler. Paket atmak
+                            # yerine aynı süreli sessizlik gönder; yankı/sessizlik
+                            # sonraki çeviriyi bekleyen modeli aç bırakmasın.
+                            pcm = bytes(len(pcm))
+                        elif rms >= max(0.005, self.vad_threshold):
+                            if not self._waiting_response:
+                                self._last_speech_time = time.monotonic()
+                                self._waiting_response = True
 
                         try:
                             if self._loop is not None and not self._loop.is_closed():
@@ -785,6 +785,7 @@ class SystemAudioLoop:
         """
         delay = 0.25
         while not self._play_stop.is_set() and not self._user_stop.is_set():
+            self._playback_until = 0.0
             pending_dev, has_pending = self._take_pending_output()
             if has_pending:
                 old = self.output_speaker
@@ -805,6 +806,7 @@ class SystemAudioLoop:
             try:
                 done_reason = self._play_inner(speaker)
             except Exception as e:
+                self._playback_until = 0.0
                 if self._play_stop.is_set() or self._user_stop.is_set():
                     break
                 if isinstance(e, AssertionError):
@@ -863,6 +865,7 @@ class SystemAudioLoop:
         pending: list[np.ndarray] = []
         pending_n = 0
         started = False
+        queued_until = 0.0
         with speaker.player(
             samplerate=RECEIVE_SAMPLE_RATE, channels=1, blocksize=2048
         ) as sp:
@@ -871,6 +874,7 @@ class SystemAudioLoop:
 
             def _play_chunk(audio_raw: np.ndarray) -> bool:
                 """Dilimli oynatma; swap/stop görülürse False döner."""
+                nonlocal queued_until
                 if self.muted or self.volume <= 0.0 or audio_raw.size == 0:
                     return True
                 if abs(self.volume - 1.0) > 1e-3:
@@ -883,7 +887,11 @@ class SystemAudioLoop:
                     if self._peek_pending_output():
                         return False
                     piece = audio_raw[pos:pos + split_n]
-                    self._playback_until = time.monotonic() + len(piece) / RECEIVE_SAMPLE_RATE
+                    queued_until = max(queued_until, time.monotonic()) + len(piece) / RECEIVE_SAMPLE_RATE
+                    # Sessiz PCM de oynatılır (zamanlama korunur), fakat yankı
+                    # kapısını açık tutmaz. RMS eşiği -80 dBFS: nicemleme tabanı.
+                    if float(np.dot(piece, piece)) > piece.size * 1e-8:
+                        self._playback_until = queued_until
                     sp.play(piece)
                     self._play_heartbeat = time.monotonic()
                     pos += split_n

@@ -618,73 +618,32 @@ def test_receive_latency_and_detected_language():
     assert ("detected_src", "fr") in emitted
     assert any(item[0] == "latency" and item[1] >= 200 for item in emitted if isinstance(item, tuple))
 
-def test_capture_does_not_drop_when_output_speaker_is_different_device():
-    """H05: Çıkış aygıtı farklı olduğunda loopback kaynak ses bastırılmamalı."""
-    from loop import _is_same_endpoint
+@pytest.mark.parametrize("output_id", ["dev_A", "dev_B", None])
+def test_capture_routes_echo_to_silence_without_stopping_stream(output_id):
+    """Aynı çıkışta yankı susturulur; farklı çıkış/Hiçbiri kaynak sesi korur."""
+    posted = []
 
-    class Device:
-        def __init__(self, id, name, isloopback=False):
-            self.id = id
-            self.name = name
-            self.isloopback = isloopback
-
-    spk_a = Device(id="dev_A", name="Hoparlör A")
-    spk_b = Device(id="dev_B", name="Kulaklık B")
-    mic_a_loop = Device(id="dev_A", name="Hoparlör A", isloopback=True)
-    mic_b_loop = Device(id="dev_B", name="Kulaklık B", isloopback=True)
-
-    assert _is_same_endpoint(mic_a_loop, spk_a) is True
-    assert _is_same_endpoint(mic_a_loop, spk_b) is False
-    assert _is_same_endpoint(mic_b_loop, spk_b) is True
-    assert _is_same_endpoint(mic_b_loop, spk_a) is False
-
-    frames_recorded = []
-
-    class MockRecorder:
-        def __enter__(self):
-            return self
-        def __exit__(self, *args):
-            return False
-        def record(self, numframes):
-            frames_recorded.append(True)
-            return np.ones((numframes, 2), dtype=np.float32) * 0.1
-
-    class TestMic:
+    class Mic(FakeMic):
         id = "dev_A"
         name = "Hoparlör A"
         isloopback = True
-        channels = 2
-        def recorder(self, **kwargs):
-            return MockRecorder()
 
-    posted = []
-    loop_obj = SystemAudioLoop("en", "tr", TestMic(), "dummy-key", output_speaker=spk_b)
-    loop_obj._post = lambda msg: posted.append(msg)
-    loop_obj._playback_until = time.monotonic() + 10.0  # Aktif çalma var ama farklı cihaz
+        def record(self, numframes):
+            loop_obj._cap_stop.set()
+            return np.full((numframes, 2), 0.1, dtype=np.float32)
 
-    import threading
-    t = threading.Thread(target=loop_obj._capture_thread, daemon=True)
-    t.start()
-    time.sleep(0.05)
-    loop_obj._cap_stop.set()
-    t.join(timeout=1.0)
-
-    assert len(frames_recorded) > 0
-    assert len(posted) > 0
-
-    # Aynı cihaz senaryosu: playback_until aktifken frame atılmalı (echo loop önleme)
-    posted_same = []
-    loop_obj_same = SystemAudioLoop("en", "tr", TestMic(), "dummy-key", output_speaker=spk_a)
-    loop_obj_same._post = lambda msg: posted_same.append(msg)
-    loop_obj_same._playback_until = time.monotonic() + 10.0
-
-    t_same = threading.Thread(target=loop_obj_same._capture_thread, daemon=True)
-    t_same.start()
-    time.sleep(0.05)
-    loop_obj_same._cap_stop.set()
-    t_same.join(timeout=1.0)
-
-    assert len(posted_same) == 0
+    speaker = SimpleNamespace(id=output_id) if output_id else None
+    loop_obj = SystemAudioLoop("en", "tr", Mic(), "key", output_speaker=speaker)
+    loop_obj._post = posted.append
+    loop_obj._playback_until = time.monotonic() + 10.0
+    try:
+        loop_obj._capture_inner()
+        assert len(posted) == 1
+        assert len(posted[0]["data"]) == 640
+        assert bool(any(posted[0]["data"])) is (output_id != "dev_A")
+        assert loop_obj.last_level > 0.3
+    finally:
+        loop_obj.close()
 
 def test_h13_audio_converter_anti_aliasing():
     """H13: 48 kHz -> 16 kHz dönüşümünde 8 kHz üstü frekanslar (örn 12 kHz) filtrelenmeli."""
@@ -751,22 +710,32 @@ def test_h14_play_thread_single_volume_scaling_and_mute_preroll():
     loop_obj_muted._play_thread()
     assert len(played_blocks) == 0
 
-def test_r01_vad_hangover_silence_chunks_sent_before_dropping():
-    """R01: Konuşma bittiğinde ilk sessizlik parçaları (hangover) hemen kesilmeden Gemini VAD'e gönderilmeli."""
-    loop_obj = SystemAudioLoop("en", "tr", None, "key", output_speaker=None, vad_threshold=0.05)
-    # vad_silence_chunks 1 olduğunda (yani 15'ten küçük) continue yapılmayıp post edilmeli
-    loop_obj._vad_silence_chunks = 0
-    rms = 0.01  # eşiğin altında sessizlik
-    HANGOVER_CHUNKS = 15
-    # 1. parça sessizlik: HANGOVER_CHUNKS dahilinde gönderilmeli
-    loop_obj._vad_silence_chunks += 1
-    should_skip = loop_obj._vad_silence_chunks > HANGOVER_CHUNKS and loop_obj._vad_silence_chunks % 75 != 0
-    assert should_skip is False
+def test_vad_preserves_audio_timing_and_resumes_speech():
+    """Uzun sessizlik paket atmaz; eşik altı giriş susturulur, konuşma geri gelir."""
+    posted = []
 
-    # 16. parça sessizlik: HANGOVER bitti, atılmalı
-    loop_obj._vad_silence_chunks = 16
-    should_skip = loop_obj._vad_silence_chunks > HANGOVER_CHUNKS and loop_obj._vad_silence_chunks % 75 != 0
-    assert should_skip is True
+    class Mic(FakeMic):
+        blocks = 0
+
+        def record(self, numframes):
+            index = self.blocks
+            self.blocks += 1
+            if index == 81:
+                loop_obj._cap_stop.set()
+            level = 0.1 if index in (0, 81) else 0.001
+            return np.full((numframes, 2), level, dtype=np.float32)
+
+    loop_obj = SystemAudioLoop("en", "tr", Mic(), "key", vad_threshold=0.05)
+    loop_obj._post = posted.append
+    try:
+        loop_obj._capture_inner()
+        assert len(posted) == 82
+        assert all(len(msg["data"]) == 640 for msg in posted)
+        assert any(posted[0]["data"])
+        assert all(not any(msg["data"]) for msg in posted[1:-1])
+        assert any(posted[-1]["data"])
+    finally:
+        loop_obj.close()
 
 
 def test_r02_merge_transcript_preserves_repeated_words():
@@ -891,48 +860,59 @@ def test_hotswap_output_to_none_and_back():
     assert errors == [], f"worker hatası: {errors}"
 
 
-def test_vu_level_updates_during_echo_suppression():
-    """Yankı bastırma gönderimi keser ama VU göstergesini dondurmaz."""
-    frames_recorded = []
+def test_silent_playback_keeps_capture_flowing_after_speech(monkeypatch):
+    """Sessiz yanıt paketleri ilk çeviriden sonra loopback girişini kilitlemez."""
+    import queue
+    import loop as loop_module
 
-    class MockRecorder:
-        def __enter__(self):
-            return self
+    clock = SimpleNamespace(now=100.0)
+    monkeypatch.setattr(loop_module, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    posted = []
+    captured = []
 
-        def __exit__(self, *args):
-            return False
+    class Mic(FakeMic):
+        id = "speaker"
+        name = "Speaker"
+        isloopback = True
 
         def record(self, numframes):
-            frames_recorded.append(True)
-            return np.ones((numframes, 2), dtype=np.float32) * 0.1
+            loop_obj._cap_stop.set()  # Her oynatma diliminde tek yakalama bloğu.
+            return np.full((numframes, 2), 0.1, dtype=np.float32)
 
-    class TestMic:
-        id = "dev_A"
-        name = "Hoparlör A"
-        isloopback = True
-        channels = 2
+    class Speaker(FakeSpeaker):
+        id = "speaker"
+        name = "Speaker"
 
-        def recorder(self, **kwargs):
-            return MockRecorder()
+        def play(self, data):
+            super().play(data)
+            loop_obj._cap_stop.clear()
+            before = len(posted)
+            loop_obj._capture_inner()
+            captured.append(posted[before:])
+            clock.now += len(data) / 24000
 
-    class Spk:
-        id = "dev_A"
-        name = "Hoparlör A"
-
-    posted: list = []
-    loop_obj = SystemAudioLoop("en", "tr", TestMic(), "dummy-key", output_speaker=Spk())
-    loop_obj._post = lambda msg: posted.append(msg)
-    loop_obj._playback_until = time.monotonic() + 10.0  # aktif çalma
-
-    t = threading.Thread(target=loop_obj._capture_thread, daemon=True)
-    t.start()
-    time.sleep(0.15)
-    loop_obj._cap_stop.set()
-    t.join(timeout=2.0)
-
-    assert len(frames_recorded) > 0
-    assert posted == [], "yankı bastırma gönderimi kesmeli"
-    assert loop_obj.last_level > 0.3, f"VU dondu: {loop_obj.last_level}"
+    speaker = Speaker()
+    loop_obj = SystemAudioLoop("en", "tr", Mic(), "key", output_speaker=speaker)
+    loop_obj._post = posted.append
+    loop_obj._play_q = queue.Queue()
+    speech = np.full(2048, 8192, dtype=np.int16).tobytes()
+    # Nicemleme tabanındaki çok küçük örnekler de konuşma sayılmamalı.
+    silence = np.full(2048, 1, dtype=np.int16).tobytes()
+    for pcm in [speech, *([silence] * 8), speech]:
+        loop_obj._play_q.put_nowait(pcm)
+    loop_obj._play_q.put_nowait(None)
+    try:
+        loop_obj._play_thread()
+        assert len(captured) == 10
+        assert all(len(batch) == 1 for batch in captured), "Gemini giriş akışı kesildi"
+        assert all(batch[0]["mime_type"] == "audio/pcm;rate=16000" for batch in captured)
+        assert all(len(batch[0]["data"]) == 640 for batch in captured)
+        assert not any(captured[0][0]["data"]), "Çeviri sesi yeniden modele gönderildi"
+        assert any(captured[-2][0]["data"]), "Sessiz çıkış sonraki cümleyi engelledi"
+        assert not any(captured[-1][0]["data"]), "İkinci çeviride yankı koruması kayboldu"
+        assert loop_obj.last_level > 0.3, "Yankı koruması VU göstergesini dondurdu"
+    finally:
+        loop_obj.close()
 
 
 class _FlakyRec:
@@ -1116,12 +1096,18 @@ def test_device_label_helpers():
 
     loop_dev = SimpleNamespace(id="1", name="Hoparlör X", isloopback=True)
     mic_dev = SimpleNamespace(id="2", name="Mikrofon Y", isloopback=False)
+    app_dev = SimpleNamespace(
+        id="application:3:4", name="chrome.exe", isloopback=False, is_application=True
+    )
     assert display_input_label(loop_dev) == "[Sistem] Hoparlör X"
     assert display_input_label(mic_dev) == "[Mikrofon] Mikrofon Y"
+    assert display_input_label(app_dev) == "[Uygulama] chrome.exe"
     assert find_input_by_label([loop_dev, mic_dev], "[Sistem] Hoparlör X") is loop_dev
     assert find_input_by_label([loop_dev, mic_dev], "Mikrofon Y") is mic_dev
+    assert find_input_by_label([loop_dev, mic_dev, app_dev], "[Uygulama] chrome.exe") is app_dev
     assert find_output_by_label([loop_dev], NONE_OUTPUT) is None
     assert find_output_by_label([loop_dev], "Hoparlör X") is loop_dev
     assert find_output_by_label([loop_dev], "Yok") is None
     assert device_key(None) == (None, None, None)
     assert device_key(loop_dev) != device_key(mic_dev)
+    assert device_key(app_dev) != device_key(mic_dev)

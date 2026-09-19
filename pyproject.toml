@@ -24,6 +24,7 @@ ahenk-cli = "cli:main"
 [tool.setuptools]
 packages = ["gui"]
 py-modules = [
+    "applications",
     "audio",
     "cli",
     "config",
@@ -35,6 +36,7 @@ py-modules = [
     "loop",
     "main",
     "meta",
+    "process_audio",
     "updater",
 ]
 [tool.pytest.ini_options]

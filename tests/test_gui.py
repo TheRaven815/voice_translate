@@ -1105,6 +1105,83 @@ def test_h12_device_refresh_preserves_current_selection():
     finally:
         app.destroy()
 
+def test_application_input_tracks_executable_and_never_falls_back():
+    """Yeniden başlayan uygulama yeniden bağlanır; kapanınca sistem sesine düşülmez."""
+    from types import SimpleNamespace
+
+    app = App()
+    try:
+        app._preview.shutdown()
+        app._preview = None
+        path = r"C:\Program Files\Browser\browser.exe"
+        old = SimpleNamespace(
+            id="application:10:1", name="browser.exe", executable=path,
+            is_application=True, isloopback=False,
+        )
+        restarted = SimpleNamespace(
+            id="application:20:2", name="browser.exe", executable=path,
+            is_application=True, isloopback=False,
+        )
+        system = SimpleNamespace(id="speaker", name="Hoparlör", isloopback=True)
+        app.inputs = [old]
+        app.in_box["values"] = ["[Uygulama] browser.exe"]
+        app.in_var.set("[Uygulama] browser.exe")
+        app._input_application_path = path
+
+        app._apply_devices([system, restarted], [system], stopping=False)
+        assert app._resolve_input_device() is restarted
+
+        app._apply_devices([system], [system], stopping=False)
+        assert app.in_var.get().startswith("[Uygulama] browser.exe")
+        assert "yeniden seçin" in app.in_var.get()
+        assert app._resolve_input_device() is None
+        assert app._input_application_path == path
+    finally:
+        app.destroy()
+
+def test_application_inputs_are_chosen_from_compact_picker():
+    """Ana giriş listesi uygulamalarla şişmez; seçilen uygulama alana taşınır."""
+    from types import SimpleNamespace
+
+    from i18n import t
+
+    app = App()
+    try:
+        app._preview.shutdown()
+        app._preview = None
+        system = SimpleNamespace(id="speaker", name="Hoparlör", isloopback=True)
+        browser = SimpleNamespace(
+            id="application:10:1", name="browser.exe", executable=r"C:\Browser\browser.exe",
+            is_application=True, isloopback=False,
+        )
+        meeting = SimpleNamespace(
+            id="application:20:2", name="meeting.exe", executable=r"C:\Meeting\meeting.exe",
+            is_application=True, isloopback=False,
+        )
+
+        app._apply_devices([system, browser, meeting], [system], stopping=False)
+
+        assert app.in_box["values"] == ("[Sistem] Hoparlör", t("application_picker"))
+        app.in_var.set(t("application_picker"))
+        app.update_idletasks()
+        assert app.in_var.get() == "[Sistem] Hoparlör"
+        assert app._application_picker is not None
+        assert app._application_list.get(0, tk.END) == ("browser.exe", "meeting.exe")
+
+        app._application_list.selection_clear(0, tk.END)
+        app._application_list.selection_set(1)
+        app._select_application()
+
+        assert app.in_var.get() == "[Uygulama] meeting.exe"
+        assert app._resolve_input_device() is meeting
+        assert "[Uygulama] browser.exe" not in app.in_box["values"]
+        assert app.in_box["values"] == (
+            "[Sistem] Hoparlör", "[Uygulama] meeting.exe", t("application_picker")
+        )
+        assert app._application_picker is None
+    finally:
+        app.destroy()
+
 
 def test_h17_ui_lang_en_applies_to_all_gui_labels(monkeypatch):
     """H17: ui_lang='en' iken arayüz etiketleri İngilizceye çevrilmeli."""

@@ -41,7 +41,7 @@ Typical use: foreign-language video or meeting; hear Turkish (or another target)
 
 ## Features
 
-- System audio (loopback) or microphone
+- System audio (loopback), microphone, or one open desktop application's audio
 - Source language **Otomatik** (model detects) or a fixed BCP-47 code
 - 13 target languages (below)
 - Output **Hiçbiri** (None): no playback, text only
@@ -121,7 +121,7 @@ python3 -m venv .venv
 
 1. Title, version, **Altyazı**, about (`ⓘ`)
 2. Status dot + VU
-3. **Giriş** / **Çıkış** — `[Sistem]` loopback, `[Mikrofon]` real mic. **Hiçbiri** on output = text-only.
+3. **Giriş** / **Çıkış** — `[Sistem]` loopback, `[Mikrofon]` microphone, or **Choose desktop app…**. **Hiçbiri** on output = text-only.
 4. **Dil** — source (Auto + languages) → target. Arrow: swap.
 5. **API anahtarı** — masked with `•`; written on **Kaydet** or Start.
 6. **Başlat** / **Durdur** — devices, languages, and key lock while running.
@@ -131,8 +131,10 @@ python3 -m venv .venv
 **Altyazı:** small, always on top, drag, ✕ to close. Shows the last translation line.
 
 First launch (no saved prefs): default loopback in, default speaker out, source Auto, target Turkish.
+For app audio, open the target program, choose **Choose desktop app…** from the input list, then pick the program in the small window. Only that process tree is captured; selecting Chrome includes every tab in the same Chrome process tree. If the app exits or restarts, Ahenk never falls back to system audio; choose the app again from the picker. This needs Windows build 20348 or newer. Background-only processes without a visible window are not listed.
 
-> **Tip (Echo Prevention):** When capturing system audio (loopback), routing translation playback to a separate device (such as headphones) or selecting "None" (text-only) produces the cleanest audio. If using the same speaker, Ahenk automatically ducks loopback capture while playing translation audio to avoid echo loops.
+
+> **Tip (Echo Prevention):** When capturing system audio (loopback), routing translation playback to a separate device (such as headphones) or selecting "None" (text-only) produces the cleanest audio. On the same speaker, Ahenk sends equal-duration silence instead of captured input while audible translation is playing, keeping the audio stream connected. Silent output chunks do not extend this protection. This does not separate source audio from translation: overlapping source speech is also suppressed on the same device. Use a separate output for uninterrupted source capture.
 
 ## CLI
 
@@ -158,7 +160,7 @@ First launch (no saved prefs): default loopback in, default speaker out, source 
 | `--version` | | Print version and exit |
 | `--json` | off | Produce line-by-line streaming JSON (JSONL) for scripting |
 | `--log` | none | Log all console output to the specified file |
-| `--vad` | `0.0` | RMS silence gate threshold (e.g. `0.01`) |
+| `--vad` | `0.0` | RMS silence gate threshold (e.g. `0.01`); below-threshold audio is replaced with silence without dropping packets |
 | `--volume` | `1.0` | Output translation audio gain multiplier (`0.0` - `2.0`) |
 | `--model` | default | Gemini Live model name |
 | `--api-key` | none | Lands in shell history; prefer `.env` or GUI |
@@ -244,6 +246,8 @@ config.py        settings file, key order
 loop.py          Gemini session, capture / receive / play
 audio.py         48k→16k, PCM16↔float
 devices.py       soundcard list, loopback pick
+applications.py   visible desktop apps, stable process identity
+process_audio.py  Windows application process-tree audio capture
 languages.py     UI name → BCP-47
 meta.py          version, title, author
 updater.py       GitHub Release check, SHA-256 verification, atomic exe replacement
@@ -308,6 +312,8 @@ No network. The client is faked.
 | --- | --- |
 | `GEMINI_API_KEY bulunamadı` | AI Studio key; `.env`, env, or GUI Save |
 | `Loopback cihaz bulunamadı` | Windows speaker; Yenile; try another output |
+| App picker is empty | Open the app and click **Refresh** in the picker; it needs a visible window and desktop process |
+| Selected app exited | Reopen it and select it again through **Choose desktop app…** |
 | Choppy / delayed audio | Set output to **Hiçbiri** and watch text; check network and quota |
 | Heard but no translation | Target language; model access (`gemini-3.5-live-translate-preview`) |
 | Python not found | [python.org](https://www.python.org/downloads/) — tick PATH in the installer |

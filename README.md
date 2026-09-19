@@ -39,7 +39,7 @@ Tipik kullanım: videoda / toplantıda yabancı dil; hoparlörden Türkçe (veya
 
 ## Özellikler
 
-- Sistem sesi (loopback) veya mikrofon
+- Sistem sesi (loopback), mikrofon veya açık bir masaüstü uygulamasının sesi
 - Kaynak dil **Otomatik** (model algılar) veya sabit BCP-47
 - 13 hedef dil (aşağıda)
 - Çıkış **Hiçbiri**: ses çalmaz, yalnız metin
@@ -119,7 +119,7 @@ python3 -m venv .venv
 
 1. Başlık, sürüm, **Altyazı**, hakkında (`ⓘ`)
 2. Durum noktası + VU
-3. **Giriş** / **Çıkış** — `[Sistem]` loopback, `[Mikrofon]` gerçek mic. Çıkışta **Hiçbiri** = metin-only.
+3. **Giriş** / **Çıkış** — `[Sistem]` loopback, `[Mikrofon]` gerçek mikrofon veya **Masaüstü uygulaması seç…**. Çıkışta **Hiçbiri** = yalnız metin.
 4. **Dil** — kaynak (Otomatik + diller) → hedef. Ok: takas.
 5. **API anahtarı** — `•` ile gizli; **Kaydet** veya Başlat’ta yazılır.
 6. **Başlat** / **Durdur** — çalışırken aygıt, dil ve anahtar kilitlenir.
@@ -129,8 +129,10 @@ python3 -m venv .venv
 **Altyazı:** küçük, `always on top`, sürükle, ✕ ile kapat. Son çeviri satırını gösterir.
 
 İlk açılışta giriş varsayılan loopback, çıkış varsayılan hoparlör, kaynak Otomatik, hedef Türkçe (kayıt yoksa).
+Uygulama sesi için hedef programı önce açın, giriş listesinden **Masaüstü uygulaması seç…** seçeneğine tıklayın ve açılan küçük pencereden programı seçin. Seçim yalnız o işlem ağacını yakalar; Chrome seçildiğinde aynı Chrome işlem ağacındaki tüm sekmeler dahildir. Uygulama kapanır veya yeniden başlarsa sessizce sistem sesine geçilmez; seçim penceresinden yeniden seçmeniz istenir. Bu özellik Windows build 20348 ve sonrasında kullanılabilir; arka planda çalışan ancak görünür penceresi olmayan programlar listelenmez.
 
-> **İpucu (Yankı Önleme):** Sistem sesi (loopback) dinlerken çeviri çıkışını kulaklık gibi farklı bir aygıta yönlendirmek veya "Hiçbiri" (yalnızca metin) seçmek en temiz sonucu verir. Aynı hoparlör kullanıldığında Ahenk, çeviri çalarken loopback yakalamasını otomatik bastırarak yankı döngüsünü engeller.
+
+> **İpucu (Yankı Önleme):** Sistem sesi (loopback) dinlerken çeviri çıkışını kulaklık gibi farklı bir aygıta yönlendirmek veya "Hiçbiri" (yalnızca metin) seçmek en temiz sonucu verir. Aynı hoparlör kullanıldığında Ahenk, duyulabilir çeviri sesi boyunca giriş yerine aynı süreli sessizlik gönderir; bağlantının ses akışı kesilmez. Sessiz çıkış paketleri bu korumayı uzatmaz. Bu yöntem kaynak ve çeviri sesini birbirinden ayırmaz: aynı aygıtta çeviriyle çakışan kaynak konuşma da bastırılır; kesintisiz kaynak yakalama için ayrı çıkış kullanın.
 
 ## Konsol
 
@@ -156,7 +158,7 @@ python3 -m venv .venv
 | `--version` | | Sürüm bilgisini yazdır, çık |
 | `--json` | kapalı | Betikleme için satır satır JSON akışı (JSONL) üret |
 | `--log` | yok | Tüm konsol çıktısını belirtilen dosyaya kaydet |
-| `--vad` | `0.0` | RMS sessizlik kapısı eşiği (örn. `0.01`) |
+| `--vad` | `0.0` | RMS sessizlik kapısı eşiği (örn. `0.01`); eşik altındaki ses yerine sessizlik gönderilir, paket akışı korunur |
 | `--volume` | `1.0` | Çıkış çeviri sesi kazancı (`0.0` - `2.0`) |
 | `--model` | varsayılan | Gemini Live model adı |
 | `--api-key` | yok | Kabuk geçmişine düşer; `.env` veya GUI tercih edin |
@@ -242,6 +244,8 @@ config.py        ayar dosyası, anahtar sırası
 loop.py          Gemini oturumu, yakala / al / çal
 audio.py         48k→16k, PCM16↔float
 devices.py       soundcard listesi, loopback seçimi
+applications.py   görünür masaüstü uygulamaları, güvenli işlem kimliği
+process_audio.py  Windows uygulama işlem ağacı ses yakalama
 languages.py     UI adı → BCP-47
 meta.py          sürüm, başlık, yazar
 updater.py       GitHub Release denetimi, SHA-256 doğrulama, atomik exe değişimi
@@ -306,6 +310,8 @@ Ağ çağrısı yok. İstemci taklit edilir.
 | --- | --- |
 | `GEMINI_API_KEY bulunamadı` | AI Studio anahtarı; `.env`, ortam veya GUI Kaydet |
 | `Loopback cihaz bulunamadı` | Windows hoparlör; aygıtı Yenile; başka çıkış deneyin |
+| Uygulama seçim penceresi boş | Programı açın ve penceredeki **Yenile** düğmesine basın; görünür penceresi ve masaüstü işlemi olmalı |
+| Seçili uygulama kapandı | Programı yeniden açın ve **Masaüstü uygulaması seç…** üzerinden yeniden seçin |
 | Ses kesik / gecikmeli | Çıkışı **Hiçbiri** yapıp metni izleyin; ağ ve kota |
 | Çeviri yok, Duyulan var | Hedef dil; model erişimi (`gemini-3.5-live-translate-preview`) |
 | Python bulunamadı | [python.org](https://www.python.org/downloads/) — installer’da PATH |

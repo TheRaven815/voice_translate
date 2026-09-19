@@ -106,6 +106,7 @@ def _decrypt_key(stored: str) -> str:
 class Settings:
     api_key: str = ""
     input_device: str = ""
+    input_application: str = ""
     output_device: str = ""
     src_lang: str = ""
     dst_lang: str = ""
@@ -175,7 +176,7 @@ def _read_raw() -> dict:
         m_key = re.search(r'"api_key"\s*:\s*"([^"]+)"', raw_text)
         if m_key:
             recovered["api_key"] = m_key.group(1)
-        for fld in ("theme", "src_lang", "dst_lang", "input_device", "output_device", "window_geom", "overlay_geom", "ui_lang"):
+        for fld in ("theme", "src_lang", "dst_lang", "input_device", "input_application", "output_device", "window_geom", "overlay_geom", "ui_lang"):
             m = re.search(rf'"{fld}"\s*:\s*"([^"]+)"', raw_text)
             if m:
                 recovered[fld] = m.group(1)
@@ -238,6 +239,7 @@ def load() -> Settings:
     return Settings(
         api_key=_decrypt_key(raw_key),
         input_device=str(raw.get("input_device") or ""),
+        input_application=str(raw.get("input_application") or ""),
         output_device=str(raw.get("output_device") or ""),
         src_lang=str(raw.get("src_lang") or ""),
         dst_lang=str(raw.get("dst_lang") or ""),
@@ -255,6 +257,7 @@ def save(settings: Settings) -> Path:
     raw = _read_raw()
     raw["api_key"] = _encrypt_key(settings.api_key)
     raw["input_device"] = settings.input_device
+    raw["input_application"] = settings.input_application
     raw["output_device"] = settings.output_device
     raw["src_lang"] = settings.src_lang
     raw["dst_lang"] = settings.dst_lang
@@ -278,6 +281,7 @@ def save_api_key(key: str) -> Path:
 def save_preferences(
     *,
     input_device: str | None = None,
+    input_application: str | None = None,
     output_device: str | None = None,
     src_lang: str | None = None,
     dst_lang: str | None = None,
@@ -294,6 +298,8 @@ def save_preferences(
     raw = _read_raw()
     if input_device is not None:
         raw["input_device"] = input_device
+    if input_application is not None:
+        raw["input_application"] = input_application
     if output_device is not None:
         raw["output_device"] = output_device
     if src_lang is not None:
