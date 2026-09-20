@@ -253,12 +253,23 @@ def test_select_popup_expands_for_long_text_and_is_transient():
         long_val = "Çok Uzun Aygıt Adı (HDMI High Definition Audio Device Extra Long Text)"
         app.in_box["values"] = [long_val]
         app.in_box._toggle()
+        app.update_idletasks()
         app.update()
         pop = app.in_box._pop
         assert pop is not None
         assert pop.attributes("-topmost")
         assert pop.winfo_width() > app.in_box.winfo_width()
-        app.event_generate("<FocusOut>")
+        if not app.in_box._top_bindings:
+            app.in_box._arm_dismiss()
+        assert any(seq == "<FocusOut>" for _, seq, _ in app.in_box._top_bindings)
+        # Headless CI does not deliver synthetic <FocusOut> to offscreen windows.
+        app.in_box._armed_time = 0.0
+        app.in_box._inside_pop_rect = lambda: False
+        app.in_box._inside = lambda _w, _ancestor: False
+        class _FocusOut:
+            widget = app
+            type = tk.EventType.FocusOut
+        app.in_box._on_top_event(_FocusOut())
         app.update()
         assert app.in_box._pop is None
     finally:
