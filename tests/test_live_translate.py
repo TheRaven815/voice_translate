@@ -1052,6 +1052,19 @@ def test_capture_recovers_after_transient_error():
     assert errors == [], f"worker hatası: {errors}"
 
 
+def test_discontinuity_notice_once_at_threshold():
+    emitted: list = []
+    loop_obj = SystemAudioLoop(
+        "en", "tr", FakeMic(), "dummy-key",
+        output_speaker=FakeSpeaker(), on_text=emitted.append, console_input=False,
+    )
+    for _ in range(25):
+        loop_obj._note_discontinuity()
+    assert loop_obj._disc_count == 25
+    notices = [m for m in emitted if "kesinti" in str(m)]
+    assert len(notices) == 1, f"sürekli kesinti tek satırda kısılmalı: {notices}"
+
+
 def test_capture_suppresses_discontinuity_warnings():
     """WASAPI kesinti uyarısı log'a taşmaz, sayaçta izlenir, akış sürer."""
     import warnings
@@ -1080,32 +1093,40 @@ def test_capture_suppresses_discontinuity_warnings():
             def record(self, numframes):
                 self._mic.calls += 1
                 warnings.warn("data discontinuity in recording", RuntimeWarning)
-                time.sleep(0.005)
                 t = np.arange(numframes) / 48000
                 tone = 0.3 * np.sin(2 * np.pi * 440 * t)
                 return np.stack([tone, tone], axis=1).astype(np.float32)
 
+    mic = WarnMic()
     posted: list = []
-    emitted: list = []
+    leaked: list[str] = []
     loop_obj = SystemAudioLoop(
-        "en", "tr", WarnMic(), "dummy-key",
-        output_speaker=FakeSpeaker(), on_text=emitted.append, console_input=False,
+        "en", "tr", mic, "dummy-key",
+        output_speaker=FakeSpeaker(), on_text=lambda *_a: None, console_input=False,
     )
     loop_obj._post = lambda msg: posted.append(msg)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")  # sızan uyarı burada patlardı
-        t = threading.Thread(target=loop_obj._capture_thread, daemon=True)
+    orig_show = warnings.showwarning
+
+    def _track(message, category, filename, lineno, file=None, line=None):
+        leaked.append(str(message))
+        return orig_show(message, category, filename, lineno, file, line)
+
+    warnings.showwarning = _track
+    t = threading.Thread(target=loop_obj._capture_thread, daemon=True)
+    try:
         t.start()
-        deadline = time.time() + 10
-        while loop_obj._disc_count < 20 and time.time() < deadline:
-            time.sleep(0.05)
+        deadline = time.time() + 3
+        while loop_obj._disc_count < 5 and time.time() < deadline:
+            time.sleep(0.01)
         loop_obj._cap_stop.set()
         t.join(timeout=2.0)
+    finally:
+        warnings.showwarning = orig_show
     assert not t.is_alive()
+    assert mic.calls >= 5
     assert len(posted) > 0, "uyarı bastırma akışı kesmemeli"
-    assert loop_obj._disc_count >= 20, f"kesinti sayılmadı: {loop_obj._disc_count}"
-    notices = [m for m in emitted if "kesinti" in str(m)]
-    assert len(notices) == 1, f"sürekli kesinti tek satırda kısılmalı: {notices}"
+    assert loop_obj._disc_count >= 5, f"kesinti sayılmadı: {loop_obj._disc_count}"
+    assert not any("data discontinuity" in m for m in leaked)
 
 
 def test_unsupported_mic_fails_fast_with_guidance():

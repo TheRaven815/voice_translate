@@ -422,7 +422,7 @@ class SystemAudioLoop:
         """Tek kesinti kaydı: sayaç + 10 sn pencerede 20 olunca tek satır uyarı."""
         with self._disc_lock:
             now = time.monotonic()
-            if now - self._disc_window_start > 10.0:
+            if self._disc_count == 0 or now - self._disc_window_start > 10.0:
                 self._disc_window_start = now
                 self._disc_count = 0
             self._disc_count += 1
