@@ -59,6 +59,50 @@ def test_newer_release_requires_expected_executable_and_digest(monkeypatch):
     )
 
 
+
+def test_can_self_update_accepts_renamed_gui_exe(tmp_path, monkeypatch):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    exe = dist / "Ceviri.exe"
+    exe.write_bytes(b"gui")
+    meipass = tmp_path / "extract" / "_MEI123"
+    meipass.mkdir(parents=True)
+    monkeypatch.setattr(updater.os, "name", "nt")
+    monkeypatch.setattr(updater.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(updater.sys, "_MEIPASS", str(meipass), raising=False)
+    monkeypatch.setattr(updater.sys, "executable", str(exe))
+    assert updater.can_self_update()
+
+
+def test_can_self_update_rejects_cli_exe(tmp_path, monkeypatch):
+    exe = tmp_path / "Ahenk-cli.exe"
+    exe.write_bytes(b"cli")
+    meipass = tmp_path / "extract" / "_MEI123"
+    meipass.mkdir(parents=True)
+    monkeypatch.setattr(updater.os, "name", "nt")
+    monkeypatch.setattr(updater.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(updater.sys, "_MEIPASS", str(meipass), raising=False)
+    monkeypatch.setattr(updater.sys, "executable", str(exe))
+    assert not updater.can_self_update()
+
+
+def test_download_update_reports_progress(tmp_path, monkeypatch):
+    data = b"abcdefghij"
+    digest = hashlib.sha256(data).hexdigest()
+    url = "https://github.com/TheRaven815/voice_translate/releases/download/v0.6.2/Ahenk.exe"
+    info = updater.UpdateInfo(version="0.6.2", download_url=url, size=len(data), sha256=digest)
+    target = tmp_path / "Ceviri.exe"
+    target.write_bytes(b"old")
+    monkeypatch.setattr(updater, "_current_executable", lambda: target)
+    monkeypatch.setattr(updater, "_request", lambda _url, timeout=30: Response(data, url=url))
+    seen: list[tuple[int, int]] = []
+    staged = updater.download_update(info, on_progress=lambda got, total: seen.append((got, total)))
+    assert seen[0] == (0, 10)
+    assert seen[-1] == (10, 10)
+    assert staged.name == ".Ceviri.update-0-6-2.exe"
+    assert staged.read_bytes() == data
+
+
 def test_update_helper_replaces_executable_only_after_startup_handshake(tmp_path, monkeypatch):
     target = tmp_path / "Ahenk.exe"
     source = tmp_path / ".Ahenk.update-0-6-0.exe"
@@ -74,6 +118,23 @@ def test_update_helper_replaces_executable_only_after_startup_handshake(tmp_path
     assert updater.run_update_helper("123", str(target), digest) == 0
     assert target.read_bytes() == b"new executable"
     assert not Path(f"{target}.old").exists()
+
+
+def test_update_helper_replaces_renamed_executable(tmp_path, monkeypatch):
+    target = tmp_path / "Ceviri.exe"
+    source = tmp_path / ".Ceviri.update-0-6-2.exe"
+    target.write_bytes(b"old executable")
+    source.write_bytes(b"new executable")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+
+    monkeypatch.setattr(updater.sys, "executable", str(source))
+    monkeypatch.setattr(updater, "_wait_for_process", lambda _pid: None)
+    monkeypatch.setattr(updater, "_start_target", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(updater, "_wait_until_started", lambda _process, ready: ready.touch() or True)
+
+    assert updater.run_update_helper("123", str(target), digest) == 0
+    assert target.read_bytes() == b"new executable"
+    assert target.name == "Ceviri.exe"
 
 
 def test_update_helper_rolls_back_when_new_executable_does_not_start(tmp_path, monkeypatch):

@@ -49,6 +49,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "application_unavailable": "Uygulamayı açıp “Masaüstü uygulaması seç…” üzerinden yeniden seçin.",
         "application_unsupported": "Uygulama sesi Windows build 20348+ gerektirir.",
         "input_unavailable": "yeniden seçin",
+        "api_key_missing": "API anahtarı tanımlı değil. Ayarlar’dan ekleyin.",
+        "update_available": "v{version} hazır",
     },
     "en": {
         "app_title": "Ahenk",
@@ -96,6 +98,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "application_unavailable": "Open the app and choose it again through “Choose desktop app…”.",
         "application_unsupported": "App audio requires Windows build 20348+.",
         "input_unavailable": "select again",
+        "api_key_missing": "No API key. Add one in Settings.",
+        "update_available": "v{version} ready",
     },
 }
 _current_lang = "tr"

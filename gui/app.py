@@ -287,6 +287,7 @@ class App(tk.Tk):
         self._update_info: UpdateInfo | None = None
         self._update_check_running = False
         self._update_installing = False
+        self._download_fraction: float | None = None
         self._overlay: tk.Toplevel | None = None
         self._rail_seps: list[tk.Frame] = []
         self.always_on_top = getattr(self._cfg, "always_on_top", False)
@@ -370,6 +371,20 @@ class App(tk.Tk):
             self._rail_title, text=f"v{__version__}", font=self.font_ui, fg=C.dim, bg=C.rail
         )
         self.version_lbl.pack(side=tk.LEFT, padx=(8, 0), pady=(2, 0))
+        self._update_chip = tk.Label(
+            self._rail_head,
+            text="",
+            font=self.font_ui,
+            fg=C.live,
+            bg=C.rail,
+            cursor="hand2",
+            anchor="w",
+            justify=tk.LEFT,
+            wraplength=250,
+        )
+        self._update_chip.bind("<Button-1>", lambda _e: self._on_update_chip())
+        self._update_chip.bind("<Enter>", lambda _e: self._update_chip.configure(fg=C.accent))
+        self._update_chip.bind("<Leave>", lambda _e: self._update_chip.configure(fg=C.live))
 
         self._rail_actions = tk.Frame(self._rail_head, bg=C.rail)
         self._rail_actions.pack(fill=tk.X, pady=(10, 0))
@@ -490,12 +505,29 @@ class App(tk.Tk):
         self._btns_frame.columnconfigure(0, weight=1)
         self._btns_frame.columnconfigure(1, weight=1)
 
+        self._key_notice = tk.Label(
+            self._btns_frame,
+            text=t("api_key_missing"),
+            font=self.font_ui,
+            fg=C.warn,
+            bg=C.rail,
+            anchor="w",
+            justify=tk.LEFT,
+            wraplength=250,
+            cursor="hand2",
+        )
+        self._key_notice.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+        self._key_notice.bind("<Button-1>", lambda _e: self._open_settings())
+        self._key_notice.bind("<Enter>", lambda _e: self._key_notice.configure(fg=C.accent))
+        self._key_notice.bind("<Leave>", lambda _e: self._key_notice.configure(fg=C.warn))
+
         self.start_btn = self._btn(self._btns_frame, t("start"), self.start)
-        self.start_btn._edge.grid(row=0, column=0, sticky="ew", padx=(0, 4), ipady=4)
+        self.start_btn._edge.grid(row=1, column=0, sticky="ew", padx=(0, 4), ipady=4)
         self.stop_btn = self._btn(self._btns_frame, t("stop"), self.stop)
-        self.stop_btn._edge.grid(row=0, column=1, sticky="ew", padx=(4, 0), ipady=4)
+        self.stop_btn._edge.grid(row=1, column=1, sticky="ew", padx=(4, 0), ipady=4)
         self._paint(self.start_btn, filled=True, enabled=True)
         self._paint(self.stop_btn, filled=False, enabled=False)
+        self._refresh_key_notice()
 
     def _worker_alive(self) -> bool:
         try:
@@ -1188,9 +1220,61 @@ class App(tk.Tk):
             self.clipboard_append(content)
             self._append("[bilgi] Metin panoya kopyalandı.\n")
 
-    def _update_meter(self, level: float) -> None:
+    def _update_meter(self, level: float, *, fill: str | None = None) -> None:
         w = int(max(0.0, min(1.0, level)) * 56)
         self.meter.coords(self._meter_bar, 0, 0, w, 8)
+        if fill is not None:
+            self.meter.itemconfigure(self._meter_bar, fill=fill)
+
+    def _refresh_key_notice(self) -> None:
+        notice = getattr(self, "_key_notice", None)
+        if notice is None:
+            return
+        has_key = bool(self.key_var.get().strip())
+        if has_key:
+            notice.grid_remove()
+            return
+        notice.configure(text=t("api_key_missing"), fg=C.warn, bg=C.rail)
+        if notice.winfo_manager() != "grid":
+            notice.grid()
+
+    def _show_update_chip(self, version: str) -> None:
+        chip = getattr(self, "_update_chip", None)
+        if chip is None:
+            return
+        chip.configure(text=t("update_available").format(version=version), fg=C.live, bg=C.rail)
+        if chip.winfo_manager() != "pack":
+            chip.pack(anchor="w", fill=tk.X, pady=(6, 0), before=self._rail_actions)
+
+    def _on_update_chip(self) -> None:
+        info = self._update_info
+        if info is None or self._update_installing:
+            return
+        install = messagebox.askyesno(
+            "Ahenk güncellemesi",
+            f"Ahenk v{info.version} yayımlandı.\n\nGüncelleme şimdi indirilip kurulsun mu?\n"
+            "Uygulama kurulumdan sonra yeniden başlayacak.",
+            parent=self,
+        )
+        if install:
+            self._download_and_install_update(info)
+
+    def _paint_download_progress(self, fraction: float) -> None:
+        frac = max(0.0, min(1.0, fraction))
+        self._download_fraction = frac
+        pct = int(round(frac * 100))
+        if hasattr(self, "timer_lbl"):
+            self.timer_lbl.configure(text=f"{pct}%")
+        self._update_meter(frac, fill=C.warn)
+
+    def _clear_download_progress(self) -> None:
+        self._download_fraction = None
+        if hasattr(self, "timer_lbl") and not (
+            self.worker is not None and self.worker.is_alive() and self.session_start_time
+        ):
+            self.timer_lbl.configure(text="")
+        if hasattr(self, "meter"):
+            self.meter.itemconfigure(self._meter_bar, fill=C.live)
 
     def _save_user_prefs(self):
         if getattr(self, "_save_prefs_timer", None) is not None:
@@ -1409,6 +1493,7 @@ class App(tk.Tk):
         if self.worker is not None and self.worker.is_alive() and not self._stopping.is_set():
             self._append("[bilgi] Ayarlar güncellendi, yeni parametrelerle yeniden başlatılıyor...\n")
             self.restart()
+
     def toggle_theme(self) -> None:
         new_theme = "light" if C.current == "dark" else "dark"
         self.set_theme(new_theme)
@@ -1434,13 +1519,18 @@ class App(tk.Tk):
             f.configure(bg=C.rail)
         self.brand.configure(fg=C.text, bg=C.rail)
         self.version_lbl.configure(fg=C.dim, bg=C.rail)
+        if hasattr(self, "_update_chip"):
+            self._update_chip.configure(fg=C.live, bg=C.rail)
         self.status.configure(fg=C.muted, bg=C.rail)
         self.timer_lbl.configure(fg=C.dim, bg=C.rail)
         self._dot.configure(bg=C.rail)
         running = self.worker is not None and self.worker.is_alive()
         self._dot.itemconfigure(self._dot_id, fill=C.live if running else C.dim)
         self.meter.configure(bg=C.line)
-        self.meter.itemconfigure(self._meter_bar, fill=C.live)
+        downloading = self._download_fraction is not None
+        self.meter.itemconfigure(self._meter_bar, fill=C.warn if downloading else C.live)
+        if downloading:
+            self._paint_download_progress(self._download_fraction or 0.0)
 
         # Rail icon buttons + theme switch
         for btn in (self.info_btn, self.settings_btn, self.pin_btn, self.overlay_btn):
@@ -1480,6 +1570,7 @@ class App(tk.Tk):
         # Action buttons
         self._paint(self.start_btn, filled=not running, enabled=not running)
         self._paint(self.stop_btn, filled=running, enabled=running)
+        self._refresh_key_notice()
 
         # Main panes
         for f in (self.heard_h, self.trans_h, self.heard_wrap, self.trans_wrap, self.log_wrap):
@@ -1701,6 +1792,8 @@ class App(tk.Tk):
                             self._handle_update_error(str(payload), manual=bool(msg[2]))
                         elif kind == "update_ready":
                             self._apply_downloaded_update(payload, msg[2])
+                        elif kind == "update_progress":
+                            self._paint_download_progress(float(payload))
                         elif kind == "devices_scanned":
                             if self.winfo_exists():
                                 self._apply_devices(payload, msg[2], msg[3])
@@ -1716,20 +1809,24 @@ class App(tk.Tk):
         except queue.Empty:
             pass
         finally:
-            if self.worker is not None and self.worker.is_alive() and self.session_start_time:
+            downloading = self._download_fraction is not None
+            if downloading:
+                pass
+            elif self.worker is not None and self.worker.is_alive() and self.session_start_time:
                 elapsed = int(time.time() - self.session_start_time)
                 m, s = divmod(elapsed, 60)
                 if hasattr(self, "timer_lbl"):
                     self.timer_lbl.configure(text=f"{m:02d}:{s:02d}")
             elif hasattr(self, "timer_lbl"):
                 self.timer_lbl.configure(text="")
-            if self.loop_obj is not None:
+            if downloading:
+                pass
+            elif self.loop_obj is not None:
                 try:
                     self._update_meter(getattr(self.loop_obj, "last_level", 0.0) or 0.0)
                 except Exception:
                     pass
             elif not (self.worker is not None and self.worker.is_alive()):
-                # Oturum kapalıyken VU, seçili girişin bağımsız önizlemesidir.
                 try:
                     preview = getattr(self, "_preview", None)
                     self._update_meter(preview.get_level() if preview is not None else 0.0)
@@ -1749,7 +1846,7 @@ class App(tk.Tk):
             if manual:
                 messagebox.showinfo(
                     "Güncelleme",
-                    "Otomatik güncelleme yalnız Ahenk.exe onefile sürümünde kullanılabilir.",
+                    "Otomatik güncelleme yalnız Windows onefile dağıtımında kullanılabilir.",
                     parent=self,
                 )
             return
@@ -1777,7 +1874,8 @@ class App(tk.Tk):
             if not (self.worker is not None and self.worker.is_alive()):
                 self._set_status("Hazır", C.dim)
             return
-        self.version_lbl.configure(text=f"v{__version__}  •  v{info.version} hazır", fg=C.live)
+        self.version_lbl.configure(text=f"v{__version__}", fg=C.dim)
+        self._show_update_chip(info.version)
         if hasattr(self, "about_update_status") and self.about_update_status.winfo_exists():
             self.about_update_status.configure(text=f"v{info.version} indirilmeye hazır", fg=C.live)
         install = messagebox.askyesno(
@@ -1794,6 +1892,7 @@ class App(tk.Tk):
     def _handle_update_error(self, error: str, *, manual: bool) -> None:
         self._update_check_running = False
         self._update_installing = False
+        self._clear_download_progress()
         self._append(f"[hata] Güncelleme: {error}\n")
         if not (self.worker is not None and self.worker.is_alive()):
             self._set_status("Hazır", C.dim)
@@ -1804,12 +1903,17 @@ class App(tk.Tk):
         if self._update_installing:
             return
         self._update_installing = True
+        self._paint_download_progress(0.0)
         self._set_status("Güncelleme indiriliyor", C.warn)
         self._append(f"[bilgi] Ahenk v{info.version} indiriliyor...\n")
 
+        def on_progress(got: int, total: int) -> None:
+            frac = 0.0 if total <= 0 else min(1.0, got / total)
+            self.log_queue.put(("update_progress", frac, total))
+
         def download() -> None:
             try:
-                staged = download_update(info)
+                staged = download_update(info, on_progress=on_progress)
                 self.log_queue.put(("update_ready", staged, info))
             except UpdateError as exc:
                 self.log_queue.put(("update_error", str(exc), True))
@@ -1825,6 +1929,7 @@ class App(tk.Tk):
         except UpdateError as exc:
             self._handle_update_error(str(exc), manual=True)
             return
+        self._paint_download_progress(1.0)
         self._append("[bilgi] Güncelleme doğrulandı. Ahenk yeniden başlatılıyor...\n")
         self._set_status("Güncelleme kuruluyor", C.warn)
         self.after(100, self._on_close)
@@ -1852,6 +1957,7 @@ class App(tk.Tk):
             self._settings.focus_set()
         else:
             self.focus_set()
+        self._refresh_key_notice()
 
     def start(self, preserve_transcript: bool = False):
         if self.worker is not None and self.worker.is_alive():
@@ -1859,6 +1965,7 @@ class App(tk.Tk):
         self._pending_restart = False
         api_key = self.key_var.get().strip()
         if not api_key:
+            self._refresh_key_notice()
             self._append("[hata] API anahtarı girin (Ayarlar veya https://aistudio.google.com/apikey)\n")
             self._open_settings()
             if self.status.cget("text") not in ("Hata", "Error"):
@@ -2276,6 +2383,7 @@ class App(tk.Tk):
         self.key_edge = None
         self._settings_status = None
         self._settings_close_btn = None
+        self._refresh_key_notice()
 
     def _fit_overlay(self, anchor: str = "bottom") -> None:
         pop = self._overlay

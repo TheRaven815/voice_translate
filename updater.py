@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -52,16 +53,23 @@ class UpdateInfo:
     sha256: str
 
 
+def _is_gui_executable(path: Path) -> bool:
+    """GUI onefile. CLI ve .exe olmayan hedefler güncellenmez."""
+    name = path.name.lower()
+    return path.suffix.lower() == ".exe" and not name.endswith("-cli.exe")
+
+
 def can_self_update() -> bool:
-    """Yalnız Windows PyInstaller onefile dağıtımı kendi dosyasını güncelleyebilir."""
-    if (
-        os.name != "nt"
-        or not getattr(sys, "frozen", False)
-        or not hasattr(sys, "_MEIPASS")
-        or Path(sys.executable).name.lower() != ASSET_NAME.lower()
-    ):
+    """Yalnız Windows PyInstaller onefile GUI dağıtımı kendi dosyasını güncelleyebilir.
+
+    Yerel exe adı Ahenk.exe olmak zorunda değil; GitHub varlığı yine Ahenk.exe'dir.
+    """
+    if os.name != "nt" or not getattr(sys, "frozen", False) or not hasattr(sys, "_MEIPASS"):
         return False
-    executable_dir = Path(sys.executable).resolve().parent
+    executable = Path(sys.executable)
+    if not _is_gui_executable(executable):
+        return False
+    executable_dir = executable.resolve().parent
     bundle_dir = Path(sys._MEIPASS).resolve()
     return bundle_dir.parent != executable_dir
 
@@ -188,11 +196,14 @@ def check_for_update(current_version: str = __version__) -> UpdateInfo | None:
 
 def _current_executable() -> Path:
     if not can_self_update():
-        raise UpdateError("Otomatik güncelleme yalnız Ahenk.exe onefile sürümünde kullanılabilir.")
+        raise UpdateError("Otomatik güncelleme yalnız Windows onefile dağıtımında kullanılabilir.")
     return Path(sys.executable).resolve()
 
 
-def download_update(info: UpdateInfo) -> Path:
+def download_update(
+    info: UpdateInfo,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> Path:
     """Güncellemeyi çalışmakta olan exe ile aynı diske indirip doğrular."""
     target = _current_executable()
     safe_version = info.version.replace(".", "-")
@@ -208,6 +219,11 @@ def download_update(info: UpdateInfo) -> Path:
 
     digest = hashlib.sha256()
     downloaded = 0
+    if on_progress is not None:
+        try:
+            on_progress(0, info.size)
+        except Exception:
+            pass
     try:
         with _request(info.download_url, timeout=30) as response, partial.open("xb") as output:
             final_host = urlparse(response.geturl()).hostname
@@ -219,6 +235,11 @@ def download_update(info: UpdateInfo) -> Path:
                     raise UpdateError("İndirilen güncellemenin boyutu beklenenden büyük.")
                 output.write(chunk)
                 digest.update(chunk)
+                if on_progress is not None:
+                    try:
+                        on_progress(downloaded, info.size)
+                    except Exception:
+                        pass
             output.flush()
             os.fsync(output.fileno())
         if downloaded != info.size:
@@ -340,8 +361,9 @@ def run_update_helper(pid_text: str, target_text: str, expected_sha256: str) -> 
     try:
         pid = int(pid_text)
         if (
-            target.name.lower() != ASSET_NAME.lower()
+            not _is_gui_executable(target)
             or source.parent != target.parent
+            or source.suffix.lower() != ".exe"
             or not source.name.startswith(f".{target.stem}.update-")
         ):
             raise UpdateError("Güncelleme yardımcısı yolları doğrulanamadı.")
@@ -361,13 +383,13 @@ def run_update_helper(pid_text: str, target_text: str, expected_sha256: str) -> 
                 break
             except OSError:
                 if attempt == 29:
-                    raise UpdateError("Çalışan Ahenk.exe değiştirilemedi.")
+                    raise UpdateError("Çalışan uygulama dosyası değiştirilemedi.")
                 time.sleep(0.25)
         try:
             os.replace(replacement, target)
         except OSError as exc:
             os.replace(backup, target)
-            raise UpdateError("Yeni Ahenk.exe etkinleştirilemedi.") from exc
+            raise UpdateError("Yeni uygulama dosyası etkinleştirilemedi.") from exc
         updated = True
 
         process = _start_target(target, cleanup=source, ready=ready)

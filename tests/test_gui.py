@@ -67,7 +67,7 @@ def test_app_name_version_and_about():
     try:
         assert app.title() == APP_TITLE == "Ahenk"
         assert app.brand["text"] == "Ahenk"
-        assert app.version_lbl["text"] == "v0.6.2"
+        assert app.version_lbl["text"] == "v0.6.3"
         assert ICON_ICO.is_file()
         assert ICON_PNG.is_file()
         assert getattr(app, "_ahenk_icon", None) is not None
@@ -77,7 +77,7 @@ def test_app_name_version_and_about():
         assert app._about is not None
         assert app._about.title() == "Hakkında"
         assert app.about_name["text"] == "Ahenk"
-        assert app.about_version["text"] == "v0.6.2"
+        assert app.about_version["text"] == "v0.6.3"
         assert app.about_author["text"] == APP_AUTHOR == "Enes Eliağır"
         assert app.about_update_status["text"] == "Kaynak kod modu"
         assert app.about_update_btn["text"] == "Güncellemeleri denetle"
@@ -98,8 +98,62 @@ def test_start_without_key_logs_error_not_crash():
         text = app.log.get("1.0", "end")
         assert "API anahtarı" in text
         assert app.worker is None
+        assert app._settings is not None
+        assert app._key_notice.grid_info()
         app._append("[bilgi] Kulaklık -> Hoparlör (en>tr)\n")
         assert "[bilgi] Kulaklık" in app.log.get("1.0", "end")
+    finally:
+        app.destroy()
+
+
+def test_main_page_has_no_key_field_and_shows_settings_notice(tmp_path, monkeypatch):
+    monkeypatch.setattr("config.load_dotenv", lambda: None)
+    monkeypatch.setenv("VOICE_TRANSLATE_CONFIG", str(tmp_path / "config.json"))
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    app = App()
+    try:
+        assert app.key_entry is None
+        labels = [child.cget("text") for child in app._fields_frame.winfo_children() if isinstance(child, tk.Label)]
+        assert "API anahtarı" not in labels
+        assert app._key_notice.grid_info()
+        assert "Ayarlar" in app._key_notice["text"]
+        app.key_var.set("sk-test")
+        app._refresh_key_notice()
+        assert not app._key_notice.grid_info()
+    finally:
+        app.destroy()
+
+
+def test_update_chip_keeps_version_label_short(monkeypatch):
+    from updater import UpdateInfo
+
+    app = App()
+    try:
+        monkeypatch.setattr("gui.app.messagebox.askyesno", lambda *_a, **_k: False)
+        info = UpdateInfo(
+            version="9.9.9",
+            download_url="https://github.com/TheRaven815/voice_translate/releases/download/v9.9.9/Ahenk.exe",
+            size=1,
+            sha256="a" * 64,
+        )
+        app._handle_update_result(info, manual=False)
+        assert app.version_lbl["text"] == f"v{__version__}"
+        assert "9.9.9" in app._update_chip["text"]
+        assert app._update_chip.pack_info()
+    finally:
+        app.destroy()
+
+
+def test_download_progress_uses_meter_and_percent():
+    app = App()
+    try:
+        app._paint_download_progress(0.42)
+        assert app.timer_lbl["text"] == "42%"
+        x0, _y0, x1, _y1 = app.meter.coords(app._meter_bar)
+        assert abs((x1 - x0) - 0.42 * 56) < 1.5
+        app._clear_download_progress()
+        assert app._download_fraction is None
+        assert app.timer_lbl["text"] == ""
     finally:
         app.destroy()
 
