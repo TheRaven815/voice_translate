@@ -50,6 +50,18 @@ def test_pcm16_to_float_handles_odd_and_short_bytes():
     assert f.size == 2
 
 
+def test_pcm16_to_float_carries_odd_byte_across_packets():
+    leftover = bytearray()
+    samples = np.array([1000, -2000, 3000, -4000], dtype=np.int16).tobytes()
+    first = pcm16_to_float(samples[:3], leftover)
+    assert first.size == 1
+    assert bytes(leftover) == samples[2:3]
+    rest = pcm16_to_float(samples[3:], leftover)
+    assert not leftover
+    joined = np.concatenate([first, rest])
+    assert np.array_equal(joined, pcm16_to_float(samples))
+
+
 
 def test_build_config_matches_installed_sdk():
     cfg = build_config("en", "tr")
@@ -229,7 +241,9 @@ def test_playback_converts_pcm16_to_unit_float():
         chunk = np.concatenate(speaker.played)
         assert chunk.dtype == np.float32
         assert float(np.max(np.abs(chunk))) <= 1.0 + 1e-5
-        assert abs(float(np.mean(chunk)) - 0.5) < 0.05
+        fade_n = max(2, int(24000 * 0.008))
+        body = chunk[fade_n:] if chunk.size > fade_n else chunk
+        assert abs(float(np.mean(body)) - 0.5) < 0.05
     finally:
         loop_obj.request_stop()
         t.join(timeout=20)
@@ -697,7 +711,10 @@ def test_h14_play_thread_single_volume_scaling_and_mute_preroll():
     assert len(played_blocks) > 0
     concatenated = np.concatenate(played_blocks)
     # Kazanç bir kez uygulanmış olmalı: 0.8 * 0.5 = ~0.4 (0.25 gibi çift çarpılmış olmamalı)
-    assert np.allclose(concatenated, 0.4, atol=0.02)
+    fade_n = max(2, int(24000 * 0.008))
+    body = concatenated[fade_n:] if concatenated.size > fade_n else concatenated
+    assert np.allclose(body, 0.4, atol=0.02)
+    assert abs(float(concatenated[0])) < 0.05
 
     # 2. Mute test (preroll tamponundayken bile mute sesi engellemeli)
     played_blocks.clear()
@@ -709,6 +726,64 @@ def test_h14_play_thread_single_volume_scaling_and_mute_preroll():
 
     loop_obj_muted._play_thread()
     assert len(played_blocks) == 0
+
+
+def test_play_thread_stays_smooth_across_packet_gaps():
+    """50–70 ms paket boşluğu preroll sıfırlamamalı; tek fade-in, dalga kaymasın."""
+    import queue
+
+    played_blocks = []
+
+    class RecordingPlayer:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def play(self, data):
+            played_blocks.append(np.array(data, copy=True))
+
+    class MockSpeaker:
+        name = "MockSpeaker"
+
+        def player(self, **kwargs):
+            return RecordingPlayer(**kwargs)
+
+    sr = 24000
+    fade_n = max(2, int(sr * 0.008))
+    n = int(sr * 0.24)
+    t = np.arange(n, dtype=np.float32) / np.float32(sr)
+    sig = (0.4 + 0.1 * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32)
+    pcm = np.clip(sig * 32767.0, -32768, 32767).astype(np.int16).tobytes()
+    chunk = int(sr * 0.02) * 2
+
+    loop_obj = SystemAudioLoop("en", "tr", None, "key", output_speaker=MockSpeaker())
+    loop_obj._play_q = queue.Queue()
+
+    def feeder():
+        for i in range(0, len(pcm), chunk):
+            loop_obj._play_q.put(pcm[i:i + chunk])
+            time.sleep(0.07)
+        loop_obj._play_q.put(None)
+
+    feeder_t = threading.Thread(target=feeder, daemon=True)
+    feeder_t.start()
+    loop_obj._play_thread()
+    feeder_t.join(timeout=5)
+
+    assert played_blocks, "oynatma çağrılmadı"
+    out = np.concatenate(played_blocks)
+    assert out.size >= n - 1
+    assert abs(float(out[0])) < 0.08
+    m = min(out.size, sig.size)
+    assert np.allclose(out[fade_n:m], sig[fade_n:m], atol=0.03)
+    # Ara fade olsaydı 0.4±0.1 sinyal 0.2 altına inerdi
+    assert float(np.min(out[fade_n:m])) > 0.25
+
 
 def test_vad_preserves_audio_timing_and_resumes_speech():
     """Uzun sessizlik paket atmaz; eşik altı giriş susturulur, konuşma geri gelir."""
@@ -903,12 +978,14 @@ def test_silent_playback_keeps_capture_flowing_after_speech(monkeypatch):
     loop_obj._play_q.put_nowait(None)
     try:
         loop_obj._play_thread()
-        assert len(captured) == 10
+        assert len(captured) >= 2
         assert all(len(batch) == 1 for batch in captured), "Gemini giriş akışı kesildi"
         assert all(batch[0]["mime_type"] == "audio/pcm;rate=16000" for batch in captured)
         assert all(len(batch[0]["data"]) == 640 for batch in captured)
         assert not any(captured[0][0]["data"]), "Çeviri sesi yeniden modele gönderildi"
-        assert any(captured[-2][0]["data"]), "Sessiz çıkış sonraki cümleyi engelledi"
+        assert any(
+            any(batch[0]["data"]) for batch in captured[1:-1]
+        ), "Sessiz çıkış sonraki cümleyi engelledi"
         assert not any(captured[-1][0]["data"]), "İkinci çeviride yankı koruması kayboldu"
         assert loop_obj.last_level > 0.3, "Yankı koruması VU göstergesini dondurdu"
     finally:

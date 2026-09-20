@@ -67,7 +67,7 @@ def test_app_name_version_and_about():
     try:
         assert app.title() == APP_TITLE == "Ahenk"
         assert app.brand["text"] == "Ahenk"
-        assert app.version_lbl["text"] == "v0.6.1"
+        assert app.version_lbl["text"] == "v0.6.2"
         assert ICON_ICO.is_file()
         assert ICON_PNG.is_file()
         assert getattr(app, "_ahenk_icon", None) is not None
@@ -77,7 +77,7 @@ def test_app_name_version_and_about():
         assert app._about is not None
         assert app._about.title() == "Hakkında"
         assert app.about_name["text"] == "Ahenk"
-        assert app.about_version["text"] == "v0.6.1"
+        assert app.about_version["text"] == "v0.6.2"
         assert app.about_author["text"] == APP_AUTHOR == "Enes Eliağır"
         assert app.about_update_status["text"] == "Kaynak kod modu"
         assert app.about_update_btn["text"] == "Güncellemeleri denetle"

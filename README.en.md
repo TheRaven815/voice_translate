@@ -4,7 +4,7 @@
 
 Live-translates whatever is playing on the PC (system loopback) or the microphone via [Gemini Live Translate](https://ai.google.dev/). You get both text and speech; text-only is available.
 
-Version **0.6.1**. Author: Enes Eliağır. Windows-first (WASAPI loopback). Python **3.11+**.
+Version **0.6.2**. Author: Enes Eliağır. Windows-first (WASAPI loopback). Python **3.11+**.
 
 Turkish is the source README ([README.md](README.md)). This file is the English option.
 
@@ -281,8 +281,8 @@ Automatic updates run only in the Windows onefile `Ahenk.exe` distribution. The 
 The repository must be **public** because clients call the GitHub API without credentials. To publish, set the same version in `meta.py`, `pyproject.toml`, and `version_info.txt`, then push a `vMAJOR.MINOR.PATCH` tag:
 
 ```bat
-git tag v0.6.1
-git push origin v0.6.1
+git tag v0.6.2
+git push origin v0.6.2
 ```
 
 `.github/workflows/release.yml` runs tests, builds the onefile exe, creates its SHA-256 file, and uploads both to a GitHub Release. Drafts and prereleases are not offered to clients.

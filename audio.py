@@ -10,16 +10,45 @@ CAPTURE_RATE = 48000  # Windows mix format; yakalanıp 16k'ya indirilir
 CAPTURE_BLOCK = 960  # 48000 Hz'de 20 ms
 
 
-def pcm16_to_float(pcm: bytes) -> np.ndarray:
-    """Gemini PCM16 (24 kHz) → soundcard'ın beklediği [-1, 1] float32."""
+def pcm16_to_float(pcm: bytes, leftover: bytearray | None = None) -> np.ndarray:
+    """Gemini PCM16 (24 kHz) → soundcard'ın beklediği [-1, 1] float32.
+
+    leftover verilirse tek kalan bayt sonraki pakete taşınır; aksi halde
+    (eski davranış) tek bayt atılır. Tek bayt kaybı sonraki paketi kaydırır
+    ve tıkırtı üretir.
+    """
+    if leftover:
+        pcm = bytes(leftover) + pcm
+        leftover.clear()
     if len(pcm) < 2:
+        if leftover is not None and pcm:
+            leftover.extend(pcm)
         return np.empty(0, dtype=np.float32)
     if len(pcm) % 2 != 0:
+        if leftover is not None:
+            leftover.extend(pcm[-1:])
         pcm = pcm[:-1]
     samples = np.frombuffer(pcm, dtype=np.int16)
     if samples.size == 0:
         return np.empty(0, dtype=np.float32)
     return samples.astype(np.float32) * (1.0 / 32768.0)
+
+
+def cosine_fade(audio: np.ndarray, fade_n: int, *, fade_in: bool) -> np.ndarray:
+    """Sessizlik sınırında kosinüs rampa; sıfır olmayan örnek tıkırtısını keser."""
+    if audio.size == 0:
+        return audio
+    n = min(max(int(fade_n), 0), int(audio.size))
+    if n <= 1:
+        return audio
+    out = np.array(audio, dtype=np.float32, copy=True)
+    t = np.linspace(0.0, 1.0, n, dtype=np.float32)
+    w = (0.5 - 0.5 * np.cos(np.pi * t)).astype(np.float32, copy=False)
+    if fade_in:
+        out[:n] *= w
+    else:
+        out[-n:] *= w[::-1]
+    return out
 
 class AudioConverter:
     """Yakalama örneklerini 16 kHz mono PCM16'ya dönüştürür.
