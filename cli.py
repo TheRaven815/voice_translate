@@ -17,7 +17,25 @@ from languages import LANGS, dest_code, source_code
 from gui.app import format_user_error
 from loop import SystemAudioLoop
 from meta import APP_TITLE, __version__
+
+
+def _configure_stdio() -> None:
+    """Windows cp1252 konsolda ı/ş/ğ UnicodeEncodeError olmasın."""
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        if stream is None:
+            continue
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError, AttributeError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _configure_stdio()
     try:
         cfg = load_config()
         default_src = source_code(cfg.src_lang) or "auto"

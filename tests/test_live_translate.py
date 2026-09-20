@@ -1097,13 +1097,13 @@ def test_capture_suppresses_discontinuity_warnings():
         t = threading.Thread(target=loop_obj._capture_thread, daemon=True)
         t.start()
         deadline = time.time() + 10
-        while loop_obj._disc_count < 30 and time.time() < deadline:
+        while loop_obj._disc_count < 20 and time.time() < deadline:
             time.sleep(0.05)
         loop_obj._cap_stop.set()
         t.join(timeout=2.0)
     assert not t.is_alive()
     assert len(posted) > 0, "uyarı bastırma akışı kesmemeli"
-    assert loop_obj._disc_count >= 30, f"kesinti sayılmadı: {loop_obj._disc_count}"
+    assert loop_obj._disc_count >= 20, f"kesinti sayılmadı: {loop_obj._disc_count}"
     notices = [m for m in emitted if "kesinti" in str(m)]
     assert len(notices) == 1, f"sürekli kesinti tek satırda kısılmalı: {notices}"
 

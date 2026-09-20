@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -142,6 +143,19 @@ def test_cli_loopback_error_exits(monkeypatch, capsys):
     assert "Desteklenen diller:" in out
     assert "en   : İngilizce" in out
     assert "tr   : Türkçe" in out
+
+
+def test_cli_list_langs_survives_cp1252_stdout(monkeypatch):
+    buf = io.BytesIO()
+    stream = io.TextIOWrapper(buf, encoding="cp1252", errors="strict", newline="\n")
+    monkeypatch.setattr(sys, "stdout", stream)
+    monkeypatch.setattr(sys, "argv", ["cli.py", "--list-langs"])
+    assert cli.main() == 0
+    stream.flush()
+    text = buf.getvalue().decode("utf-8")
+    assert "Desteklenen diller:" in text
+    assert "algılama" in text
+    assert "Türkçe" in text
 
 
 def test_cli_json_mode(monkeypatch, capsys):
