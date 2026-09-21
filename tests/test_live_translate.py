@@ -728,12 +728,7 @@ def test_h14_play_thread_single_volume_scaling_and_mute_preroll():
     assert len(played_blocks) == 0
 
 
-def test_play_thread_stays_smooth_across_packet_gaps():
-    """50–70 ms paket boşluğu preroll sıfırlamamalı; tek fade-in, dalga kaymasın."""
-    import queue
-
-    played_blocks = []
-
+def _recording_speaker(played_blocks, on_play=None):
     class RecordingPlayer:
         def __init__(self, **_kwargs):
             pass
@@ -745,7 +740,10 @@ def test_play_thread_stays_smooth_across_packet_gaps():
             pass
 
         def play(self, data):
-            played_blocks.append(np.array(data, copy=True))
+            block = np.array(data, copy=True)
+            played_blocks.append(block)
+            if on_play is not None:
+                on_play(block)
 
     class MockSpeaker:
         name = "MockSpeaker"
@@ -753,21 +751,124 @@ def test_play_thread_stays_smooth_across_packet_gaps():
         def player(self, **kwargs):
             return RecordingPlayer(**kwargs)
 
+    return MockSpeaker()
+
+
+def test_write_playback_releases_only_filled_frames():
+    """Kısa paket, boş WASAPI alanının tamamını serbest bırakırsa çıt çıkar."""
+    from loop import write_playback
+
+    released: list[int] = []
+    copied: list[int] = []
+
+    class Player:
+        channelmap = [0]
+
+        def __init__(self, available: int):
+            self.available = available
+
+        def _render_available_frames(self):
+            return self.available
+
+        def _render_buffer(self, n):
+            return [bytearray(n * 4)]
+
+        def _render_release(self, n):
+            released.append(n)
+
+        def play(self, _data):
+            raise AssertionError("başlatılmamış kuyruk bırakan play() kullanılmamalı")
+
+    def memmove(dest, src, n):
+        copied.append(n)
+        dest[:n] = src
+
+    wide = Player(4096)
+    short = np.linspace(-0.2, 0.2, 300, dtype=np.float32)
+    assert write_playback(wide, short, memmove=memmove) == 300
+    assert released == [300]
+    assert copied == [300 * 4]
+
+    released.clear()
+    copied.clear()
+    periodic = Player(480)
+    assert write_playback(periodic, np.zeros(1000, dtype=np.float32), memmove=memmove) == 1000
+    assert released == [480, 480, 40]
+    assert copied == [480 * 4, 480 * 4, 40 * 4]
+
+
+def test_soften_join_ramps_only_a_real_step():
+    from audio import soften_join
+
+    steady = np.full(64, 0.2, dtype=np.float32)
+    assert soften_join(0.22, steady) is steady
+    stepped = np.full(64, 0.9, dtype=np.float32)
+    out = soften_join(0.1, stepped)
+    assert out is not stepped
+    assert abs(float(out[0]) - 0.1) < 1e-5
+    assert abs(float(out[-1]) - 0.9) < 1e-5
+    assert float(np.max(np.abs(np.diff(out)))) < 0.05
+
+
+def test_play_thread_pushes_the_cushion_to_the_device_immediately():
+    """İlk yastık Python'da 50 ms bekletilmez; paket aralığından önce cihaza yazılır."""
+    import queue
+
+    played_blocks = []
+    started = threading.Event()
+    sr = 24000
+    preroll_n = int(sr * 0.08)
+    fade_n = max(2, int(sr * 0.008))
+    pcm = np.full(preroll_n, 16000, dtype=np.int16).tobytes()
+
+    loop_obj = SystemAudioLoop(
+        "en", "tr", None, "key",
+        output_speaker=_recording_speaker(played_blocks, lambda _block: started.set()),
+    )
+    loop_obj._play_q = queue.Queue()
+    seen: dict[str, object] = {}
+
+    def feeder():
+        try:
+            time.sleep(0.02)
+            loop_obj._play_q.put(pcm)
+            seen["early"] = started.wait(0.04)
+            seen["samples"] = sum(int(block.size) for block in played_blocks)
+        finally:
+            loop_obj._play_q.put(None)
+
+    feeder_t = threading.Thread(target=feeder, daemon=True)
+    feeder_t.start()
+    loop_obj._play_thread()
+    feeder_t.join(timeout=2)
+    assert not feeder_t.is_alive()
+    assert seen.get("early") is True, "yastık, paket boşluğu dolmadan cihaza yazılmadı"
+    assert seen["samples"] == preroll_n - fade_n
+
+
+def test_play_thread_stays_smooth_across_packet_gaps():
+    """50 ms paket aralığı cümleyi bölmez; tek fade-in, dalga kaymaz."""
+    import queue
+
+    played_blocks = []
     sr = 24000
     fade_n = max(2, int(sr * 0.008))
-    n = int(sr * 0.24)
+    n = int(sr * 0.5)
     t = np.arange(n, dtype=np.float32) / np.float32(sr)
     sig = (0.4 + 0.1 * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32)
     pcm = np.clip(sig * 32767.0, -32768, 32767).astype(np.int16).tobytes()
-    chunk = int(sr * 0.02) * 2
+    chunk = int(sr * 0.10) * 2
 
-    loop_obj = SystemAudioLoop("en", "tr", None, "key", output_speaker=MockSpeaker())
+    loop_obj = SystemAudioLoop(
+        "en", "tr", None, "key", output_speaker=_recording_speaker(played_blocks),
+    )
     loop_obj._play_q = queue.Queue()
 
     def feeder():
+        time.sleep(0.02)
         for i in range(0, len(pcm), chunk):
             loop_obj._play_q.put(pcm[i:i + chunk])
-            time.sleep(0.07)
+            time.sleep(0.05)
         loop_obj._play_q.put(None)
 
     feeder_t = threading.Thread(target=feeder, daemon=True)
@@ -783,6 +884,42 @@ def test_play_thread_stays_smooth_across_packet_gaps():
     assert np.allclose(out[fade_n:m], sig[fade_n:m], atol=0.03)
     # Ara fade olsaydı 0.4±0.1 sinyal 0.2 altına inerdi
     assert float(np.min(out[fade_n:m])) > 0.25
+
+
+def test_play_thread_ramps_to_silence_between_phrases():
+    """Cümle arasındaki gerçek boşluk sıçramaz; ses iner, sonrakisi yeniden girer."""
+    import queue
+
+    played_blocks = []
+    sr = 24000
+    fade_n = max(2, int(sr * 0.008))
+    n = int(sr * 0.12)
+    pcm = np.full(n, int(0.55 * 32767), dtype=np.int16).tobytes()
+
+    loop_obj = SystemAudioLoop(
+        "en", "tr", None, "key", output_speaker=_recording_speaker(played_blocks),
+    )
+    loop_obj._play_q = queue.Queue()
+
+    def feeder():
+        time.sleep(0.02)
+        loop_obj._play_q.put(pcm)
+        time.sleep(0.2)
+        loop_obj._play_q.put(pcm)
+        loop_obj._play_q.put(None)
+
+    feeder_t = threading.Thread(target=feeder, daemon=True)
+    feeder_t.start()
+    loop_obj._play_thread()
+    feeder_t.join(timeout=3)
+
+    assert played_blocks, "oynatma çağrılmadı"
+    out = np.concatenate(played_blocks)
+    assert out.size == 2 * n
+    assert abs(float(out[0])) < 0.08
+    assert float(np.min(out[n - fade_n:n + fade_n])) < 0.08
+    assert float(np.mean(out[fade_n:n - fade_n])) > 0.4
+    assert float(np.max(np.abs(np.diff(out)))) < 0.05
 
 
 def test_vad_preserves_audio_timing_and_resumes_speech():

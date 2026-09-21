@@ -34,6 +34,24 @@ def pcm16_to_float(pcm: bytes, leftover: bytearray | None = None) -> np.ndarray:
     return samples.astype(np.float32) * (1.0 / 32768.0)
 
 
+def soften_join(previous: float, audio: np.ndarray, fade_n: int = 48) -> np.ndarray:
+    """Paket sınırındaki büyük sıçramayı ~2 ms'lik rampaya yayar.
+
+    Normal dalga bu eşiğin altında kalır. Eşik aşılırsa sınır bir çıt üretir;
+    rampa yalnız yeni paketin başını, bir önceki örneğe bağlar.
+    """
+    if audio.size == 0:
+        return audio
+    if abs(float(audio[0]) - float(previous)) < 0.5:
+        return audio
+    n = min(max(int(fade_n), 2), int(audio.size))
+    out = np.array(audio, dtype=np.float32, copy=True)
+    w = np.linspace(0.0, 1.0, n, dtype=np.float32)
+    anchor = np.float32(previous)
+    out[:n] = anchor + (out[:n] - anchor) * w
+    return out
+
+
 def cosine_fade(audio: np.ndarray, fade_n: int, *, fade_in: bool) -> np.ndarray:
     """Sessizlik sınırında kosinüs rampa; sıfır olmayan örnek tıkırtısını keser."""
     if audio.size == 0:

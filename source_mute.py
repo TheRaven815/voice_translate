@@ -24,8 +24,8 @@ from applications import process_tree_pids
 from process_audio import process_audio_supported
 
 
-# Doğrusal 0.18 ≈ −15 dB: çevirinin altında duyulan, sözü örtmeden kalan yatak.
-DUB_BACKGROUND = 0.18
+# Doğrusal 1/6 ≈ −15.6 dB: çevirinin altında duyulan, sözü örtmeden kalan yatak.
+DUB_BACKGROUND = 1 / 6
 
 
 @dataclass(frozen=True, slots=True)

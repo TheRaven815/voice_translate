@@ -25,6 +25,7 @@ from audio import (
     AudioConverter,
     cosine_fade,
     pcm16_to_float,
+    soften_join,
     to_16k_mono,
 )
 DEFAULT_MODEL = "models/gemini-3.5-live-translate-preview"
@@ -187,6 +188,50 @@ def _is_same_endpoint(source, target) -> bool:
         d_name = str(dst_name).strip().lower()
         return s_name == d_name or d_name in s_name or s_name in d_name
     return src_id is None and dst_id is None and src_name is None and dst_name is None
+
+def write_playback(player, frames: np.ndarray, *, stop=None, memmove=None) -> int:
+    """Float32 çerçeveleri cihaza yaz; bırakılan çerçeve sayısı kopyalanan kadardır.
+
+    soundcard `Player.play` boş alanın tamamını ister ve kısa verinin
+    doldurmadığı kuyruğu da serbest bırakır. O kuyruk başlatılmamış bellek
+    olduğundan her paket sınırında çıt duyulur. `_render_buffer` yoksa
+    (test çiftleri) `play` kullanılır.
+    """
+    samples = np.asarray(frames, dtype=np.float32)
+    if samples.size == 0:
+        return 0
+    if getattr(player, "_render_buffer", None) is None or getattr(player, "_render_release", None) is None:
+        player.play(samples)
+        return int(samples.shape[0] if samples.ndim > 1 else samples.size)
+
+    if memmove is None:
+        from soundcard.mediafoundation import _ffi
+        memmove = _ffi.memmove
+
+    channels = len(set(getattr(player, "channelmap", [0]))) or 1
+    mono = np.ascontiguousarray(samples.reshape(-1) if samples.ndim == 1 else samples[:, 0])
+    data = mono.reshape(-1, 1) if channels == 1 else np.tile(mono.reshape(-1, 1), (1, channels))
+    data = np.ascontiguousarray(data, dtype=np.float32)
+    total = int(data.shape[0])
+    offset = 0
+    while offset < total:
+        if stop is not None and stop():
+            break
+        available = int(player._render_available_frames())
+        if available <= 0:
+            time.sleep(0.001)
+            continue
+        count = min(available, total - offset)
+        piece = np.ascontiguousarray(data[offset:offset + count])
+        raw = piece.ravel().tobytes()
+        if len(raw) != count * channels * 4:
+            raise RuntimeError("oynatma çerçevesi boyu WASAPI adımıyla uyuşmuyor")
+        buffer = player._render_buffer(count)
+        memmove(buffer[0], raw, len(raw))
+        player._render_release(count)
+        offset += count
+    return offset
+
 
 class BoundedByteQueue:
     """Ses gecikmesini sınırlandırmak için byte/süre bütçeli kuyruk (G06)."""
@@ -892,13 +937,17 @@ class SystemAudioLoop:
     def _play_inner(self, speaker) -> str:
         """Tek player ömrü; 'done' (None) ya da 'swap' ile döner.
 
-        80 ms jitter tamponu kısa paket aralıklarını örter. 50 ms Empty
-        preroll'u sıfırlamaz — aksi halde WASAPI sessizlik basar, çeviri
-        çıt-çıt / kesik kesik duyulur. Cümle sonunda 8 ms fade.
+        Yastık Python'da tutulursa cihaz boşalır, paket arasında sessizlik
+        basar ve sonraki örnek sıfırdan girince çıt çıkar. Preroll dolunca
+        ses (son 8 ms hariç) hemen WASAPI tamponuna yazılır. Tampon ~120 ms:
+        paket gecikmesi bu süreyi aşmadan cihaz susmaz. Cümle bitmek
+        üzereyken elde kalan son örnekler kosinüsle iner.
         """
-        preroll_n = int(RECEIVE_SAMPLE_RATE * 0.08)  # ~80 ms jitter tamponu
+        preroll_n = int(RECEIVE_SAMPLE_RATE * 0.08)  # ~80 ms başlangıç yastığı
         fade_n = max(2, int(RECEIVE_SAMPLE_RATE * 0.008))  # ~8 ms tıkırtı rampa
+        device_block = int(RECEIVE_SAMPLE_RATE * 0.12)  # WASAPI tamponu, ~120 ms
         gap_end_s = 0.2
+        underrun_lead_s = 0.025
         split_n = 2048  # hot-swap tepkisi için oynatma dilimi
         pending: list[np.ndarray] = []
         pending_n = 0
@@ -908,7 +957,7 @@ class SystemAudioLoop:
         empty_since: float | None = None
         leftover = bytearray()
         with speaker.player(
-            samplerate=RECEIVE_SAMPLE_RATE, channels=1, blocksize=2048
+            samplerate=RECEIVE_SAMPLE_RATE, channels=1, blocksize=device_block
         ) as sp:
             self._play_opened_once = True
             self._play_heartbeat = time.monotonic()
@@ -928,33 +977,34 @@ class SystemAudioLoop:
                     if self._peek_pending_output():
                         return False
                     piece = audio_raw[pos:pos + split_n]
-                    queued_until = max(queued_until, time.monotonic()) + len(piece) / RECEIVE_SAMPLE_RATE
+                    n = int(piece.size)
+                    queued_until = max(queued_until, time.monotonic()) + n / RECEIVE_SAMPLE_RATE
                     # Sessiz PCM de oynatılır (zamanlama korunur), fakat yankı
                     # kapısını açık tutmaz. RMS eşiği -80 dBFS: nicemleme tabanı.
-                    if float(np.dot(piece, piece)) > piece.size * 1e-8:
+                    loud = float(np.dot(piece, piece)) > n * 1e-8
+                    if loud:
                         self._playback_until = queued_until
-                    sp.play(piece)
+
+                    def _halt() -> bool:
+                        return (
+                            self._play_stop.is_set()
+                            or self._user_stop.is_set()
+                            or self._peek_pending_output()
+                        )
+
+                    written = write_playback(sp, piece, stop=_halt)
                     self._play_heartbeat = time.monotonic()
+                    if written < n:
+                        queued_until -= (n - written) / RECEIVE_SAMPLE_RATE
+                        if loud:
+                            self._playback_until = queued_until
+                        return False
                     pos += split_n
                 return True
 
-            def _queue_audio(audio: np.ndarray) -> bool:
-                nonlocal pending_n, started, hold_n
-                if audio.size == 0:
-                    return True
-                pending.append(audio)
-                pending_n += int(audio.size)
-                if not started:
-                    if pending_n < preroll_n:
-                        return True
-                    buf = cosine_fade(np.concatenate(pending), fade_n, fade_in=True)
-                    pending.clear()
-                    started = True
-                    hold_n = preroll_n
-                    pending.append(buf)
-                    pending_n = int(buf.size)
-                elif pending_n >= preroll_n:
-                    hold_n = preroll_n
+            def _commit_pending() -> bool:
+                """Cihaza, fade kuyruğu hariç birikmiş sesi yaz."""
+                nonlocal pending_n
                 if pending_n <= hold_n:
                     return True
                 buf = np.concatenate(pending)
@@ -965,44 +1015,70 @@ class SystemAudioLoop:
                 pending_n = hold_n
                 return True
 
+            def _end_phrase(fade_in: bool) -> bool:
+                """Kuyruğu sessizliğe indir; sonraki cümle yeniden fade-in yapsın."""
+                nonlocal pending_n, started, hold_n
+                buf = np.concatenate(pending) if pending else np.empty(0, dtype=np.float32)
+                pending.clear()
+                pending_n = 0
+                started = False
+                hold_n = preroll_n
+                leftover.clear()
+                if buf.size == 0:
+                    return True
+                if fade_in:
+                    buf = cosine_fade(buf, fade_n, fade_in=True)
+                buf = cosine_fade(buf, fade_n, fade_in=False)
+                return _play_chunk(buf)
+
+            def _queue_audio(audio: np.ndarray) -> bool:
+                nonlocal pending_n, started, hold_n
+                if audio.size == 0:
+                    return True
+                if pending and pending[-1].size:
+                    audio = soften_join(float(pending[-1][-1]), audio)
+                pending.append(audio)
+                pending_n += int(audio.size)
+                if not started:
+                    if pending_n < preroll_n:
+                        return True
+                    buf = cosine_fade(np.concatenate(pending), fade_n, fade_in=True)
+                    pending.clear()
+                    pending.append(buf)
+                    pending_n = int(buf.size)
+                    started = True
+                    # Yastığın kendisi cihazda kalsın; Python'da yalnız fade kuyruğu.
+                    hold_n = fade_n
+                return _commit_pending()
+
             while not self._play_stop.is_set() and not self._user_stop.is_set():
                 if self._peek_pending_output():
                     return "swap"
                 try:
-                    pcm = self._play_q.get(timeout=0.05)
+                    timeout = 0.01 if started else 0.05
+                    pcm = self._play_q.get(timeout=timeout)
                 except queue.Empty:
                     self._play_heartbeat = time.monotonic()
                     now = time.monotonic()
                     if empty_since is None:
                         empty_since = now
                     elapsed = now - empty_since
-                    # Jitter'ı WASAPI'ye dök: 50 ms boşluk sessizlik/tıkırtı olmasın.
-                    if started and pending_n > fade_n:
-                        hold_n = fade_n
-                        buf = np.concatenate(pending)
-                        pending.clear()
-                        if not _play_chunk(buf[:-fade_n]):
+                    remaining = queued_until - now
+                    # Cihaz susmadan son örnekleri indir. Tampon çoktan bittiyse
+                    # kuyruğu geri çalma: araya giren sessizliğin üstüne sıçrar.
+                    if started and pending_n and remaining <= underrun_lead_s:
+                        if remaining < 0.0:
+                            pending.clear()
+                            pending_n = 0
+                            started = False
+                            hold_n = preroll_n
+                            leftover.clear()
+                        elif not _end_phrase(fade_in=False):
                             return "swap"
-                        pending.append(buf[-fade_n:].copy())
-                        pending_n = fade_n
-                    elif pending_n and elapsed >= gap_end_s:
-                        buf = np.concatenate(pending)
-                        pending.clear()
-                        pending_n = 0
-                        if started:
-                            buf = cosine_fade(buf, fade_n, fade_in=False)
-                        else:
-                            buf = cosine_fade(
-                                cosine_fade(buf, fade_n, fade_in=True),
-                                fade_n,
-                                fade_in=False,
-                            )
-                        started = False
-                        hold_n = preroll_n
-                        leftover.clear()
-                        if not _play_chunk(buf):
+                    elif pending_n and not started and elapsed >= gap_end_s:
+                        if not _end_phrase(fade_in=True):
                             return "swap"
-                    elif started and elapsed >= gap_end_s:
+                    elif started and not pending_n and elapsed >= gap_end_s:
                         started = False
                         hold_n = preroll_n
                         leftover.clear()
