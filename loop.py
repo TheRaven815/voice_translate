@@ -297,6 +297,9 @@ class SystemAudioLoop:
         self._has_pending_output: bool = False
         self._input_generation: int = 0
         self._output_generation: int = 0
+        # Aynı hoparlörde dublaj: yakalama kendi çaldığımız sesi hariç tutar.
+        self._dub_exclude = False
+        self._dub_generation: int = 0
         self._capture_heartbeat: float = time.monotonic()
         self._play_heartbeat: float = time.monotonic()
         self._capture_opened_once: bool = False
@@ -330,6 +333,23 @@ class SystemAudioLoop:
 
     def set_muted(self, muted: bool) -> None:
         self.muted = bool(muted)
+
+    def set_dub_exclude(self, enabled: bool) -> None:
+        """Aynı hoparlörde dublaj açıkken yakalamayı kendi sürecimiz dışında tut.
+
+        Uç susturması çeviriyi de keser; diğer oturumlar susunca sıradan
+        döngü kaynağı da susar. Exclude döngüsü o susturmadan önce akar.
+        """
+        enabled = bool(enabled)
+        with self._io_lock:
+            if self._dub_exclude == enabled:
+                return
+            self._dub_exclude = enabled
+            self._dub_generation += 1
+
+    def _dub_state(self) -> tuple[bool, int]:
+        with self._io_lock:
+            return self._dub_exclude, self._dub_generation
 
     # -- Hot-swap API (thread-safe; çeviri oturumunu öldürmez) --------------
     @staticmethod
@@ -574,14 +594,24 @@ class SystemAudioLoop:
             delay = 0.25
 
     def _capture_inner(self):
-        is_loopback = getattr(self.source_mic, "isloopback", False)
+        exclude, seen_dub = self._dub_state()
+        # Exclude akışında çeviri zaten yakalamaya girmez; yankı susturması
+        # kaynak konuşmayı da kesmesin.
+        is_loopback = False if exclude else getattr(self.source_mic, "isloopback", False)
         same_endpoint = is_loopback and _is_same_endpoint(self.source_mic, self.output_speaker)
         seen_output_gen = self._output_generation
         conv = AudioConverter(in_rate=CAPTURE_RATE, out_rate=SEND_SAMPLE_RATE)
-        ch = 1 if getattr(self.source_mic, "channels", 2) == 1 else 2
-        with self.source_mic.recorder(
-            samplerate=CAPTURE_RATE, channels=ch, blocksize=CAPTURE_BUFFER_BLOCKS
-        ) as mic:
+        ch = 2 if exclude else (1 if getattr(self.source_mic, "channels", 2) == 1 else 2)
+        if exclude:
+            from process_audio import exclude_self_recorder
+            opener = exclude_self_recorder(
+                samplerate=CAPTURE_RATE, channels=ch, blocksize=CAPTURE_BUFFER_BLOCKS,
+            )
+        else:
+            opener = self.source_mic.recorder(
+                samplerate=CAPTURE_RATE, channels=ch, blocksize=CAPTURE_BUFFER_BLOCKS,
+            )
+        with opener as mic:
             self._capture_opened_once = True
             self._capture_heartbeat = time.monotonic()
             # Oturum-seviyesi uyarı hook'u: recorder ömrü boyunca BİR kez kurulur.
@@ -608,7 +638,7 @@ class SystemAudioLoop:
                 warnings.showwarning = _showwarning
                 try:
                     while not self._cap_stop.is_set():
-                        if self._peek_pending_input():
+                        if self._peek_pending_input() or self._dub_state()[1] != seen_dub:
                             # Eski akış `with` çıkışında düzgün kapatılır.
                             return
                         try:

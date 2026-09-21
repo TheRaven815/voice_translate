@@ -176,6 +176,24 @@ class ApplicationAudioSource:
             native.kernel.CloseHandle(handle)
 
 
+def process_tree_pids(root: int, parents: dict[int, int] | None = None) -> frozenset[int]:
+    """Kök süreç ve tüm alt süreçleri. parents: pid -> üst pid."""
+    root = int(root)
+    if parents is None:
+        parents = _WindowsProcesses().parents()
+    children: dict[int, list[int]] = {}
+    for pid, parent in parents.items():
+        children.setdefault(int(parent), []).append(int(pid))
+    found = {root}
+    pending = [root]
+    while pending:
+        for child in children.get(pending.pop(), ()):
+            if child not in found:
+                found.add(child)
+                pending.append(child)
+    return frozenset(found)
+
+
 def application_inputs() -> list[ApplicationAudioSource]:
     """List visible desktop app roots, never substituting endpoint loopback."""
     if not process_audio_supported():

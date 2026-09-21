@@ -370,6 +370,28 @@ def test_vu_meter_update():
         app.destroy()
 
 
+def test_overlay_subtitle_pins_reading_edge_as_text_grows():
+    app = App()
+    try:
+        app.dst_var.set("Türkçe")
+        app.toggle_overlay()
+        assert app.overlay_label.cget("anchor") == "nw"
+        assert app.overlay_label.cget("justify") == "left"
+
+        app._update_overlay("Merhaba")
+        app._update_overlay("Merhaba dünya bu cümle uzuyor")
+        assert app.overlay_label.cget("text").startswith("Merhaba")
+        assert app.overlay_label.cget("anchor") == "nw"
+        assert app.overlay_label.cget("justify") == "left"
+
+        app.dst_var.set("Arapça")
+        app._update_overlay("مرحبا بالعالم")
+        assert app.overlay_label.cget("anchor") == "ne"
+        assert app.overlay_label.cget("justify") == "right"
+    finally:
+        app.destroy()
+
+
 def test_overlay_height_controls_visible_subtitle_amount():
     app = App()
     try:
@@ -1513,6 +1535,110 @@ def test_idle_meter_shows_preview_level():
         app._preview._set_level(0.0)
         app._pump_log()
         assert app.meter.coords(app._meter_bar)[2] == 0.0
+    finally:
+        app.destroy()
+
+
+def test_settings_dub_checkbox_is_saved_immediately(monkeypatch):
+    from i18n import t
+
+    saved = []
+    monkeypatch.setattr("gui.app.save_preferences", lambda **kwargs: saved.append(kwargs))
+    app = App()
+    try:
+        app._open_settings()
+        assert app._dub_toggle.cget("text") == t("dub_toggle")
+        assert app._dub_var.get() is False
+        app._dub_toggle.invoke()
+        assert app.dub_mute_source is True
+        assert app.dub_background is False
+        assert saved[-1]["dub_mute_source"] is True
+        assert app._dub_bg_toggle.cget("text") == t("dub_background")
+        app._dub_bg_toggle.invoke()
+        assert app.dub_background is True
+        assert app.dub_mute_source is False
+        assert saved[-1]["dub_background"] is True
+        app._close_settings()
+        app._open_settings()
+        assert app._dub_var.get() is False
+        assert app._dub_bg_var.get() is True
+    finally:
+        app.destroy()
+
+
+def test_dub_mutes_source_only_while_translation_is_playing():
+    from types import SimpleNamespace
+
+    from devices import display_input_label
+    from source_mute import DubPlan
+
+    events = []
+
+    class FakeDub:
+        def preview(self, source, output, *, enabled, gain=None):
+            events.append(("preview", enabled, gain, getattr(output, "name", None)))
+            if not enabled:
+                return DubPlan("idle")
+            if getattr(source, "isloopback", False) and getattr(source, "id", None) == getattr(output, "id", None):
+                return DubPlan("mute_other_sessions", root_pid=1)
+            return DubPlan("mute_endpoint", endpoint_id="spk")
+
+        def engage(self, plan):
+            events.append(("engage", plan.action))
+
+        def release(self):
+            events.append(("release",))
+
+    app = App()
+    try:
+        app._source_dub = FakeDub()
+        app.dub_mute_source = True
+        speaker = SimpleNamespace(name="Kulaklık", id="hp")
+        source = SimpleNamespace(name="Hoparlör", id="spk", isloopback=True, is_application=False)
+        app.outputs = [speaker]
+        app.inputs = [source]
+        app.out_box["values"] = (NONE_OUTPUT, "Kulaklık")
+        excluded = []
+
+        class Loop:
+            def swap_output(self, dev):
+                return True
+
+            def swap_input(self, dev):
+                return True
+
+            def set_dub_exclude(self, enabled):
+                excluded.append(enabled)
+
+        app.loop_obj = Loop()
+        app.worker = type("Worker", (), {"is_alive": lambda self: True})()
+        app._stopping.clear()
+        app.in_var.set(display_input_label(source))
+        app.out_var.set("Kulaklık")
+        events.clear()
+        excluded.clear()
+        app._sync_source_dub()
+        assert ("engage", "mute_endpoint") in events
+        assert excluded[-1] is False
+
+        app.translation_muted = True
+        app._sync_source_dub()
+        assert events[-1] == ("engage", "idle")
+
+        app.translation_muted = False
+        app.out_var.set(NONE_OUTPUT)
+        assert events[-1] == ("engage", "idle")
+
+        app.out_var.set("Kulaklık")
+        same = SimpleNamespace(name="Hoparlör", id="spk")
+        app.outputs = [same]
+        app.out_box["values"] = (NONE_OUTPUT, "Hoparlör")
+        app.out_var.set("Hoparlör")
+        events.clear()
+        excluded.clear()
+        app._sync_source_dub()
+        assert ("engage", "mute_other_sessions") in events
+        assert excluded[0] is True
     finally:
         app.destroy()
 

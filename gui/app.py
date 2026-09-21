@@ -36,6 +36,7 @@ from i18n import get_ui_lang, set_ui_lang, t
 from hotkeys import GlobalHotkeys, ShortcutError, parse_shortcut, shortcut_from_tk_event
 from logger import append_history, log_exception, setup_logging
 from loop import SystemAudioLoop, validate_live_api_key
+from source_mute import DUB_BACKGROUND, DubPlan, SourceDub
 from meta import APP_AUTHOR, APP_TITLE, __version__
 from updater import (
     UpdateError,
@@ -307,6 +308,17 @@ class App(tk.Tk):
         self.overlay_font_size = getattr(self._cfg, "overlay_font_size", 13)
         self.overlay_alpha = getattr(self._cfg, "overlay_alpha", 0.92)
         self.overlay_click_through = getattr(self._cfg, "overlay_click_through", False)
+        self.dub_mute_source = bool(getattr(self._cfg, "dub_mute_source", False))
+        self.dub_background = bool(getattr(self._cfg, "dub_background", False))
+        if self.dub_mute_source and self.dub_background:
+            self.dub_background = False
+        self._source_dub = SourceDub()
+        self._dub_logged: tuple | None = None
+        self._dub_was_active = False
+        self._dub_var: tk.BooleanVar | None = None
+        self._dub_toggle: tk.Checkbutton | None = None
+        self._dub_bg_var: tk.BooleanVar | None = None
+        self._dub_bg_toggle: tk.Checkbutton | None = None
         self._overlay_text = ""
         self.transcript_items: list[TranscriptItem] = []
         self.session_start_time: float | None = None
@@ -625,6 +637,7 @@ class App(tk.Tk):
             self._input_application_path = ""
         self._update_input_hint()
         self._save_user_prefs()
+        self._sync_source_dub()
         if dev is None:
             self._sync_preview_device()
             return
@@ -814,6 +827,7 @@ class App(tk.Tk):
                         self._loop_kwargs["output_speaker"] = self._resolve_output_device()
                 except Exception:
                     pass
+            self._sync_source_dub()
         except Exception:
             pass
 
@@ -1174,6 +1188,137 @@ class App(tk.Tk):
             self.loop_obj.set_muted(self.translation_muted)
         message = t("translation_muted") if self.translation_muted else t("translation_unmuted")
         self._append(f"[bilgi] {message}\n")
+        self._sync_source_dub()
+
+    def _sync_source_dub(self) -> None:
+        """Çeviri sesi duyulurken kaynağı sustur; aksi halde eski haline döndür."""
+        dub = getattr(self, "_source_dub", None)
+        if dub is None:
+            return
+        running = self._worker_alive() and not self._stopping.is_set()
+        output = source = None
+        if running:
+            try:
+                output = self._resolve_output_device()
+                source = self._resolve_input_device()
+            except Exception:
+                output = source = None
+        mute = bool(getattr(self, "dub_mute_source", False))
+        background = bool(getattr(self, "dub_background", False)) and not mute
+        enabled = bool(
+            (mute or background)
+            and running
+            and output is not None
+            and not getattr(self, "translation_muted", False)
+        )
+        try:
+            plan = dub.preview(
+                source, output, enabled=enabled, gain=DUB_BACKGROUND if background else None,
+            )
+        except Exception as exc:
+            self._announce_dub_failure(exc)
+            return
+        loop_obj = getattr(self, "loop_obj", None)
+        set_exclude = getattr(loop_obj, "set_dub_exclude", None)
+        try:
+            if plan.action == "mute_other_sessions" and set_exclude is not None:
+                set_exclude(True)
+            dub.engage(plan)
+            if plan.action != "mute_other_sessions" and set_exclude is not None:
+                set_exclude(False)
+        except Exception as exc:
+            if set_exclude is not None:
+                try:
+                    set_exclude(False)
+                except Exception:
+                    pass
+            try:
+                dub.release()
+            except Exception:
+                pass
+            self._announce_dub_failure(exc)
+            return
+        self._announce_dub(plan)
+
+    def _release_source_dub(self) -> None:
+        set_exclude = getattr(getattr(self, "loop_obj", None), "set_dub_exclude", None)
+        if set_exclude is not None:
+            try:
+                set_exclude(False)
+            except Exception:
+                pass
+        dub = getattr(self, "_source_dub", None)
+        if dub is not None:
+            try:
+                dub.release()
+            except Exception:
+                pass
+        self._announce_dub(DubPlan())
+
+    def _announce_dub(self, plan: DubPlan) -> None:
+        log = getattr(self, "log", None)
+        if log is None:
+            return
+        try:
+            if not int(log.winfo_exists()):
+                return
+        except tk.TclError:
+            return
+        signature = (plan.action, plan.note, plan.root_pid, plan.endpoint_id, plan.gain)
+        if signature == getattr(self, "_dub_logged", None):
+            return
+        self._dub_logged = signature
+        if plan.action == "idle":
+            if getattr(self, "_dub_was_active", False):
+                self._append(f"[bilgi] {t('dub_restored')}\n")
+            self._dub_was_active = False
+            if plan.note == "same_speakers" and (
+                getattr(self, "dub_mute_source", False) or getattr(self, "dub_background", False)
+            ):
+                self._append(f"[bilgi] {t('dub_same_speakers')}\n")
+            return
+        self._dub_was_active = True
+        bed = plan.gain is not None
+        key = {
+            "mute_process": "dub_bed_app" if bed else "dub_muted_app",
+            "mute_endpoint": "dub_bed_endpoint" if bed else "dub_muted_endpoint",
+            "mute_other_sessions": "dub_bed_sessions" if bed else "dub_muted_sessions",
+        }.get(plan.action)
+        if key:
+            self._append(f"[bilgi] {t(key)}\n")
+
+    def _announce_dub_failure(self, exc: BaseException) -> None:
+        log_exception(exc, "source dub")
+        if hasattr(self, "log"):
+            self._append(f"[uyarı] {t('dub_failed')}: {exc}\n")
+
+    def _on_dub_toggle(self) -> None:
+        if self._dub_var is None:
+            return
+        if self._dub_var.get() and self._dub_bg_var is not None:
+            self._dub_bg_var.set(False)
+        self._commit_dub()
+
+    def _on_dub_background(self) -> None:
+        if self._dub_bg_var is None:
+            return
+        if self._dub_bg_var.get() and self._dub_var is not None:
+            self._dub_var.set(False)
+        self._commit_dub()
+
+    def _commit_dub(self) -> None:
+        self.dub_mute_source = bool(self._dub_var.get()) if self._dub_var is not None else False
+        self.dub_background = bool(self._dub_bg_var.get()) if self._dub_bg_var is not None else False
+        if self.dub_mute_source:
+            self.dub_background = False
+        try:
+            save_preferences(
+                dub_mute_source=self.dub_mute_source,
+                dub_background=self.dub_background,
+            )
+        except OSError as exc:
+            self._append(f"[uyarı] {t('dub_failed')}: {exc}\n")
+        self._sync_source_dub()
 
     def _capture_shortcut(self, event, variable: tk.StringVar):
         if event.keysym in {"BackSpace", "Delete"}:
@@ -1267,6 +1412,12 @@ class App(tk.Tk):
         finally:
             del font
 
+    def _overlay_text_layout(self) -> tuple[str, str]:
+        """Akışta okuma kenarı sabit kalsın: LTR sol üst, RTL sağ üst."""
+        if is_rtl(self.dst_var.get()):
+            return "ne", tk.RIGHT
+        return "nw", tk.LEFT
+
     def _update_overlay(self, full_text: str) -> None:
         if self._overlay is None or not self._overlay.winfo_exists():
             return
@@ -1274,10 +1425,8 @@ class App(tk.Tk):
         tail = self._overlay_tail(full_text)
         if not tail:
             return
-        self.overlay_label.configure(
-            text=tail,
-            justify="right" if is_rtl(self.dst_var.get()) else "center",
-        )
+        anchor, justify = self._overlay_text_layout()
+        self.overlay_label.configure(text=tail, anchor=anchor, justify=justify)
         self._fit_overlay()
 
     def _write_pane(self, widget, text: str):
@@ -1406,6 +1555,8 @@ class App(tk.Tk):
                 overlay_font_size=getattr(self, "overlay_font_size", 13),
                 overlay_alpha=getattr(self, "overlay_alpha", 0.92),
                 overlay_click_through=getattr(self, "overlay_click_through", False),
+                dub_mute_source=getattr(self, "dub_mute_source", False),
+                dub_background=getattr(self, "dub_background", False),
             )
         except OSError:
             pass
@@ -1837,6 +1988,14 @@ class App(tk.Tk):
                     child.configure(bg=bg, fg=C.text, activebackground=C.hover, activeforeground=C.text)
                 except tk.TclError:
                     pass
+            elif isinstance(child, tk.Checkbutton):
+                try:
+                    child.configure(
+                        bg=bg, fg=C.text, activebackground=bg, activeforeground=C.text,
+                        selectcolor=C.hover, highlightbackground=bg,
+                    )
+                except tk.TclError:
+                    pass
     def _pump_log(self):
         try:
             while True:
@@ -1858,6 +2017,7 @@ class App(tk.Tk):
                             self._curr_trans_buf = ""
                         self._set_running(False)
                         self.worker = None
+                        self._release_source_dub()
                         self.loop_obj = None
                         # Oturum kapandı: VU önizlemesi seçili girişe geri döner.
                         try:
@@ -2163,6 +2323,7 @@ class App(tk.Tk):
         self._append(f"[bilgi] {source.name} -> {dest} ({src_disp}>{dst})\n")
         self.worker = threading.Thread(target=self._run, args=(current_session_id,), daemon=True)
         self.worker.start()
+        self._sync_source_dub()
         self._set_running(True)
         self._set_status("Bağlanıyor", C.warn)
     def _run(self, session_id: int | None = None):
@@ -2214,6 +2375,7 @@ class App(tk.Tk):
                 pass
             self._restart_timer = None
         self._stopping.set()
+        self._release_source_dub()
         self.session_start_time = None
         if hasattr(self, "timer_lbl"):
             self.timer_lbl.configure(text="")
@@ -2463,6 +2625,55 @@ class App(tk.Tk):
         self._settings_status.pack(anchor="w", fill=tk.X, pady=(8, 0))
         tk.Frame(main, bg=C.line, height=1).pack(fill=tk.X, pady=(14, 12))
         tk.Label(
+            main, text=t("dub_section"), font=(self.font_ui[0], self.font_ui[1], "bold"),
+            fg=C.text, bg=C.panel, anchor="w",
+        ).pack(fill=tk.X)
+        tk.Label(
+            main, text=t("dub_description"), font=self.font_ui, fg=C.dim, bg=C.panel,
+            anchor="w", justify="left", wraplength=440,
+        ).pack(fill=tk.X, pady=(4, 8))
+        self._dub_var = tk.BooleanVar(value=bool(self.dub_mute_source))
+        self._dub_toggle = tk.Checkbutton(
+            main,
+            text=t("dub_toggle"),
+            variable=self._dub_var,
+            command=self._on_dub_toggle,
+            font=self.font_ui,
+            fg=C.text,
+            bg=C.panel,
+            activeforeground=C.text,
+            activebackground=C.panel,
+            selectcolor=C.hover,
+            anchor="w",
+            justify="left",
+            bd=0,
+            highlightthickness=0,
+            padx=0,
+            pady=2,
+        )
+        self._dub_toggle.pack(fill=tk.X)
+        self._dub_bg_var = tk.BooleanVar(value=bool(self.dub_background) and not self.dub_mute_source)
+        self._dub_bg_toggle = tk.Checkbutton(
+            main,
+            text=t("dub_background"),
+            variable=self._dub_bg_var,
+            command=self._on_dub_background,
+            font=self.font_ui,
+            fg=C.text,
+            bg=C.panel,
+            activeforeground=C.text,
+            activebackground=C.panel,
+            selectcolor=C.hover,
+            anchor="w",
+            justify="left",
+            bd=0,
+            highlightthickness=0,
+            padx=0,
+            pady=2,
+        )
+        self._dub_bg_toggle.pack(fill=tk.X, pady=(2, 0))
+        tk.Frame(main, bg=C.line, height=1).pack(fill=tk.X, pady=(14, 12))
+        tk.Label(
             main, text=t("shortcuts"), font=(self.font_ui[0], self.font_ui[1], "bold"),
             fg=C.text, bg=C.panel, anchor="w",
         ).pack(fill=tk.X)
@@ -2569,6 +2780,10 @@ class App(tk.Tk):
         self._mute_shortcut_entry = None
         self._start_stop_shortcut_entry = None
         self._shortcut_status = None
+        self._dub_var = None
+        self._dub_toggle = None
+        self._dub_bg_var = None
+        self._dub_bg_toggle = None
         self._refresh_key_notice()
 
     def _fit_overlay(self, anchor: str = "bottom") -> None:
@@ -2736,6 +2951,7 @@ class App(tk.Tk):
         self._overlay_text = next((line.strip() for line in reversed(raw_text.splitlines()) if line.strip()), "")
         cur_text = self._overlay_text or "..."
 
+        anchor, justify = self._overlay_text_layout()
         self.overlay_label = tk.Label(
             wrap,
             text=cur_text,
@@ -2743,7 +2959,8 @@ class App(tk.Tk):
             fg=C.text,
             bg=C.overlay_bg,
             wraplength=520,
-            justify=tk.CENTER,
+            anchor=anchor,
+            justify=justify,
             padx=12,
             pady=2,
         )
@@ -2832,6 +3049,7 @@ class App(tk.Tk):
         except Exception:
             pass
         self.stop()
+        self._release_source_dub()
         self._close_about()
         self._close_settings()
         self._close_application_picker()
@@ -2864,6 +3082,10 @@ class App(tk.Tk):
         self.destroy()
 
     def destroy(self):
+        try:
+            self._release_source_dub()
+        except Exception:
+            pass
         if getattr(self, "_pump_after_id", None) is not None:
             try:
                 self.after_cancel(self._pump_after_id)

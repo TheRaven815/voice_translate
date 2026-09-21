@@ -94,6 +94,7 @@ def test_save_preferences(tmp_path, monkeypatch):
         overlay_geom="500x50+200+200",
         mute_shortcut="Ctrl+Alt+M",
         start_stop_shortcut="F9",
+        dub_mute_source=True,
     )
     loaded = config.load()
     assert loaded.input_device == "Mic 1"
@@ -105,6 +106,11 @@ def test_save_preferences(tmp_path, monkeypatch):
     assert loaded.overlay_geom == "500x50+200+200"
     assert loaded.mute_shortcut == "Ctrl+Alt+M"
     assert loaded.start_stop_shortcut == "F9"
+    assert loaded.dub_mute_source is True
+    config.save_preferences(dub_mute_source=False, dub_background=True)
+    bed = config.load()
+    assert bed.dub_background is True
+    assert bed.dub_mute_source is False
 
 def test_dpapi_failure_raises_oserror_and_does_not_save_plaintext(tmp_path, monkeypatch):
     _isolate(tmp_path, monkeypatch)

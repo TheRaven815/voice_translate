@@ -38,6 +38,7 @@ py-modules = [
     "main",
     "meta",
     "process_audio",
+    "source_mute",
     "updater",
 ]
 [tool.pytest.ini_options]

@@ -121,6 +121,8 @@ class Settings:
     save_history: bool = True
     mute_shortcut: str = "Ctrl+Shift+M"
     start_stop_shortcut: str = "Ctrl+Shift+Space"
+    dub_mute_source: bool = False
+    dub_background: bool = False
 
 def config_dir() -> Path:
     if os.name == "nt":
@@ -235,6 +237,10 @@ def load() -> Settings:
         ui_lang = "tr"
     always_on_top = bool(raw.get("always_on_top")) if isinstance(raw.get("always_on_top"), (bool, int)) else False
     overlay_click_through = bool(raw.get("overlay_click_through")) if isinstance(raw.get("overlay_click_through"), (bool, int)) else False
+    dub_mute_source = bool(raw.get("dub_mute_source")) if isinstance(raw.get("dub_mute_source"), (bool, int)) else False
+    dub_background = bool(raw.get("dub_background")) if isinstance(raw.get("dub_background"), (bool, int)) else False
+    if dub_mute_source and dub_background:
+        dub_background = False
     overlay_font_size = _safe_int(raw.get("overlay_font_size"), default=13, min_val=8, max_val=72)
     overlay_alpha = _safe_float(raw.get("overlay_alpha"), default=0.92, min_val=0.1, max_val=1.0)
 
@@ -256,6 +262,8 @@ def load() -> Settings:
         save_history=bool(raw.get("save_history", True)),
         mute_shortcut=str(raw.get("mute_shortcut") or "Ctrl+Shift+M"),
         start_stop_shortcut=str(raw.get("start_stop_shortcut") or "Ctrl+Shift+Space"),
+        dub_mute_source=dub_mute_source,
+        dub_background=dub_background,
     )
 def save(settings: Settings) -> Path:
     raw = _read_raw()
@@ -276,6 +284,8 @@ def save(settings: Settings) -> Path:
     raw["save_history"] = settings.save_history
     raw["mute_shortcut"] = settings.mute_shortcut
     raw["start_stop_shortcut"] = settings.start_stop_shortcut
+    raw["dub_mute_source"] = settings.dub_mute_source
+    raw["dub_background"] = settings.dub_background
     return _write_raw(raw)
 
 def save_api_key(key: str) -> Path:
@@ -302,6 +312,8 @@ def save_preferences(
     save_history: bool | None = None,
     mute_shortcut: str | None = None,
     start_stop_shortcut: str | None = None,
+    dub_mute_source: bool | None = None,
+    dub_background: bool | None = None,
 ) -> Path:
     raw = _read_raw()
     if input_device is not None:
@@ -336,6 +348,10 @@ def save_preferences(
         raw["mute_shortcut"] = mute_shortcut
     if start_stop_shortcut is not None:
         raw["start_stop_shortcut"] = start_stop_shortcut
+    if dub_mute_source is not None:
+        raw["dub_mute_source"] = dub_mute_source
+    if dub_background is not None:
+        raw["dub_background"] = dub_background
     return _write_raw(raw)
 
 

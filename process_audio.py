@@ -10,6 +10,7 @@ import ctypes as ct
 import functools
 import math
 import operator
+import os
 import sys
 import threading
 import time
@@ -222,15 +223,21 @@ class _CompletionObject(ct.Structure):
 _completion_vtable = _CompletionVTable(_query_interface, _add_ref, _release_callback, _activate_completed)
 
 
+# PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE / EXCLUDE_TARGET_PROCESS_TREE.
+PROCESS_LOOPBACK_INCLUDE = 0
+PROCESS_LOOPBACK_EXCLUDE = 1
+
+
 class _Activation:
-    def __init__(self, api: _WindowsAudio, pid: int):
+    def __init__(self, api: _WindowsAudio, pid: int, loopback_mode: int = PROCESS_LOOPBACK_INCLUDE):
         self.completed = threading.Event()
         self.references = 1
         self.marshaler = ct.c_void_p()
         self.interface = _CompletionObject(ct.pointer(_completion_vtable))
         self.address = ct.addressof(self.interface)
-        # ActivationType=PROCESS_LOOPBACK; mode=INCLUDE_TARGET_PROCESS_TREE.
-        self.params = _ActivationParams(1, _ProcessLoopbackParams(pid, 0))
+        # ActivationType=PROCESS_LOOPBACK. Exclude keeps every other process's
+        # stream, which is how same-speaker dubbing still hears the source.
+        self.params = _ActivationParams(1, _ProcessLoopbackParams(pid, int(loopback_mode)))
         self.variant = _PropVariant()
         self.variant.vt = 65  # VT_BLOB
         self.variant.blob = _Blob(ct.sizeof(self.params), ct.addressof(self.params))
@@ -252,10 +259,14 @@ class ProcessRecorder:
     blocksize is the caller's preferred read size, not a device-period request.
     """
 
-    def __init__(self, pid: int, *, samplerate: int, channels: int, blocksize: int):
+    def __init__(self, pid: int, *, samplerate: int, channels: int, blocksize: int,
+                 loopback_mode: int = PROCESS_LOOPBACK_INCLUDE):
         if not process_audio_supported():
             raise RuntimeError("Application audio capture requires Windows build 20348 or newer.")
         self.pid = operator.index(pid)
+        self._loopback_mode = int(loopback_mode)
+        if self._loopback_mode not in (PROCESS_LOOPBACK_INCLUDE, PROCESS_LOOPBACK_EXCLUDE):
+            raise ValueError("loopback_mode must be include (0) or exclude (1)")
         self.samplerate = operator.index(samplerate)
         self.channels = operator.index(channels)
         self.blocksize = operator.index(blocksize)
@@ -307,7 +318,7 @@ class ProcessRecorder:
             raise RuntimeError("ProcessRecorder must be used and closed on its opening thread")
 
     def _activate(self) -> None:
-        activation = _Activation(self._api, self.pid)
+        activation = _Activation(self._api, self.pid, self._loopback_mode)
         operation = ct.c_void_p()
         unknown = ct.c_void_p()
         try:
@@ -477,3 +488,14 @@ class ProcessRecorder:
         except OSError:
             if exc_type is None:
                 raise
+
+
+def exclude_self_recorder(*, samplerate: int, channels: int, blocksize: int, pid: int | None = None) -> ProcessRecorder:
+    """Sistemdeki diğer süreçlerin sesi; bu sürecin çaldığı çeviri karışmaz."""
+    return ProcessRecorder(
+        os.getpid() if pid is None else pid,
+        samplerate=samplerate,
+        channels=channels,
+        blocksize=blocksize,
+        loopback_mode=PROCESS_LOOPBACK_EXCLUDE,
+    )
