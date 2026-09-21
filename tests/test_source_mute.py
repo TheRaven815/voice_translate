@@ -169,13 +169,18 @@ def test_same_speaker_dub_captures_other_processes_not_the_device_mix(monkeypatc
     assert used == [("exclude", 2), ("device", 2)]
 
 
+@pytest.mark.device
 @pytest.mark.skipif(sys.platform != "win32", reason="WASAPI")
 def test_windows_endpoint_mute_restores_the_previous_bit():
+    """Gerçek hoparlörün mute/ducking bitini geri yükler. Aygıtsız CI'da 0x80070490 olur."""
     import soundcard as sc
 
-    speaker = sc.default_speaker()
+    try:
+        speaker = sc.default_speaker()
+    except Exception:  # noqa: BLE001 — barındırılan Windows'ta varsayılan uç yok
+        pytest.skip("ses aygıtı yok")
     if speaker is None:
-        pytest.skip("no default speaker")
+        pytest.skip("ses aygıtı yok")
     control = WindowsRenderMute(tree=lambda pid: frozenset({pid}))
     endpoint = str(speaker.id)
     before = control.endpoint_level(endpoint)
