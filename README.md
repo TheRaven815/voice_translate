@@ -10,7 +10,7 @@ Sistem sesi · Mikrofon · Tek uygulama sesi → **metin + sesli çeviri**
 
 **[Türkçe](#ahenk)** · [English](README.en.md)
 
-[![Version](https://img.shields.io/badge/version-0.6.4-blue?style=flat-square)](meta.py)
+[![Version](https://img.shields.io/badge/version-0.6.5-blue?style=flat-square)](meta.py)
 [![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6?style=flat-square&logo=windows&logoColor=white)](#gereksinimler)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
@@ -362,8 +362,8 @@ Yalnızca Windows onefile `Ahenk.exe` dağıtımında etkindir. Uygulama açıl�
 İstemciler GitHub API'ye anahtarsız eriştiği için depo **public** olmalıdır. Yayın için `meta.py`, `pyproject.toml` ve `version_info.txt` sürümlerini eşitleyip `vMAJOR.MINOR.PATCH` etiketi gönderin:
 
 ```bat
-git tag v0.6.4
-git push origin v0.6.4
+git tag v0.6.5
+git push origin v0.6.5
 ```
 
 `.github/workflows/release.yml` testleri çalıştırır, onefile exe'yi derler, SHA-256 dosyasını üretir ve ikisini GitHub Release'e yükler. Taslak ve ön sürümler istemcilere sunulmaz.
@@ -417,6 +417,6 @@ Bu proje [MIT Lisansı](LICENSE) ile lisanslanmıştır.
 
 <div align="center">
 
-**Ahenk 0.6.4** · Enes Eliağır · [Sorun bildir](https://github.com/TheRaven815/voice_translate/issues) · [Sürümler](https://github.com/TheRaven815/voice_translate/releases)
+**Ahenk 0.6.5** · Enes Eliağır · [Sorun bildir](https://github.com/TheRaven815/voice_translate/issues) · [Sürümler](https://github.com/TheRaven815/voice_translate/releases)
 
 </div>
