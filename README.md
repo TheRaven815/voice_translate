@@ -10,7 +10,7 @@ Sistem sesi · Mikrofon · Tek uygulama sesi → **metin + sesli çeviri**
 
 **[Türkçe](#ahenk)** · [English](README.en.md)
 
-[![Version](https://img.shields.io/badge/version-0.6.3-blue?style=flat-square)](meta.py)
+[![Version](https://img.shields.io/badge/version-0.6.4-blue?style=flat-square)](meta.py)
 [![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6?style=flat-square&logo=windows&logoColor=white)](#gereksinimler)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
@@ -52,6 +52,7 @@ Sistem sesi · Mikrofon · Tek uygulama sesi → **metin + sesli çeviri**
 | 🎧 **3 giriş kaynağı** | Sistem sesi (WASAPI loopback), mikrofon veya tek bir masaüstü uygulamasının sesi (işlem ağacı yakalama) |
 | 🔄 **Kesintisiz hot-swap** | Çalışan çeviri oturumunu öldürmeden giriş/çıkış aygıtını değiştirme |
 | 📺 **Altyazı overlay'i** | Her zaman üstte, sürüklenebilir, tıklama-geçirgen yapılabilen canlı altyazı penceresi |
+| ⌨️ **Genel kısayollar** | Uygulama arka plandayken çeviri sesini açıp kapatma ve çeviriyi başlatıp durdurma; Ayarlar'dan atanabilir |
 | 🌗 **Çift tema + çift arayüz dili** | Koyu / açık tema; Türkçe / İngilizce arayüz |
 | 📝 **Dışa aktarma** | Transkriptleri **TXT**, **SRT** (altyazı) ve **JSONL** olarak kaydetme + oturum geçmişi (`history.jsonl`) |
 | 🔇 **Yankı koruması** | Aynı hoparlör kullanılıyorsa çeviri çalarken girişe eş süreli sessizlik enjekte edilir, akış kopmaz |
@@ -192,10 +193,11 @@ python3 -m venv .venv
 4. **Dil** — kaynak (Otomatik + 20 dil) → hedef; ok düğmesi takas eder
 5. **API anahtarı** — `•` ile maskeli; **Kaydet** (doğrulamalı **Test** düğmesiyle) veya Başlat sırasında yazılır
 6. **Başlat / Durdur** — çalışırken aygıt, dil ve anahtar alanları kilitlenir; aygıt değişimi hot-swap ile oturuma yansır
+7. **Ayarlar → Genel Kısayollar** — çeviri sesini aç/kapat ve çeviriyi başlat/durdur tuşlarını yakalayıp Windows genelinde kaydeder
 
 **Paneller:** Duyulan | Çeviri — her birinde Kopyala / Temizle / Dışa Aktar (TXT, SRT, JSONL). Alt şerit `[bilgi]` / `[uyarı]` / `[hata]` loglarını gösterir.
 
-**Altyazı penceresi:** küçük, her zaman üstte, sürüklenebilir; yazı boyutu, opaklık ve tıklama-geçirgenlik ayarlanabilir, ✕ ile kapatılır. Son çeviri satırını gösterir.
+**Altyazı penceresi:** küçük, her zaman üstte ve sürüklenebilir; fare üzerine gelince yazı boyutu, tıklama-geçirgenlik, kapatma ve sağ alt boyutlandırma araçları görünür. Yüksekliğine sığan son altyazı satırlarını gösterir; opaklığı ayarlanabilir.
 
 **Tek uygulama sesi:** hedef programı önce açın → giriş listesinden **Masaüstü uygulaması seç…** → küçük pencereden programı seçin. Yalnızca o işlem ağacı dinlenir (Chrome'da aynı ağaçtaki tüm sekmeler dahildir). Uygulama kapanır/yeniden başlarsa sessizce sistem sesine dönülmez; yeniden seçmeniz istenir. Görünür penceresi olmayan arka plan işlemleri listelenmez.
 
@@ -360,8 +362,8 @@ Yalnızca Windows onefile `Ahenk.exe` dağıtımında etkindir. Uygulama açıl�
 İstemciler GitHub API'ye anahtarsız eriştiği için depo **public** olmalıdır. Yayın için `meta.py`, `pyproject.toml` ve `version_info.txt` sürümlerini eşitleyip `vMAJOR.MINOR.PATCH` etiketi gönderin:
 
 ```bat
-git tag v0.6.3
-git push origin v0.6.3
+git tag v0.6.4
+git push origin v0.6.4
 ```
 
 `.github/workflows/release.yml` testleri çalıştırır, onefile exe'yi derler, SHA-256 dosyasını üretir ve ikisini GitHub Release'e yükler. Taslak ve ön sürümler istemcilere sunulmaz.
@@ -415,6 +417,6 @@ Bu proje [MIT Lisansı](LICENSE) ile lisanslanmıştır.
 
 <div align="center">
 
-**Ahenk 0.6.3** · Enes Eliağır · [Sorun bildir](https://github.com/TheRaven815/voice_translate/issues) · [Sürümler](https://github.com/TheRaven815/voice_translate/releases)
+**Ahenk 0.6.4** · Enes Eliağır · [Sorun bildir](https://github.com/TheRaven815/voice_translate/issues) · [Sürümler](https://github.com/TheRaven815/voice_translate/releases)
 
 </div>

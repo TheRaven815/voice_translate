@@ -92,6 +92,8 @@ def test_save_preferences(tmp_path, monkeypatch):
         dst_lang="tr",
         window_geom="900x500+100+100",
         overlay_geom="500x50+200+200",
+        mute_shortcut="Ctrl+Alt+M",
+        start_stop_shortcut="F9",
     )
     loaded = config.load()
     assert loaded.input_device == "Mic 1"
@@ -101,6 +103,8 @@ def test_save_preferences(tmp_path, monkeypatch):
     assert loaded.dst_lang == "tr"
     assert loaded.window_geom == "900x500+100+100"
     assert loaded.overlay_geom == "500x50+200+200"
+    assert loaded.mute_shortcut == "Ctrl+Alt+M"
+    assert loaded.start_stop_shortcut == "F9"
 
 def test_dpapi_failure_raises_oserror_and_does_not_save_plaintext(tmp_path, monkeypatch):
     _isolate(tmp_path, monkeypatch)

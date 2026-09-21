@@ -1,5 +1,6 @@
 """GUI: Başlat, Tkinter'ın __getattr__ tuzakına düşmeden log yazmalı."""
 
+import os
 import tkinter as tk
 
 import pytest
@@ -67,7 +68,7 @@ def test_app_name_version_and_about():
     try:
         assert app.title() == APP_TITLE == "Ahenk"
         assert app.brand["text"] == "Ahenk"
-        assert app.version_lbl["text"] == "v0.6.3"
+        assert app.version_lbl["text"] == "v0.6.4"
         assert ICON_ICO.is_file()
         assert ICON_PNG.is_file()
         assert getattr(app, "_ahenk_icon", None) is not None
@@ -77,7 +78,7 @@ def test_app_name_version_and_about():
         assert app._about is not None
         assert app._about.title() == "Hakkında"
         assert app.about_name["text"] == "Ahenk"
-        assert app.about_version["text"] == "v0.6.3"
+        assert app.about_version["text"] == "v0.6.4"
         assert app.about_author["text"] == APP_AUTHOR == "Enes Eliağır"
         assert app.about_update_status["text"] == "Kaynak kod modu"
         assert app.about_update_btn["text"] == "Güncellemeleri denetle"
@@ -369,25 +370,66 @@ def test_vu_meter_update():
         app.destroy()
 
 
-def test_overlay_toggle_and_live_update():
+def test_overlay_height_controls_visible_subtitle_amount():
     app = App()
     try:
-        assert app._overlay is None
         app.toggle_overlay()
         assert app._overlay is not None
-        assert app._overlay.winfo_exists()
-
         long_text = (
-            "Bu uzun altyazı iki satıra taşsa da hiçbir bölümü kesilmeden "
-            "okunabilir kalmalı ve pencere yukarı doğru büyümeli."
+            "Bu uzun altyazı farklı yüksekliklerde görünür satır miktarını "
+            "değiştirmeli ve pencere kullanıcı seçimi dışında büyümemeli."
         )
         app._write_pane(app.trans, long_text + "\n")
         app.update_idletasks()
-        assert app.overlay_label.cget("text") == long_text
-        assert app._overlay.winfo_height() >= app._overlay.winfo_reqheight()
+        compact = app.overlay_label.cget("text")
+        compact_height = app._overlay.winfo_height()
 
+        app._resize_overlay(580, 180)
+        app.update_idletasks()
+        expanded = app.overlay_label.cget("text")
+
+        assert compact_height == 40
+        assert app._overlay.winfo_height() == 180
+        assert expanded == long_text
+        assert len(expanded) > len(compact)
+    finally:
+        app.destroy()
+
+def test_overlay_controls_follow_global_pointer_and_remain_clickable(monkeypatch):
+    app = App()
+    try:
         app.toggle_overlay()
-        assert app._overlay is None
+        app.update_idletasks()
+        pop = app._overlay
+        assert pop is not None
+        x, y = pop.winfo_rootx(), pop.winfo_rooty()
+        width, height = pop.winfo_width(), pop.winfo_height()
+
+        monkeypatch.setattr(pop, "winfo_pointerxy", lambda: (x - 10, y - 10))
+        app._sync_overlay_pointer()
+        assert not app._overlay_hdr.place_info()
+        assert not app._overlay_grip.place_info()
+        assert app.overlay_label.cget("pady") == 2
+
+        monkeypatch.setattr(pop, "winfo_pointerxy", lambda: (x + 10, y + height // 2))
+        app._sync_overlay_pointer()
+        assert app._overlay_hdr.place_info()
+        assert app._overlay_grip.place_info()
+
+        app.overlay_click_through = True
+        app._apply_overlay_click_through()
+        monkeypatch.setattr(pop, "winfo_pointerxy", lambda: (x + width - 10, y + 10))
+        app._sync_overlay_pointer()
+        assert app._overlay_controls_interactive is True
+
+        monkeypatch.setattr(pop, "winfo_pointerxy", lambda: (x + 10, y + height // 2))
+        app._sync_overlay_pointer()
+        assert app._overlay_controls_interactive is False
+
+        monkeypatch.setattr(pop, "winfo_pointerxy", lambda: (x - 10, y - 10))
+        app._sync_overlay_pointer()
+        assert not app._overlay_hdr.place_info()
+        assert not app._overlay_grip.place_info()
     finally:
         app.destroy()
 
@@ -806,8 +848,8 @@ def test_gui_key_mask_toggle():
         app.destroy()
 
 
-def test_icon_tooltips_eye_glyph_and_mask_tooltip():
-    """IconButton baloncukları + göz ikonu + maske tooltip geçişi."""
+def test_icon_tooltips_and_mask_tooltip():
+    """IconButton baloncukları ve maske tooltip geçişi."""
     from i18n import t
 
     app = App()
@@ -818,8 +860,6 @@ def test_icon_tooltips_eye_glyph_and_mask_tooltip():
         assert app.settings_btn.tooltip == t("settings")
         assert app.swap_btn.tooltip == t("swap")
         app._open_settings()
-        # Göz ikonu canvas'a çiziliyor (badem + iris).
-        assert len(app.mask_btn.find_all()) >= 2
         assert app.mask_btn.tooltip == t("show_key")
         app.mask_btn._schedule_tip()
         app.mask_btn._hide_tip()
@@ -860,10 +900,24 @@ def test_gui_overlay_studio_and_export(tmp_path, monkeypatch):
         assert app.overlay_font_size == 13
         app._adjust_overlay_font(2)
         assert app.overlay_font_size == 15
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.WinDLL("user32", use_last_error=True)
+            user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+            user32.GetAncestor.restype = wintypes.HWND
+            user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+            user32.GetWindowLongW.restype = wintypes.LONG
+            hwnd = user32.GetAncestor(app._overlay.winfo_id(), 2) or app._overlay.winfo_id()
+
         app._toggle_overlay_click_through()
         assert app.overlay_click_through is True
+        if os.name == "nt":
+            assert user32.GetWindowLongW(hwnd, -20) & 0x20
         app._toggle_overlay_click_through()
         assert app.overlay_click_through is False
+        if os.name == "nt":
+            assert not user32.GetWindowLongW(hwnd, -20) & 0x20
 
         # Test export
         app.trans.insert("1.0", "Hello world translation")

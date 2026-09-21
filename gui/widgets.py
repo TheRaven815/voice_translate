@@ -24,6 +24,22 @@ def mix(a: str, b: str, t: float) -> str:
     bl = round(ab + (bb - ab) * t)
     return f"#{r:02x}{g:02x}{bl:02x}"
 
+_ICON_FAMILY: str | None = None
+_ICON_FAMILY_PROBED = False
+
+
+def _icon_family(root: tk.Misc) -> str | None:
+    """En iyi yerel Windows ikon fontunu bir kez seçer."""
+    global _ICON_FAMILY, _ICON_FAMILY_PROBED
+    if not _ICON_FAMILY_PROBED:
+        families = {name.casefold(): name for name in tkfont.families(root)}
+        for candidate in ("Segoe Fluent Icons", "Segoe MDL2 Assets"):
+            if match := families.get(candidate.casefold()):
+                _ICON_FAMILY = match
+                break
+        _ICON_FAMILY_PROBED = True
+    return _ICON_FAMILY
+
 
 def _rounded_rect_points(x1: float, y1: float, x2: float, y2: float, r: float) -> list[float]:
     """Saat yönünde yumuşatılmış köşe noktaları (smooth polygon için)."""
@@ -42,13 +58,22 @@ def _rounded_rect_points(x1: float, y1: float, x2: float, y2: float, r: float) -
 
 
 class IconButton(tk.Canvas):
-    """Vektör ikonlu, uniform 24px kare basma alanlı düğme.
+    """Font bağımsız yedek çizimli, net sistem ikonlu düğme."""
 
-    Unicode/emoji glyph'lerin fonta ve platforma göre kaymasını önlemek için
-    tüm ikonlar Canvas üzerinde çizilir.
-    """
-
-    SIZE = 24
+    SIZE = 28
+    GLYPH_SIZE = 16
+    _GLYPHS = {
+        "pin": "\ue718",
+        "close": "\ue8bb",
+        "eye": "\ue890",
+        "eye_off": "\ued1a",
+        "target": "\uf272",
+        "cursor": "\ue7c9",
+        "gear": "\ue713",
+        "info": "\ue946",
+        "swap": "\ue8ab",
+        "subtitle": "\ue8ba",
+    }
 
     def __init__(self, master, kind: str, command, *, tooltip: str = "", bg: str | None = None):
         self._bg = bg or C.rail
@@ -63,6 +88,7 @@ class IconButton(tk.Canvas):
             takefocus=0,
         )
         self.kind = kind
+        self._icon_font = _icon_family(self)
         self._command = command
         self._enabled = True
         self._hover = False
@@ -203,16 +229,27 @@ class IconButton(tk.Canvas):
         elif self._hover:
             fg = C.text
         else:
-            fg = C.dim
+            fg = C.muted
         self._draw_icon(fg)
 
     def update_theme(self) -> None:
         self.configure(bg=self._bg)
 
     def _draw_icon(self, fg: str) -> None:
+        if self._icon_font and (glyph := self._GLYPHS.get(self.kind)):
+            self.create_text(
+                self.SIZE / 2,
+                self.SIZE / 2,
+                text=glyph,
+                fill=fg,
+                font=(self._icon_font, -self.GLYPH_SIZE),
+            )
+            return
         getattr(self, f"_glyph_{self.kind}", self._glyph_info)(fg)
+        offset = (self.SIZE - 24) / 2
+        self.move("all", offset, offset)
 
-    # -- 24x24 icerisinde izdusumlu ikonlar (merkez 12,12) ----------------
+    # -- 24x24 yedek çizimler (IconButton içinde otomatik ortalanır) ------
 
     def _glyph_pin(self, fg: str) -> None:
         # Harita pini: yuvarlak bas + sivri alt uc + ic delik
@@ -317,6 +354,7 @@ class ThemeSwitch(tk.Canvas):
             takefocus=0,
         )
         self._command = command
+        self._icon_font = _icon_family(self)
         self._anim_after: str | None = None
         # 0.0 = koyu (top solda), 1.0 = açık (top sağda)
         self._pos = 1.0 if C.current == "light" else 0.0
@@ -401,6 +439,12 @@ class ThemeSwitch(tk.Canvas):
     def _draw_moon(self, cx: float, cy: float, knob_r: float, color: str, alpha: float) -> None:
         if alpha <= 0.0:
             return
+        if self._icon_font:
+            self.create_text(
+                cx, cy, text="\ue708", fill=mix(C.fill, color, alpha),
+                font=(self._icon_font, -10),
+            )
+            return
         col = mix(C.fill, color, alpha)
         r = knob_r * 0.62
         self.create_oval(cx - r, cy - r, cx + r, cy + r, fill=col, outline="")
@@ -411,6 +455,12 @@ class ThemeSwitch(tk.Canvas):
 
     def _draw_sun(self, cx: float, cy: float, knob_r: float, color: str, alpha: float) -> None:
         if alpha <= 0.0:
+            return
+        if self._icon_font:
+            self.create_text(
+                cx, cy, text="\ue706", fill=mix(C.fill, color, alpha),
+                font=(self._icon_font, -10),
+            )
             return
         col = mix(C.fill, color, alpha)
         r = knob_r * 0.30

@@ -10,7 +10,7 @@ System audio · Microphone · Single-app audio → **text + spoken translation**
 
 [Türkçe](README.md) · **[English](#ahenk)**
 
-[![Version](https://img.shields.io/badge/version-0.6.3-blue?style=flat-square)](meta.py)
+[![Version](https://img.shields.io/badge/version-0.6.4-blue?style=flat-square)](meta.py)
 [![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6?style=flat-square&logo=windows&logoColor=white)](#requirements)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
@@ -52,6 +52,7 @@ System audio · Microphone · Single-app audio → **text + spoken translation**
 | 🎧 **3 input sources** | System audio (WASAPI loopback), microphone, or a single desktop app's audio (process-tree capture) |
 | 🔄 **Seamless hot-swap** | Switch input/output devices without killing the running translation session |
 | 📺 **Subtitle overlay** | Always-on-top, draggable, optionally click-through live subtitle window |
+| ⌨️ **Global shortcuts** | Mute/unmute translation audio and start/stop translation while the app is in the background; configurable in Settings |
 | 🌗 **Dual theme + dual UI language** | Dark / light theme; Turkish / English interface |
 | 📝 **Export** | Save transcripts as **TXT**, **SRT** (subtitles), and **JSONL** + session history (`history.jsonl`) |
 | 🔇 **Echo guard** | On a shared speaker, equal-duration silence is injected while translation plays, keeping the stream alive |
@@ -192,10 +193,11 @@ python3 -m venv .venv
 4. **Dil** (Language) — source (Auto + 20 languages) → target; arrow button swaps
 5. **API anahtarı** (API key) — masked with `•`; written on **Kaydet** (Save, with a verifying **Test** button) or at Start
 6. **Başlat / Durdur** (Start / Stop) — devices, languages, and key fields lock while running; device changes apply via hot-swap
+7. **Settings → Global Shortcuts** — captures and registers mute/unmute and start/stop key combinations across Windows
 
 **Panes:** Heard | Translation — Copy / Clear / Export (TXT, SRT, JSONL) on each. Bottom strip shows the `[bilgi]` / `[uyarı]` / `[hata]` (info/warning/error) log.
 
-**Subtitle window:** small, always on top, draggable; font size, opacity, and click-through are adjustable, ✕ closes it. Shows the last translation line.
+**Subtitle window:** small, always on top, and draggable; font-size, click-through, close, and bottom-right resize controls appear on hover. It shows the latest subtitle lines that fit its height; opacity is adjustable.
 
 **Single-app audio:** open the target program first → pick **Choose desktop app…** from the input list → choose the program in the small window. Only that process tree is captured (selecting Chrome includes every tab in the same Chrome process tree). If the app exits or restarts, Ahenk never falls back to system audio silently; select it again. Background-only processes without a visible window are not listed.
 
@@ -360,8 +362,8 @@ Automatic updates run only in the Windows onefile `Ahenk.exe` distribution. The 
 The repository must be **public** because clients call the GitHub API without credentials. To publish, set the same version in `meta.py`, `pyproject.toml`, and `version_info.txt`, then push a `vMAJOR.MINOR.PATCH` tag:
 
 ```bat
-git tag v0.6.3
-git push origin v0.6.3
+git tag v0.6.4
+git push origin v0.6.4
 ```
 
 `.github/workflows/release.yml` runs tests, builds the onefile exe, creates its SHA-256 file, and uploads both to a GitHub Release. Drafts and prereleases are not offered to clients.
@@ -415,6 +417,6 @@ This project is licensed under the [MIT License](LICENSE).
 
 <div align="center">
 
-**Ahenk 0.6.3** · Enes Eliağır · [Report an issue](https://github.com/TheRaven815/voice_translate/issues) · [Releases](https://github.com/TheRaven815/voice_translate/releases)
+**Ahenk 0.6.4** · Enes Eliağır · [Report an issue](https://github.com/TheRaven815/voice_translate/issues) · [Releases](https://github.com/TheRaven815/voice_translate/releases)
 
 </div>

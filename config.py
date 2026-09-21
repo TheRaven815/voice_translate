@@ -119,6 +119,8 @@ class Settings:
     overlay_click_through: bool = False
     ui_lang: str = "tr"
     save_history: bool = True
+    mute_shortcut: str = "Ctrl+Shift+M"
+    start_stop_shortcut: str = "Ctrl+Shift+Space"
 
 def config_dir() -> Path:
     if os.name == "nt":
@@ -252,6 +254,8 @@ def load() -> Settings:
         overlay_click_through=overlay_click_through,
         ui_lang=ui_lang,
         save_history=bool(raw.get("save_history", True)),
+        mute_shortcut=str(raw.get("mute_shortcut") or "Ctrl+Shift+M"),
+        start_stop_shortcut=str(raw.get("start_stop_shortcut") or "Ctrl+Shift+Space"),
     )
 def save(settings: Settings) -> Path:
     raw = _read_raw()
@@ -270,6 +274,8 @@ def save(settings: Settings) -> Path:
     raw["overlay_click_through"] = settings.overlay_click_through
     raw["ui_lang"] = settings.ui_lang
     raw["save_history"] = settings.save_history
+    raw["mute_shortcut"] = settings.mute_shortcut
+    raw["start_stop_shortcut"] = settings.start_stop_shortcut
     return _write_raw(raw)
 
 def save_api_key(key: str) -> Path:
@@ -294,6 +300,8 @@ def save_preferences(
     overlay_click_through: bool | None = None,
     ui_lang: str | None = None,
     save_history: bool | None = None,
+    mute_shortcut: str | None = None,
+    start_stop_shortcut: str | None = None,
 ) -> Path:
     raw = _read_raw()
     if input_device is not None:
@@ -324,6 +332,10 @@ def save_preferences(
         raw["ui_lang"] = ui_lang
     if save_history is not None:
         raw["save_history"] = save_history
+    if mute_shortcut is not None:
+        raw["mute_shortcut"] = mute_shortcut
+    if start_stop_shortcut is not None:
+        raw["start_stop_shortcut"] = start_stop_shortcut
     return _write_raw(raw)
 
 

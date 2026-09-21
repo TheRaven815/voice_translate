@@ -51,6 +51,13 @@ STRINGS: dict[str, dict[str, str]] = {
         "input_unavailable": "yeniden seçin",
         "api_key_missing": "API anahtarı tanımlı değil. Ayarlar’dan ekleyin.",
         "update_available": "v{version} hazır",
+        "shortcuts": "Genel Kısayollar",
+        "shortcuts_description": "Uygulama arka plandayken de çalışır. Alana tıklayıp tuş birleşimine basın.",
+        "mute_shortcut": "Çeviri sesini aç / kapat",
+        "start_stop_shortcut": "Çeviriyi başlat / durdur",
+        "shortcut_clear": "Silmek için Backspace veya Delete",
+        "translation_muted": "Çeviri sesi kapatıldı.",
+        "translation_unmuted": "Çeviri sesi açıldı.",
     },
     "en": {
         "app_title": "Ahenk",
@@ -100,6 +107,13 @@ STRINGS: dict[str, dict[str, str]] = {
         "input_unavailable": "select again",
         "api_key_missing": "No API key. Add one in Settings.",
         "update_available": "v{version} ready",
+        "shortcuts": "Global Shortcuts",
+        "shortcuts_description": "They work while the app is in the background. Click a field, then press a key combination.",
+        "mute_shortcut": "Mute / unmute translation audio",
+        "start_stop_shortcut": "Start / stop translation",
+        "shortcut_clear": "Press Backspace or Delete to clear",
+        "translation_muted": "Translation audio muted.",
+        "translation_unmuted": "Translation audio unmuted.",
     },
 }
 _current_lang = "tr"

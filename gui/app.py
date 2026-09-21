@@ -33,6 +33,7 @@ from devices import (
 from export import TranscriptItem, export_jsonl, export_srt, export_txt
 from languages import AUTO_SRC, LANGS, is_rtl, lang_code_to_name, source_code, source_names, src_code_to_name
 from i18n import get_ui_lang, set_ui_lang, t
+from hotkeys import GlobalHotkeys, ShortcutError, parse_shortcut, shortcut_from_tk_event
 from logger import append_history, log_exception, setup_logging
 from loop import SystemAudioLoop, validate_live_api_key
 from meta import APP_AUTHOR, APP_TITLE, __version__
@@ -288,13 +289,25 @@ class App(tk.Tk):
         self._update_check_running = False
         self._update_installing = False
         self._download_fraction: float | None = None
+        self._hotkeys: GlobalHotkeys | None = None
+        self.translation_muted = False
+        self.mute_shortcut = getattr(self._cfg, "mute_shortcut", "Ctrl+Shift+M")
+        self.start_stop_shortcut = getattr(self._cfg, "start_stop_shortcut", "Ctrl+Shift+Space")
+        self._mute_shortcut_var: tk.StringVar | None = None
+        self._start_stop_shortcut_var: tk.StringVar | None = None
+        self._mute_shortcut_entry: tk.Entry | None = None
+        self._start_stop_shortcut_entry: tk.Entry | None = None
         self._overlay: tk.Toplevel | None = None
+        self._overlay_click_style: int | None = None
+        self._overlay_pointer_after_id: str | None = None
+        self._overlay_controls_visible = False
+        self._overlay_controls_interactive = False
         self._rail_seps: list[tk.Frame] = []
         self.always_on_top = getattr(self._cfg, "always_on_top", False)
         self.overlay_font_size = getattr(self._cfg, "overlay_font_size", 13)
         self.overlay_alpha = getattr(self._cfg, "overlay_alpha", 0.92)
         self.overlay_click_through = getattr(self._cfg, "overlay_click_through", False)
-        self.overlay_history_lines = 2
+        self._overlay_text = ""
         self.transcript_items: list[TranscriptItem] = []
         self.session_start_time: float | None = None
         self._timeline_start_time: float | None = None
@@ -316,6 +329,10 @@ class App(tk.Tk):
         self.font_body = fonts["body"]
         self.font_log = fonts["log"]
         self._build()
+        self._hotkeys = GlobalHotkeys(lambda action: self.log_queue.put(("hotkey", action)))
+        hotkey_error = self._register_global_hotkeys()
+        if hotkey_error and sys.platform == "win32":
+            self._append(f"[uyarı] Genel kısayollar etkinleştirilemedi: {hotkey_error}\n")
         self.refresh_devices(async_scan=True)
         dark_titlebar(self, dark=(self._theme != "light"))
         self._pump_after_id = self.after(120, self._pump_log)
@@ -1135,18 +1152,97 @@ class App(tk.Tk):
             self.stop()
         else:
             self.start()
+    def _register_global_hotkeys(self) -> str | None:
+        if self._hotkeys is None:
+            return None
+        return self._hotkeys.replace({
+            "mute": self.mute_shortcut,
+            "start_stop": self.start_stop_shortcut,
+        })
+
+    def _handle_hotkey(self, action: str) -> None:
+        if action == "mute":
+            self._toggle_translation_mute()
+        elif action == "start_stop":
+            self._toggle_start_stop()
+
+    def _toggle_translation_mute(self) -> None:
+        self.translation_muted = not self.translation_muted
+        if self.loop_obj is not None:
+            self.loop_obj.set_muted(self.translation_muted)
+        message = t("translation_muted") if self.translation_muted else t("translation_unmuted")
+        self._append(f"[bilgi] {message}\n")
+
+    def _capture_shortcut(self, event, variable: tk.StringVar):
+        if event.keysym in {"BackSpace", "Delete"}:
+            variable.set("")
+            return "break"
+        try:
+            shortcut = shortcut_from_tk_event(event)
+        except ShortcutError:
+            return "break"
+        if shortcut:
+            variable.set(shortcut)
+        return "break"
+
+    def _save_shortcuts(self) -> bool:
+        if self._mute_shortcut_var is None or self._start_stop_shortcut_var is None:
+            return True
+        try:
+            mute = parse_shortcut(self._mute_shortcut_var.get())[0] if self._mute_shortcut_var.get().strip() else ""
+            start_stop = parse_shortcut(self._start_stop_shortcut_var.get())[0] if self._start_stop_shortcut_var.get().strip() else ""
+        except ShortcutError as exc:
+            self._set_shortcut_status(str(exc), C.warn)
+            return False
+        if mute and mute == start_stop:
+            self._set_shortcut_status("İki eyleme aynı kısayol atanamaz.", C.warn)
+            return False
+        previous = (self.mute_shortcut, self.start_stop_shortcut)
+        self.mute_shortcut, self.start_stop_shortcut = mute, start_stop
+        error = self._register_global_hotkeys()
+        if error:
+            self.mute_shortcut, self.start_stop_shortcut = previous
+            self._set_shortcut_status(error, C.warn)
+            return False
+        try:
+            save_preferences(mute_shortcut=mute, start_stop_shortcut=start_stop)
+        except OSError as exc:
+            self.mute_shortcut, self.start_stop_shortcut = previous
+            self._register_global_hotkeys()
+            self._set_shortcut_status(f"Kısayollar kaydedilemedi: {exc}", C.warn)
+            return False
+        self._mute_shortcut_var.set(mute)
+        self._start_stop_shortcut_var.set(start_stop)
+        self._set_shortcut_status("✓ Kısayollar kaydedildi.", C.live)
+        return True
+
+    def _set_shortcut_status(self, text: str, color: str) -> None:
+        status = getattr(self, "_shortcut_status", None)
+        if status is not None and status.winfo_exists():
+            status.configure(text=text, fg=color)
+
+
+    def _overlay_line_capacity(self) -> int:
+        """Geçerli pencere yüksekliğine sığan altyazı satırı sayısı."""
+        pop = self._overlay
+        label = getattr(self, "overlay_label", None)
+        if pop is None or label is None or not pop.winfo_exists():
+            return 1
+        font = tkfont.Font(font=(self.font_brand[0], getattr(self, "overlay_font_size", 13), "bold"))
+        try:
+            line_height = max(1, font.metrics("linespace"))
+            pad_y = int(float(label.cget("pady")))
+            available = pop.winfo_height() - 2 * pad_y - 2
+            return max(1, available // line_height)
+        finally:
+            del font
 
     def _overlay_tail(self, full_text: str) -> str:
-        """Overlay için son N görsel satırı döndürür.
-
-        Tk 'end - N lines' mantıksal satır saydığı için uzun paragrafların
-        tamamı ekrana taşıyordu; burada wraplength genişliğine göre gerçek
-        kelime kaydırması ölçülür.
-        """
+        """Pencere yüksekliğine sığan son görsel satırları döndürür."""
         text = full_text.strip()
         if not text:
             return ""
-        max_lines = max(1, getattr(self, "overlay_history_lines", 2))
+        max_lines = self._overlay_line_capacity()
         font = tkfont.Font(font=(self.font_brand[0], getattr(self, "overlay_font_size", 13), "bold"))
         try:
             avail = 520
@@ -1172,6 +1268,7 @@ class App(tk.Tk):
     def _update_overlay(self, full_text: str) -> None:
         if self._overlay is None or not self._overlay.winfo_exists():
             return
+        self._overlay_text = full_text.strip()
         tail = self._overlay_tail(full_text)
         if not tail:
             return
@@ -1207,9 +1304,10 @@ class App(tk.Tk):
             self._curr_heard_buf = ""
             self.transcript_items = [it for it in self.transcript_items if it.stream != "heard"]
         elif widget is self.trans:
-            if self._overlay is not None and self._overlay.winfo_exists():
-                self.overlay_label.configure(text="...")
             self._curr_trans_buf = ""
+            if self._overlay is not None and self._overlay.winfo_exists():
+                self._overlay_text = ""
+                self.overlay_label.configure(text="...")
             self.transcript_items = [it for it in self.transcript_items if it.stream != "trans"]
         if not self.transcript_items and (self.worker is None or not self.worker.is_alive()):
             self._timeline_start_time = None
@@ -1431,42 +1529,72 @@ class App(tk.Tk):
     def _adjust_overlay_font(self, delta: int) -> None:
         self.overlay_font_size = max(10, min(32, getattr(self, "overlay_font_size", 13) + delta))
         if hasattr(self, "overlay_label") and self.overlay_label.winfo_exists():
-            self.overlay_label.configure(font=(self.font_brand[0], self.overlay_font_size, "bold"))
+            self.overlay_label.configure(
+                font=(self.font_brand[0], self.overlay_font_size, "bold"),
+                text=self._overlay_tail(self._overlay_text) or "...",
+            )
             self._fit_overlay()
         self._save_user_prefs()
 
-    def _apply_overlay_click_through(self) -> None:
+    def _apply_overlay_click_through(self) -> bool:
         if os.name != "nt" or self._overlay is None or not self._overlay.winfo_exists():
-            return
+            return True
         import ctypes
-        hwnd = self._overlay.winfo_id()
+        from ctypes import wintypes
+        child_hwnd = self._overlay.winfo_id()
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+        user32.GetAncestor.restype = wintypes.HWND
+        user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+        user32.GetWindowLongW.restype = wintypes.LONG
+        user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.LONG]
+        user32.SetWindowLongW.restype = wintypes.LONG
+        user32.SetWindowPos.argtypes = [
+            wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+            ctypes.c_int, ctypes.c_int, wintypes.UINT,
+        ]
+        user32.SetWindowPos.restype = wintypes.BOOL
+        GA_ROOT = 2
+        hwnd = user32.GetAncestor(child_hwnd, GA_ROOT) or child_hwnd
         GWL_EXSTYLE = -20
         WS_EX_TRANSPARENT = 0x00000020
-        WS_EX_LAYERED = 0x00080000
         try:
-            style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-            if self.overlay_click_through:
-                ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_TRANSPARENT | WS_EX_LAYERED)
-            else:
-                # Yalnizca TRANSPARENT'i kaldir; LAYERED'a dokunma yoksa
-                # Tk'nin alfa compositing'i bozulup siyah dikdortgen cikar.
-                ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style & ~WS_EX_TRANSPARENT)
-        except Exception:
-            pass
+            if self._overlay_click_style is None:
+                self._overlay_click_style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            base_style = self._overlay_click_style
+            click_through = self.overlay_click_through and not self._overlay_controls_interactive
+            target_style = base_style | WS_EX_TRANSPARENT if click_through else base_style
+            ctypes.set_last_error(0)
+            previous = user32.SetWindowLongW(hwnd, GWL_EXSTYLE, target_style)
+            if previous == 0 and ctypes.get_last_error():
+                raise ctypes.WinError(ctypes.get_last_error())
+            # Stil değişikliğini yeni Tk penceresi kurmadan uygula. Toplevel'i
+            # yeniden kurmak, layered pencerenin yüzeyini siyaha düşürüyordu.
+            SWP_NOSIZE = 0x0001
+            SWP_NOMOVE = 0x0002
+            SWP_NOZORDER = 0x0004
+            SWP_NOACTIVATE = 0x0010
+            SWP_FRAMECHANGED = 0x0020
+            if not user32.SetWindowPos(
+                hwnd, None, 0, 0, 0, 0,
+                SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            ):
+                raise ctypes.WinError()
+            return True
+        except Exception as exc:
+            self._append(f"[uyarı] Altyazı tıklama modu değiştirilemedi: {exc}\n")
+            return False
 
     def _toggle_overlay_click_through(self) -> None:
         if self._overlay is None or not self._overlay.winfo_exists():
             return
-        self.overlay_click_through = not getattr(self, "overlay_click_through", False)
-        # Tk'nin pencere bayraklariyla karismamasi icin pencereyi yeniden kur;
-        # boylece geri almak da garantili calisir.
-        geom = self._overlay.geometry()
-        self._overlay.destroy()
-        self._overlay = None
-        self._build_overlay(geom=geom)
-        if hasattr(self, "_overlay_thru_btn"):
-            self._overlay_thru_btn.kind = "target" if self.overlay_click_through else "cursor"
-            self._overlay_thru_btn.redraw()
+        previous = getattr(self, "overlay_click_through", False)
+        self.overlay_click_through = not previous
+        if not self._apply_overlay_click_through():
+            self.overlay_click_through = previous
+            return
+        self._overlay_thru_btn.kind = "target" if self.overlay_click_through else "cursor"
+        self._overlay_thru_btn.redraw()
         self._save_user_prefs()
 
     def restart(self) -> None:
@@ -1624,6 +1752,9 @@ class App(tk.Tk):
                 )
             if self.mask_btn is not None and self.mask_btn.winfo_exists():
                 self.mask_btn.configure(bg=C.panel)
+            for entry in (self._mute_shortcut_entry, self._start_stop_shortcut_entry):
+                if entry is not None and entry.winfo_exists():
+                    entry.configure(bg=C.panel, fg=C.text, insertbackground=C.text)
             for child in self._settings.winfo_children():
                 self._retint_frame(child, bg=C.panel)
             # Ayarlar diyalog butonlarının (özellikle birincil Kaydet) stilini koru.
@@ -1776,6 +1907,8 @@ class App(tk.Tk):
                             self._append(payload)
                         elif kind == "level":
                             pass
+                        elif kind == "hotkey":
+                            self._handle_hotkey(str(payload))
                         elif kind == "status":
                             status_text = payload
                             color = msg[2] if len(msg) > 2 else C.live
@@ -1958,6 +2091,11 @@ class App(tk.Tk):
         else:
             self.focus_set()
         self._refresh_key_notice()
+    def _save_settings(self) -> None:
+        if not self._save_shortcuts():
+            return
+        self.save_key()
+
 
     def start(self, preserve_transcript: bool = False):
         if self.worker is not None and self.worker.is_alive():
@@ -2015,6 +2153,7 @@ class App(tk.Tk):
             "output_speaker": speaker,
             "on_text": self.log_queue.put,
             "console_input": False,
+            "muted": self.translation_muted,
         }
         self.loop_obj = SystemAudioLoop(**self._loop_kwargs)
         dest = speaker.name if speaker is not None else NONE_OUTPUT
@@ -2317,6 +2456,42 @@ class App(tk.Tk):
             main, text="", font=self.font_ui, fg=C.dim, bg=C.panel, anchor="w"
         )
         self._settings_status.pack(anchor="w", fill=tk.X, pady=(8, 0))
+        tk.Frame(main, bg=C.line, height=1).pack(fill=tk.X, pady=(14, 12))
+        tk.Label(
+            main, text=t("shortcuts"), font=(self.font_ui[0], self.font_ui[1], "bold"),
+            fg=C.text, bg=C.panel, anchor="w",
+        ).pack(fill=tk.X)
+        tk.Label(
+            main, text=t("shortcuts_description"), font=self.font_ui, fg=C.dim, bg=C.panel,
+            anchor="w", justify="left", wraplength=440,
+        ).pack(fill=tk.X, pady=(4, 9))
+
+        self._mute_shortcut_var = tk.StringVar(value=self.mute_shortcut)
+        self._start_stop_shortcut_var = tk.StringVar(value=self.start_stop_shortcut)
+
+        def _shortcut_row(label: str, variable: tk.StringVar) -> tk.Entry:
+            row = tk.Frame(main, bg=C.panel)
+            row.pack(fill=tk.X, pady=3)
+            tk.Label(
+                row, text=label, width=29, anchor="w", font=self.font_ui, fg=C.muted, bg=C.panel,
+            ).pack(side=tk.LEFT)
+            edge = tk.Frame(row, bg=C.line)
+            edge.pack(side=tk.RIGHT, fill=tk.X, expand=True)
+            entry = tk.Entry(
+                edge, textvariable=variable, font=self.font_ui, bg=C.panel, fg=C.text,
+                insertbackground=C.text, justify=tk.CENTER, relief="flat", bd=0,
+                highlightthickness=0, cursor="hand2",
+            )
+            entry.pack(fill=tk.X, padx=1, pady=1, ipady=3)
+            entry.bind("<KeyPress>", lambda event, var=variable: self._capture_shortcut(event, var))
+            return entry
+
+        self._mute_shortcut_entry = _shortcut_row(t("mute_shortcut"), self._mute_shortcut_var)
+        self._start_stop_shortcut_entry = _shortcut_row(t("start_stop_shortcut"), self._start_stop_shortcut_var)
+        self._shortcut_status = tk.Label(
+            main, text=t("shortcut_clear"), font=self.font_ui, fg=C.dim, bg=C.panel, anchor="w",
+        )
+        self._shortcut_status.pack(fill=tk.X, pady=(5, 0))
 
         btn_row = tk.Frame(main, bg=C.panel)
         btn_row.pack(fill=tk.X, pady=(16, 0))
@@ -2351,7 +2526,7 @@ class App(tk.Tk):
 
         self.test_key_btn = _dialog_btn(btn_row, "Test Et", self._test_api_key)
         self.save_key_btn = _dialog_btn(
-            btn_row, "Kaydet", self.save_key, primary=True, padx=(8, 0)
+            btn_row, "Kaydet", self._save_settings, primary=True, padx=(8, 0)
         )
         self._settings_close_btn = _dialog_btn(
             btn_row, "Kapat", self._close_settings, side=tk.RIGHT
@@ -2383,6 +2558,11 @@ class App(tk.Tk):
         self.key_edge = None
         self._settings_status = None
         self._settings_close_btn = None
+        self._mute_shortcut_var = None
+        self._start_stop_shortcut_var = None
+        self._mute_shortcut_entry = None
+        self._start_stop_shortcut_entry = None
+        self._shortcut_status = None
         self._refresh_key_notice()
 
     def _fit_overlay(self, anchor: str = "bottom") -> None:
@@ -2390,27 +2570,118 @@ class App(tk.Tk):
         if pop is None or not pop.winfo_exists():
             return
         pop.update_idletasks()
-        width = pop.winfo_width()
-        height = max(56, pop.winfo_reqheight())
-        x = pop.winfo_x()
+        width = max(220, pop.winfo_width())
+        height = max(40, pop.winfo_height())
+        max_x = max(0, pop.winfo_screenwidth() - width)
+        max_y = max(0, pop.winfo_screenheight() - height)
+        x = min(max(0, pop.winfo_x()), max_x)
         if anchor == "top":
-            y = pop.winfo_y()
+            y = min(max(0, pop.winfo_y()), max_y)
         else:
             bottom = pop.winfo_y() + pop.winfo_height()
-            y = bottom - height
+            y = min(max(0, bottom - height), max_y)
         pop.geometry(f"{width}x{height}{x:+d}{y:+d}")
+
+    def _resize_overlay(self, width: int, height: int) -> None:
+        pop = self._overlay
+        if pop is None or not pop.winfo_exists():
+            return
+        screen_width = pop.winfo_screenwidth()
+        screen_height = pop.winfo_screenheight()
+        width = max(220, min(screen_width, width))
+        height = max(40, min(screen_height, height))
+        x = min(max(0, pop.winfo_x()), max(0, screen_width - width))
+        y = min(max(0, pop.winfo_y()), max(0, screen_height - height))
+        pop.geometry(f"{width}x{height}{x:+d}{y:+d}")
+        pop.update_idletasks()
+        self.overlay_label.configure(
+            wraplength=max(120, width - 64),
+            text=self._overlay_tail(self._overlay_text) or "...",
+        )
+
+    def _set_overlay_controls_visible(self, visible: bool) -> None:
+        if visible == self._overlay_controls_visible:
+            return
+        hdr = getattr(self, "_overlay_hdr", None)
+        grip = getattr(self, "_overlay_grip", None)
+        if hdr is None or grip is None:
+            return
+        self._overlay_controls_visible = visible
+        if visible:
+            hdr.place(relx=1.0, x=-4, y=4, anchor="ne")
+            grip.place(relx=1.0, rely=1.0, x=-2, y=-2, anchor="se")
+            hdr.lift()
+            grip.lift()
+        else:
+            hdr.place_forget()
+            grip.place_forget()
+
+    def _sync_overlay_pointer(self) -> None:
+        """Fare geçirgen olsa da global imleç konumundan hover durumunu güncelle."""
+        pop = self._overlay
+        hdr = getattr(self, "_overlay_hdr", None)
+        grip = getattr(self, "_overlay_grip", None)
+        if pop is None or hdr is None or grip is None or not pop.winfo_exists():
+            return
+        pointer_x, pointer_y = pop.winfo_pointerxy()
+        rel_x = pointer_x - pop.winfo_rootx()
+        rel_y = pointer_y - pop.winfo_rooty()
+        width, height = pop.winfo_width(), pop.winfo_height()
+        inside = 0 <= rel_x < width and 0 <= rel_y < height
+        self._set_overlay_controls_visible(inside)
+
+        over_header = (
+            inside
+            and width - hdr.winfo_reqwidth() - 4 <= rel_x < width
+            and 4 <= rel_y < hdr.winfo_reqheight() + 4
+        )
+        over_grip = (
+            inside
+            and width - grip.winfo_reqwidth() - 2 <= rel_x < width
+            and height - grip.winfo_reqheight() - 2 <= rel_y < height
+        )
+        interactive = bool(self.overlay_click_through and (over_header or over_grip))
+        if interactive != self._overlay_controls_interactive:
+            self._overlay_controls_interactive = interactive
+            self._apply_overlay_click_through()
+
+    def _poll_overlay_pointer(self) -> None:
+        self._overlay_pointer_after_id = None
+        pop = self._overlay
+        if pop is None or not pop.winfo_exists():
+            return
+        self._sync_overlay_pointer()
+        self._overlay_pointer_after_id = pop.after(50, self._poll_overlay_pointer)
+
+    def _close_overlay(self) -> None:
+        pop = self._overlay
+        if pop is None or not pop.winfo_exists():
+            return
+        if self._overlay_pointer_after_id is not None:
+            pop.after_cancel(self._overlay_pointer_after_id)
+            self._overlay_pointer_after_id = None
+        pop.destroy()
+        self._overlay = None
+        self._overlay_click_style = None
+        self._overlay_controls_visible = False
+        self._overlay_controls_interactive = False
+        self.overlay_btn.set_accent(False)
 
     def toggle_overlay(self) -> None:
         if self._overlay is not None and self._overlay.winfo_exists():
-            self._overlay.destroy()
-            self._overlay = None
-            self.overlay_btn.set_accent(False)
+            if self.overlay_click_through:
+                self._toggle_overlay_click_through()
+                return
+            self._close_overlay()
             return
         self._build_overlay()
 
     def _build_overlay(self, geom: str | None = None) -> None:
         pop = tk.Toplevel(self)
         self._overlay = pop
+        self._overlay_click_style = None
+        self._overlay_controls_visible = False
+        self._overlay_controls_interactive = False
         pop.title("Altyazı")
         pop.overrideredirect(True)
         try:
@@ -2435,10 +2706,9 @@ class App(tk.Tk):
         self._overlay_wrap = wrap
 
         hdr = tk.Frame(wrap, bg=C.overlay_bg)
-        hdr.pack(fill=tk.X, padx=6, pady=(3, 0))
         self._overlay_hdr = hdr
 
-        close_btn = IconButton(hdr, "close", self.toggle_overlay, bg=C.overlay_bg)
+        close_btn = IconButton(hdr, "close", self._close_overlay, bg=C.overlay_bg)
         close_btn.pack(side=tk.RIGHT, padx=(4, 0))
         self._overlay_close = close_btn
 
@@ -2455,7 +2725,9 @@ class App(tk.Tk):
         fminus.pack(side=tk.RIGHT, padx=(4, 0))
         fminus.bind("<Button-1>", lambda _e: self._adjust_overlay_font(-1))
         self._overlay_fminus = fminus
-        cur_text = self._overlay_tail(self.trans.get("1.0", "end")) or "..."
+        raw_text = self.trans.get("1.0", "end").strip()
+        self._overlay_text = next((line.strip() for line in reversed(raw_text.splitlines()) if line.strip()), "")
+        cur_text = self._overlay_text or "..."
 
         self.overlay_label = tk.Label(
             wrap,
@@ -2465,60 +2737,65 @@ class App(tk.Tk):
             bg=C.overlay_bg,
             wraplength=520,
             justify=tk.CENTER,
-            padx=16,
-            pady=8,
+            padx=12,
+            pady=2,
         )
-        self.overlay_label.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.overlay_label.pack(fill=tk.BOTH, expand=True)
 
-        # Sağ alt köşe: yeniden boyutlandırma tutamacı.
-        # pack ile izole edilir; wrap'teki tasi/boya karisikligina girmez.
+        # Araçlarla aynı şekilde içerik üzerinde durur; gizliyken yer kaplamaz.
         grip = tk.Label(
             wrap, text="◢", font=(self.font_ui[0], 12), fg=C.dim,
             bg=C.overlay_bg, cursor="size_nw_se", padx=4, pady=2,
         )
-        grip.pack(side=tk.RIGHT, anchor="se")
         self._overlay_grip = grip
 
         def start_resize(e):
             pop._resize_x = e.x_root
+            pop._resize_y = e.y_root
             pop._resize_w = pop.winfo_width()
+            pop._resize_h = pop.winfo_height()
             return "break"
 
         def do_resize(e):
-            dx = self.winfo_pointerx() - pop._resize_x
-            new_w = max(220, min(self.winfo_screenwidth() - 40, pop._resize_w + dx))
-            if new_w != pop.winfo_width():
-                pop.geometry(f"{new_w}x{pop.winfo_height()}")
-                self.overlay_label.configure(wraplength=max(120, new_w - 64))
-                self._fit_overlay(anchor="top")
+            self._resize_overlay(
+                pop._resize_w + e.x_root - pop._resize_x,
+                pop._resize_h + e.y_root - pop._resize_y,
+            )
             return "break"
 
         grip.bind("<ButtonPress-1>", start_resize)
         grip.bind("<B1-Motion>", do_resize)
         grip.bind("<ButtonRelease-1>", lambda _e: self._save_user_prefs())
 
-        for w in (pop, wrap, self.overlay_label):
-            w.bind("<ButtonPress-1>", start_move)
-            w.bind("<B1-Motion>", do_move)
+        controls = (hdr, close_btn, self._overlay_thru_btn, fplus, fminus, grip)
+        for widget in (pop, wrap, self.overlay_label):
+            widget.bind("<ButtonPress-1>", start_move)
+            widget.bind("<B1-Motion>", do_move)
 
         sw = self.winfo_screenwidth()
         sh = self.winfo_screenheight()
-        w, h = 580, 56
+        w, h = 580, 40
 
-        def _valid_geom(g: str) -> bool:
+        def _clamped_geom(g: str) -> str | None:
             try:
-                parts = g.replace("-", "+-").split("+")
-                size = parts[0].split("x")
-                gw, gh = int(size[0]), int(size[1])
-                return 220 <= gw <= sw and 56 <= gh <= sh
-            except Exception:
-                return False
+                normalized = g.replace("-", "+-").split("+")
+                gw, gh = (int(value) for value in normalized[0].split("x"))
+                gx = int(normalized[1]) if len(normalized) > 1 and normalized[1] else 0
+                gy = int(normalized[2]) if len(normalized) > 2 and normalized[2] else 0
+                if not (220 <= gw <= sw and 40 <= gh <= sh):
+                    return None
+                gx = min(max(0, gx), max(0, sw - gw))
+                gy = min(max(0, gy), max(0, sh - gh))
+                return f"{gw}x{gh}{gx:+d}{gy:+d}"
+            except (TypeError, ValueError):
+                return None
 
         applied = False
         for cand in (geom, getattr(self._cfg, "overlay_geom", "") if getattr(self, "_cfg", None) else ""):
-            if cand and _valid_geom(cand):
+            safe_geom = _clamped_geom(cand) if cand else None
+            if safe_geom:
                 try:
-                    pop.geometry(cand)
+                    pop.geometry(safe_geom)
                     applied = True
                     break
                 except tk.TclError:
@@ -2527,10 +2804,13 @@ class App(tk.Tk):
             pop.geometry(f"{w}x{h}+{(sw - w) // 2}+{sh - h - 100}")
         pop.update_idletasks()
         self.overlay_label.configure(wraplength=max(120, pop.winfo_width() - 44))
+        self.overlay_label.configure(text=self._overlay_tail(self._overlay_text) or "...")
         self._apply_overlay_click_through()
         for w_widget in (pop, wrap, self.overlay_label):
             w_widget.bind("<ButtonRelease-1>", lambda _e: self._save_user_prefs(), add="+")
         self._fit_overlay()
+        self._set_overlay_controls_visible(False)
+        self._overlay_pointer_after_id = pop.after(50, self._poll_overlay_pointer)
     def _on_close(self):
         if getattr(self, "_pump_after_id", None) is not None:
             try:
@@ -2548,10 +2828,19 @@ class App(tk.Tk):
         self._close_settings()
         self._close_application_picker()
         if self._overlay is not None and self._overlay.winfo_exists():
-            self._overlay.destroy()
-            self._overlay = None
+            self._close_overlay()
+        self._overlay_click_style = None
+        if self._hotkeys is not None:
+            self._hotkeys.close()
+            self._hotkeys = None
         for box in (self.in_box, self.out_box, self.src_box, self.dst_box):
             box._close()
+        if getattr(self, "_overlay_pointer_after_id", None) is not None:
+            try:
+                self.after_cancel(self._overlay_pointer_after_id)
+            except Exception:
+                pass
+            self._overlay_pointer_after_id = None
         if getattr(self, "_save_prefs_timer", None) is not None:
             try:
                 self.after_cancel(self._save_prefs_timer)
@@ -2573,4 +2862,7 @@ class App(tk.Tk):
             except Exception:
                 pass
             self._pump_after_id = None
+        if getattr(self, "_hotkeys", None) is not None:
+            self._hotkeys.close()
+            self._hotkeys = None
         super().destroy()
