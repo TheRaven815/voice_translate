@@ -643,6 +643,7 @@ class App(tk.Tk):
             self._application_picker.focus_set()
             return
         pop = tk.Toplevel(self)
+        pop.withdraw()
         self._application_picker = pop
         pop.title(t("application_picker_title"))
         pop.configure(bg=C.panel)
@@ -712,6 +713,7 @@ class App(tk.Tk):
         x = self.winfo_rootx() + (self.winfo_width() - w) // 2
         y = self.winfo_rooty() + (self.winfo_height() - h) // 2
         pop.geometry(f"{w}x{h}+{x}+{y}")
+        pop.deiconify()
         try:
             pop.grab_set()
         except tk.TclError:
@@ -2228,6 +2230,7 @@ class App(tk.Tk):
             self._about.focus_set()
             return
         pop = tk.Toplevel(self)
+        pop.withdraw()
         self._about = pop
         pop.title("Hakkında")
         pop.configure(bg=C.panel)
@@ -2357,6 +2360,7 @@ class App(tk.Tk):
         x = self.winfo_rootx() + (self.winfo_width() - w) // 2
         y = self.winfo_rooty() + (self.winfo_height() - h) // 2
         pop.geometry(f"{w}x{h}+{x}+{y}")
+        pop.deiconify()
         try:
             pop.grab_set()
         except tk.TclError:
@@ -2379,6 +2383,7 @@ class App(tk.Tk):
             self._settings.focus_set()
             return
         pop = tk.Toplevel(self)
+        pop.withdraw()
         self._settings = pop
         pop.title(t("settings", "Ayarlar"))
         pop.configure(bg=C.panel)
@@ -2538,6 +2543,7 @@ class App(tk.Tk):
         x = self.winfo_rootx() + (self.winfo_width() - w) // 2
         y = self.winfo_rooty() + (self.winfo_height() - h) // 2
         pop.geometry(f"{w}x{h}+{x}+{y}")
+        pop.deiconify()
         try:
             pop.grab_set()
         except tk.TclError:
@@ -2678,6 +2684,7 @@ class App(tk.Tk):
 
     def _build_overlay(self, geom: str | None = None) -> None:
         pop = tk.Toplevel(self)
+        pop.withdraw()
         self._overlay = pop
         self._overlay_click_style = None
         self._overlay_controls_visible = False
@@ -2810,6 +2817,7 @@ class App(tk.Tk):
             w_widget.bind("<ButtonRelease-1>", lambda _e: self._save_user_prefs(), add="+")
         self._fit_overlay()
         self._set_overlay_controls_visible(False)
+        pop.deiconify()
         self._overlay_pointer_after_id = pop.after(50, self._poll_overlay_pointer)
     def _on_close(self):
         if getattr(self, "_pump_after_id", None) is not None:

@@ -892,6 +892,56 @@ def test_settings_dialog_open_and_close():
     finally:
         app.destroy()
 
+def test_dialogs_are_positioned_before_first_map(monkeypatch):
+    real_toplevel = tk.Toplevel
+    first_map: dict[tk.Toplevel, str] = {}
+
+    def tracked_toplevel(*args, **kwargs):
+        win = real_toplevel(*args, **kwargs)
+        win.bind(
+            "<Map>",
+            lambda event, current=win: first_map.setdefault(current, current.geometry())
+            if event.widget is current else None,
+            add="+",
+        )
+        return win
+
+    monkeypatch.setattr("gui.app.tk.Toplevel", tracked_toplevel)
+    monkeypatch.setattr("gui.app.dark_titlebar", lambda win, dark=True: win.update_idletasks())
+    app = App()
+    try:
+        dialogs = (
+            (app._open_settings, "_settings", app._close_settings),
+            (app._open_about, "_about", app._close_about),
+            (app._open_application_picker, "_application_picker", app._close_application_picker),
+        )
+        for open_dialog, attr, close_dialog in dialogs:
+            open_dialog()
+            app.update()
+            pop = getattr(app, attr)
+            assert pop is not None
+            assert first_map[pop] == pop.geometry()
+            close_dialog()
+        app._build_overlay()
+        app.update()
+        assert first_map[app._overlay] == app._overlay.geometry()
+        app._close_overlay()
+
+        app.src_box._toggle()
+        app.update()
+        assert first_map[app.src_box._pop] == app.src_box._pop.geometry()
+        app.src_box._close()
+
+        button = app.settings_btn
+        monkeypatch.setattr(button, "winfo_pointerx", lambda: button.winfo_rootx() + 1)
+        monkeypatch.setattr(button, "winfo_pointery", lambda: button.winfo_rooty() + 1)
+        button._show_tip()
+        app.update()
+        assert first_map[button._tip_win] == button._tip_win.geometry()
+        button._hide_tip()
+    finally:
+        app.destroy()
+
 def test_gui_overlay_studio_and_export(tmp_path, monkeypatch):
     app = App()
     try:

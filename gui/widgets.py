@@ -179,6 +179,7 @@ class IconButton(tk.Canvas):
             return
         try:
             win = tk.Toplevel(self)
+            win.withdraw()
             win.wm_overrideredirect(True)
             try:
                 win.attributes("-topmost", True)
@@ -203,6 +204,7 @@ class IconButton(tk.Canvas):
             except tk.TclError:
                 pass
             win.geometry(f"+{tx}+{ty}")
+            win.deiconify()
         except (tk.TclError, RuntimeError):
             self._tip_win = None
 
@@ -670,6 +672,7 @@ class Select(tk.Frame):
         if not self._values:
             return
         pop = tk.Toplevel(self)
+        pop.withdraw()
         pop.wm_overrideredirect(True)
         pop.configure(bg=C.line)
         try:
@@ -760,6 +763,7 @@ class Select(tk.Frame):
             if y < 0:
                 y = 0
         pop.geometry(f"{w}x{h}+{x}+{y}")
+        pop.deiconify()
         pop.bind("<Escape>", lambda _e: self._close())
         pop.bind("<Up>", self._on_key_up)
         pop.bind("<Down>", self._on_key_down)
