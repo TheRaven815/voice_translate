@@ -234,6 +234,22 @@ def test_save_key_clears_selection_and_focus(tmp_path, monkeypatch):
         app.destroy()
 
 
+def test_settings_save_reports_only_general_success(monkeypatch):
+    app = App()
+    try:
+        app._open_settings()
+        monkeypatch.setattr(app, "_register_global_hotkeys", lambda: None)
+        app.key_var.set("sk-test")
+
+        app._save_settings()
+
+        assert app._settings_status["text"] == "✓ Ayarlar kaydedildi."
+        assert "kaydedildi" not in app._shortcut_status["text"].lower()
+        assert "API anahtarı kaydedildi" not in app.log.get("1.0", "end")
+    finally:
+        app.destroy()
+
+
 def test_select_closes_on_second_toggle_without_pick():
     app = App()
     try:

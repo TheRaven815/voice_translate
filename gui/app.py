@@ -1332,7 +1332,7 @@ class App(tk.Tk):
             variable.set(shortcut)
         return "break"
 
-    def _save_shortcuts(self) -> bool:
+    def _save_shortcuts(self, *, report_success: bool = True) -> bool:
         if self._mute_shortcut_var is None or self._start_stop_shortcut_var is None:
             return True
         try:
@@ -1360,7 +1360,8 @@ class App(tk.Tk):
             return False
         self._mute_shortcut_var.set(mute)
         self._start_stop_shortcut_var.set(start_stop)
-        self._set_shortcut_status("✓ Kısayollar kaydedildi.", C.live)
+        if report_success:
+            self._set_shortcut_status("✓ Kısayollar kaydedildi.", C.live)
         return True
 
     def _set_shortcut_status(self, text: str, color: str) -> None:
@@ -2229,7 +2230,7 @@ class App(tk.Tk):
         self._set_status("Güncelleme kuruluyor", C.warn)
         self.after(100, self._on_close)
 
-    def save_key(self):
+    def save_key(self, *, report_success: bool = True) -> bool:
         key = self.key_var.get().strip()
         try:
             save_api_key(key)
@@ -2237,15 +2238,16 @@ class App(tk.Tk):
             self._append(f"[hata] Anahtar kaydedilemedi: {e}\n")
             if self._settings_status is not None and self._settings_status.winfo_exists():
                 self._settings_status.configure(text=f"Kaydedilemedi: {e}", fg=C.warn)
-            return
-        if key:
-            self._append("[bilgi] API anahtarı kaydedildi.\n")
-            if self._settings_status is not None and self._settings_status.winfo_exists():
-                self._settings_status.configure(text="✓ API anahtarı kaydedildi.", fg=C.live)
-        else:
-            self._append("[bilgi] Kayıtlı anahtar silindi.\n")
-            if self._settings_status is not None and self._settings_status.winfo_exists():
-                self._settings_status.configure(text="Kayıtlı anahtar silindi.", fg=C.dim)
+            return False
+        if report_success:
+            if key:
+                self._append("[bilgi] API anahtarı kaydedildi.\n")
+                if self._settings_status is not None and self._settings_status.winfo_exists():
+                    self._settings_status.configure(text="✓ API anahtarı kaydedildi.", fg=C.live)
+            else:
+                self._append("[bilgi] Kayıtlı anahtar silindi.\n")
+                if self._settings_status is not None and self._settings_status.winfo_exists():
+                    self._settings_status.configure(text="Kayıtlı anahtar silindi.", fg=C.dim)
         if self.key_entry is not None and self.key_entry.winfo_exists():
             self.key_entry.selection_clear()
         if self._settings is not None and self._settings.winfo_exists():
@@ -2253,10 +2255,14 @@ class App(tk.Tk):
         else:
             self.focus_set()
         self._refresh_key_notice()
+        return True
+
     def _save_settings(self) -> None:
-        if not self._save_shortcuts():
+        if not self._save_shortcuts(report_success=False):
             return
-        self.save_key()
+        if not self.save_key(report_success=False):
+            return
+        self._settings_status.configure(text="✓ Ayarlar kaydedildi.", fg=C.live)
 
 
     def start(self, preserve_transcript: bool = False):
