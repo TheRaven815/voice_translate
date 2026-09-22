@@ -10,7 +10,7 @@ System audio · Microphone · Single-app audio → **text + spoken translation**
 
 [Türkçe](README.md) · **[English](#ahenk)**
 
-[![Version](https://img.shields.io/badge/version-0.6.5-blue?style=flat-square)](meta.py)
+[![Version](https://img.shields.io/badge/version-0.6.6-blue?style=flat-square)](meta.py)
 [![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6?style=flat-square&logo=windows&logoColor=white)](#requirements)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
@@ -362,8 +362,8 @@ Automatic updates run only in the Windows onefile `Ahenk.exe` distribution. The 
 The repository must be **public** because clients call the GitHub API without credentials. To publish, set the same version in `meta.py`, `pyproject.toml`, and `version_info.txt`, then push a `vMAJOR.MINOR.PATCH` tag:
 
 ```bat
-git tag v0.6.5
-git push origin v0.6.5
+git tag v0.6.6
+git push origin v0.6.6
 ```
 
 `.github/workflows/release.yml` runs tests, builds the onefile exe, creates its SHA-256 file, and uploads both to a GitHub Release. Drafts and prereleases are not offered to clients.
@@ -417,6 +417,6 @@ This project is licensed under the [MIT License](LICENSE).
 
 <div align="center">
 
-**Ahenk 0.6.5** · Enes Eliağır · [Report an issue](https://github.com/TheRaven815/voice_translate/issues) · [Releases](https://github.com/TheRaven815/voice_translate/releases)
+**Ahenk 0.6.6** · Enes Eliağır · [Report an issue](https://github.com/TheRaven815/voice_translate/issues) · [Releases](https://github.com/TheRaven815/voice_translate/releases)
 
 </div>

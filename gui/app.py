@@ -47,7 +47,7 @@ from updater import (
     download_update,
     launch_update_helper,
 )
-from .theme import C, ICON_PNG, apply_icon, dark_titlebar, pick_fonts, prepare_app_id
+from .theme import ABOUT_LOGO_PNG, C, ICON_PNG, apply_icon, dark_titlebar, pick_fonts, prepare_app_id
 from .widgets import IconButton, Select, ThemeSwitch
 
 _PERMANENT_LIVE_ERRORS = (
@@ -2416,10 +2416,9 @@ class App(tk.Tk):
         header = tk.Frame(main, bg=C.panel)
         header.pack(fill=tk.X)
 
-        if ICON_PNG.is_file():
+        if ABOUT_LOGO_PNG.is_file():
             try:
-                raw = tk.PhotoImage(file=str(ICON_PNG))
-                logo_img = raw.subsample(21, 21)
+                logo_img = tk.PhotoImage(file=str(ABOUT_LOGO_PNG))
                 logo = tk.Label(header, image=logo_img, bg=C.panel)
                 logo.image = logo_img
                 logo.pack(side=tk.LEFT, padx=(0, 14), anchor="n")

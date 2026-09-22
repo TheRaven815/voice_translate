@@ -333,13 +333,9 @@ class IconButton(tk.Canvas):
 
 
 class ThemeSwitch(tk.Canvas):
-    """Güneş/ay teması için hap şeklinde kayar düğme.
+    """Kenar yumuşatmalı güneş/ay tema anahtarı."""
 
-    Konum, font bağımsız vektör çizimle belirlenir: koyu temada top solda
-    (hilal), açık temada sağda (güneş). Geçişte top kısa bir animasyonla kayar.
-    """
-
-    W, H = 40, 22
+    W, H = 44, 24
     _STEPS = 6
     _DELAY_MS = 16
 
@@ -356,8 +352,8 @@ class ThemeSwitch(tk.Canvas):
             takefocus=0,
         )
         self._command = command
-        self._icon_font = _icon_family(self)
         self._anim_after: str | None = None
+        self._image: tk.PhotoImage | None = None
         # 0.0 = koyu (top solda), 1.0 = açık (top sağda)
         self._pos = 1.0 if C.current == "light" else 0.0
         self.bind("<Button-1>", lambda _e: self._command())
@@ -418,63 +414,95 @@ class ThemeSwitch(tk.Canvas):
         super().configure(bg=self._bg)
         self._draw()
 
+    @staticmethod
+    def _blend(base: tuple[int, int, int], color: tuple[int, int, int], alpha: float) -> tuple[int, int, int]:
+        alpha = max(0.0, min(1.0, alpha))
+        return tuple(round(a + (b - a) * alpha) for a, b in zip(base, color))
+
+    @staticmethod
+    def _circle_coverage(x: float, y: float, cx: float, cy: float, radius: float) -> float:
+        return max(0.0, min(1.0, radius + 0.5 - math.hypot(x - cx, y - cy)))
+
+    @staticmethod
+    def _rounded_rect_coverage(
+        x: float, y: float, x1: float, y1: float, x2: float, y2: float, radius: float
+    ) -> float:
+        cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+        qx = abs(x - cx) - (x2 - x1) / 2 + radius
+        qy = abs(y - cy) - (y2 - y1) / 2 + radius
+        distance = math.hypot(max(qx, 0.0), max(qy, 0.0)) + min(max(qx, qy), 0.0) - radius
+        return max(0.0, min(1.0, 0.5 - distance))
+
+    @staticmethod
+    def _capsule_coverage(
+        x: float, y: float, x1: float, y1: float, x2: float, y2: float, radius: float
+    ) -> float:
+        dx, dy = x2 - x1, y2 - y1
+        length_sq = dx * dx + dy * dy
+        t = 0.0 if length_sq == 0 else max(0.0, min(1.0, ((x - x1) * dx + (y - y1) * dy) / length_sq))
+        distance = math.hypot(x - (x1 + t * dx), y - (y1 + t * dy))
+        return max(0.0, min(1.0, radius + 0.5 - distance))
+
     def _draw(self, hover: bool = False) -> None:
         self.delete("all")
         w, h = self.W, self.H
-        r = h / 2 - 1.5
-        track = C.hover if not hover else mix(C.hover, C.text, 0.08)
-        self.create_polygon(
-            *_rounded_rect_points(1.5, 1.5, w - 1.5, h - 1.5, r),
-            fill=track, outline=C.line, width=1, smooth=True,
-        )
-        pad = 4.0
-        knob_r = h / 2 - pad - 0.5
-        x_min, x_max = pad + knob_r, w - pad - knob_r
+        track = mix(C.hover, C.text, 0.10 if hover else 0.03)
+        colors = {
+            "bg": _hex_rgb(self._bg),
+            "line": _hex_rgb(C.line),
+            "track": _hex_rgb(track),
+            "shadow": _hex_rgb("#000000"),
+            "knob": _hex_rgb(C.panel if C.current == "light" else C.fill),
+            "glyph": _hex_rgb(C.accent if C.current == "light" else "#202226"),
+        }
+        knob_r = 8.5
+        x_min, x_max = 12.0, w - 12.0
         cx = x_min + (x_max - x_min) * self._pos
         cy = h / 2
-        self.create_oval(cx - knob_r, cy - knob_r, cx + knob_r, cy + knob_r, fill=C.fill, outline="")
-        glyph = C.fill_fg
-        # pos=1 (açık) -> güneş, pos=0 (koyu) -> hilal
-        self._draw_moon(cx, cy, knob_r, glyph, alpha=1.0 - self._pos)
-        self._draw_sun(cx, cy, knob_r, glyph, alpha=self._pos)
+        moon_alpha, sun_alpha = 1.0 - self._pos, self._pos
+        rows: list[str] = []
 
-    def _draw_moon(self, cx: float, cy: float, knob_r: float, color: str, alpha: float) -> None:
-        if alpha <= 0.0:
-            return
-        if self._icon_font:
-            self.create_text(
-                cx, cy, text="\ue708", fill=mix(C.fill, color, alpha),
-                font=(self._icon_font, -10),
-            )
-            return
-        col = mix(C.fill, color, alpha)
-        r = knob_r * 0.62
-        self.create_oval(cx - r, cy - r, cx + r, cy + r, fill=col, outline="")
-        bite = r * 0.88
-        bx = cx + r * 0.95
-        by = cy - r * 0.28
-        self.create_oval(bx - bite, by - bite, bx + bite, by + bite, fill=C.fill, outline="")
+        for py in range(h):
+            row: list[str] = []
+            y = py + 0.5
+            for px in range(w):
+                x = px + 0.5
+                color = colors["bg"]
+                outer = self._rounded_rect_coverage(x, y, 1.0, 1.0, w - 1.0, h - 1.0, 11.0)
+                color = self._blend(color, colors["line"], outer)
+                inner = self._rounded_rect_coverage(x, y, 2.0, 2.0, w - 2.0, h - 2.0, 10.0)
+                color = self._blend(color, colors["track"], inner)
+                shadow = self._circle_coverage(x, y, cx, cy + 0.8, knob_r + 0.4)
+                color = self._blend(color, colors["shadow"], shadow * (0.12 if C.current == "light" else 0.22))
+                knob = self._circle_coverage(x, y, cx, cy, knob_r)
+                color = self._blend(color, colors["knob"], knob)
 
-    def _draw_sun(self, cx: float, cy: float, knob_r: float, color: str, alpha: float) -> None:
-        if alpha <= 0.0:
-            return
-        if self._icon_font:
-            self.create_text(
-                cx, cy, text="\ue706", fill=mix(C.fill, color, alpha),
-                font=(self._icon_font, -10),
-            )
-            return
-        col = mix(C.fill, color, alpha)
-        r = knob_r * 0.30
-        self.create_oval(cx - r, cy - r, cx + r, cy + r, fill=col, outline="")
-        for i in range(8):
-            ang = math.radians(i * 45.0)
-            r1, r2 = knob_r * 0.58, knob_r * 0.80
-            self.create_line(
-                cx + r1 * math.cos(ang), cy + r1 * math.sin(ang),
-                cx + r2 * math.cos(ang), cy + r2 * math.sin(ang),
-                fill=col, width=1.3, capstyle=tk.ROUND,
-            )
+                moon_outer = self._circle_coverage(x, y, cx - 0.4, cy, 5.0)
+                moon_bite = self._circle_coverage(x, y, cx + 2.1, cy - 1.4, 4.5)
+                moon = moon_outer * (1.0 - moon_bite) * moon_alpha
+                color = self._blend(color, colors["glyph"], moon)
+
+                sun = self._circle_coverage(x, y, cx, cy, 2.35)
+                for i in range(8):
+                    angle = math.radians(i * 45.0)
+                    ray = self._capsule_coverage(
+                        x,
+                        y,
+                        cx + 4.1 * math.cos(angle),
+                        cy + 4.1 * math.sin(angle),
+                        cx + 6.1 * math.cos(angle),
+                        cy + 6.1 * math.sin(angle),
+                        0.6,
+                    )
+                    sun = max(sun, ray)
+                color = self._blend(color, colors["glyph"], sun * sun_alpha)
+                row.append(f"#{color[0]:02x}{color[1]:02x}{color[2]:02x}")
+            rows.append("{" + " ".join(row) + "}")
+
+        image = tk.PhotoImage(master=self, width=w, height=h)
+        image.put(" ".join(rows))
+        self._image = image
+        self.create_image(0, 0, image=image, anchor=tk.NW)
 
 
 class Select(tk.Frame):

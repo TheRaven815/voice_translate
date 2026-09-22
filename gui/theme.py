@@ -18,6 +18,7 @@ def _root() -> Path:
 _ASSETS = _root() / "assets"
 ICON_ICO = _ASSETS / "ahenk.ico"
 ICON_PNG = _ASSETS / "ahenk.png"
+ABOUT_LOGO_PNG = _ASSETS / "ahenk-about.png"
 APP_ID = "eneseliagir.ahenk"
 
 
