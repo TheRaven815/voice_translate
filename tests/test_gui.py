@@ -68,7 +68,7 @@ def test_app_name_version_and_about():
     try:
         assert app.title() == APP_TITLE == "Ahenk"
         assert app.brand["text"] == "Ahenk"
-        assert app.version_lbl["text"] == "v0.6.6"
+        assert app.version_lbl["text"] == "v0.7.0"
         assert ICON_ICO.is_file()
         assert ICON_PNG.is_file()
         assert ABOUT_LOGO_PNG.is_file()
@@ -79,7 +79,7 @@ def test_app_name_version_and_about():
         assert app._about is not None
         assert app._about.title() == "Hakkında"
         assert app.about_name["text"] == "Ahenk"
-        assert app.about_version["text"] == "v0.6.6"
+        assert app.about_version["text"] == "v0.7.0"
         assert app.about_author["text"] == APP_AUTHOR == "Enes Eliağır"
         assert app.about_update_status["text"] == "Kaynak kod modu"
         assert app.about_update_btn["text"] == "Güncellemeleri denetle"
@@ -654,6 +654,22 @@ def test_stop_during_retry_breaks_worker(monkeypatch):
         app.worker.join(timeout=1.0)
         assert not app.worker.is_alive()
         assert len(created) == 1
+    finally:
+        app.destroy()
+
+def test_connection_failure_notification_runs_on_pump_and_ignores_stale_events(monkeypatch):
+    app = App()
+    try:
+        notified = []
+        monkeypatch.setattr(app, "_notify_connection_failure", lambda: notified.append(True))
+        app.log_queue.put(("connection_failed", app._session_id - 1))
+        app.log_queue.put(("connection_failed", app._session_id))
+        app._pump_log()
+        assert notified == [True]
+        app._stopping.set()
+        app.log_queue.put(("connection_failed", app._session_id))
+        app._pump_log()
+        assert notified == [True]
     finally:
         app.destroy()
 
@@ -1658,4 +1674,3 @@ def test_dub_mutes_source_only_while_translation_is_playing():
         assert excluded[0] is True
     finally:
         app.destroy()
-

@@ -319,6 +319,7 @@ class SystemAudioLoop:
         self.last_latency_ms: float = 0.0
         self._waiting_response: bool = False
         self.session = None
+        self.connected_at: float = 0.0
         self.audio_in_queue: asyncio.Queue | None = None
         self.out_queue: asyncio.Queue | None = None
         self._stop: asyncio.Event | None = None
@@ -849,6 +850,11 @@ class SystemAudioLoop:
                         turn_done = bool(getattr(content, "turn_complete", False))
                         if text or (turn_done and self._bufs["trans"]):
                             self._handle_tr("trans", SimpleNamespace(text=text, finished=turn_done))
+                if getattr(response, "go_away", None) is not None:
+                    # Sunucu uzun bağlantıyı kapatacağını bildirdi. Yeni oturum
+                    # kur; bunu erişim reddi veya kullanıcı çıkışı sayma.
+                    self._note("[bilgi] Gemini Live oturumu yenileniyor (sunucu GoAway bildirimi).\n")
+                    raise ConnectionError("Gemini Live GoAway: sunucu bağlantının yenilenmesini istedi.")
             # Çeviride turn_complete kuyruğu boşaltmaz: her cümle bir turn,
             # kuyruk silinince ses kesik kesik kalır.
 
@@ -1232,6 +1238,7 @@ class SystemAudioLoop:
                 if self._user_stop.is_set():
                     raise asyncio.CancelledError("Kullanıcı çıkışı")
                 self.session = session
+                self.connected_at = time.monotonic()
                 if self._emit is not None:
                     self._emit(("status", "Dinleniyor"))
                 self.audio_in_queue = (

@@ -171,6 +171,24 @@ def _stub_client(session):
     )
 
 
+def test_go_away_requests_reconnection_instead_of_access_denial():
+    messages = []
+    loop = SystemAudioLoop("en", "tr", None, "dummy_key", on_text=messages.append)
+
+    class ExpiringSession:
+        async def receive(self):
+            yield SimpleNamespace(data=None, text=None, server_content=None,
+                                  go_away=SimpleNamespace(time_left="10s"))
+
+    loop.session = ExpiringSession()
+    try:
+        with pytest.raises(ConnectionError, match="GoAway"):
+            asyncio.run(loop.receive())
+        assert any("oturumu yenileniyor" in str(message) for message in messages)
+    finally:
+        loop.close()
+
+
 def _run_worker(loop_obj, errors):
     try:
         asyncio.run(loop_obj.run())

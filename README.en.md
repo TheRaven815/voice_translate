@@ -10,7 +10,7 @@ System audio · Microphone · Single-app audio → **text + spoken translation**
 
 [Türkçe](README.md) · **[English](#ahenk)**
 
-[![Version](https://img.shields.io/badge/version-0.6.6-blue?style=flat-square)](meta.py)
+[![Version](https://img.shields.io/badge/version-0.7.0-blue?style=flat-square)](meta.py)
 [![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6?style=flat-square&logo=windows&logoColor=white)](#requirements)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
@@ -56,7 +56,7 @@ System audio · Microphone · Single-app audio → **text + spoken translation**
 | 🌗 **Dual theme + dual UI language** | Dark / light theme; Turkish / English interface |
 | 📝 **Export** | Save transcripts as **TXT**, **SRT** (subtitles), and **JSONL** + session history (`history.jsonl`) |
 | 🔇 **Echo guard** | On a shared speaker, equal-duration silence is injected while translation plays, keeping the stream alive |
-| 🔁 **Smart reconnect** | Up to 3 retries on transient network errors; no pointless retries on permanent ones (key/quota) |
+| 🔁 **Smart reconnect** | Up to 3 reconnection attempts, 2 seconds apart, on transient network/API disconnects; a Windows notification if all three fail. No pointless retries on permanent errors (key/quota) |
 | 📦 **Single-file distribution** | Installer-free `Ahenk.exe` + console `Ahenk-cli.exe`; SHA-256-verified auto-updates |
 
 ---
@@ -362,8 +362,8 @@ Automatic updates run only in the Windows onefile `Ahenk.exe` distribution. The 
 The repository must be **public** because clients call the GitHub API without credentials. To publish, set the same version in `meta.py`, `pyproject.toml`, and `version_info.txt`, then push a `vMAJOR.MINOR.PATCH` tag:
 
 ```bat
-git tag v0.6.6
-git push origin v0.6.6
+git tag v0.7.0
+git push origin v0.7.0
 ```
 
 `.github/workflows/release.yml` runs tests, builds the onefile exe, creates its SHA-256 file, and uploads both to a GitHub Release. Drafts and prereleases are not offered to clients.
@@ -417,6 +417,6 @@ This project is licensed under the [MIT License](LICENSE).
 
 <div align="center">
 
-**Ahenk 0.6.6** · Enes Eliağır · [Report an issue](https://github.com/TheRaven815/voice_translate/issues) · [Releases](https://github.com/TheRaven815/voice_translate/releases)
+**Ahenk 0.7.0** · Enes Eliağır · [Report an issue](https://github.com/TheRaven815/voice_translate/issues) · [Releases](https://github.com/TheRaven815/voice_translate/releases)
 
 </div>

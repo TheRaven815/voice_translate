@@ -10,7 +10,7 @@ Sistem sesi · Mikrofon · Tek uygulama sesi → **metin + sesli çeviri**
 
 **[Türkçe](#ahenk)** · [English](README.en.md)
 
-[![Version](https://img.shields.io/badge/version-0.6.6-blue?style=flat-square)](meta.py)
+[![Version](https://img.shields.io/badge/version-0.7.0-blue?style=flat-square)](meta.py)
 [![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6?style=flat-square&logo=windows&logoColor=white)](#gereksinimler)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
@@ -56,7 +56,7 @@ Sistem sesi · Mikrofon · Tek uygulama sesi → **metin + sesli çeviri**
 | 🌗 **Çift tema + çift arayüz dili** | Koyu / açık tema; Türkçe / İngilizce arayüz |
 | 📝 **Dışa aktarma** | Transkriptleri **TXT**, **SRT** (altyazı) ve **JSONL** olarak kaydetme + oturum geçmişi (`history.jsonl`) |
 | 🔇 **Yankı koruması** | Aynı hoparlör kullanılıyorsa çeviri çalarken girişe eş süreli sessizlik enjekte edilir, akış kopmaz |
-| 🔁 **Akıllı yeniden bağlanma** | Geçici ağ hatalarında en fazla 3 deneme; kalıcı hatalarda (anahtar/kota) gereksiz deneme yok |
+| 🔁 **Akıllı yeniden bağlanma** | Geçici ağ/API kopmalarında 2 saniye arayla en fazla 3 yeniden bağlanma denemesi; üçü de başarısızsa Windows bildirimi. Kalıcı hatalarda (anahtar/kota) gereksiz deneme yok |
 | 📦 **Tek dosya dağıtım** | Kurulumsuz `Ahenk.exe` + konsol sürümü `Ahenk-cli.exe`; SHA-256 doğrulamalı otomatik güncelleme |
 
 ---
@@ -362,8 +362,8 @@ Yalnızca Windows onefile `Ahenk.exe` dağıtımında etkindir. Uygulama açıl�
 İstemciler GitHub API'ye anahtarsız eriştiği için depo **public** olmalıdır. Yayın için `meta.py`, `pyproject.toml` ve `version_info.txt` sürümlerini eşitleyip `vMAJOR.MINOR.PATCH` etiketi gönderin:
 
 ```bat
-git tag v0.6.6
-git push origin v0.6.6
+git tag v0.7.0
+git push origin v0.7.0
 ```
 
 `.github/workflows/release.yml` testleri çalıştırır, onefile exe'yi derler, SHA-256 dosyasını üretir ve ikisini GitHub Release'e yükler. Taslak ve ön sürümler istemcilere sunulmaz.
@@ -417,6 +417,6 @@ Bu proje [MIT Lisansı](LICENSE) ile lisanslanmıştır.
 
 <div align="center">
 
-**Ahenk 0.6.6** · Enes Eliağır · [Sorun bildir](https://github.com/TheRaven815/voice_translate/issues) · [Sürümler](https://github.com/TheRaven815/voice_translate/releases)
+**Ahenk 0.7.0** · Enes Eliağır · [Sorun bildir](https://github.com/TheRaven815/voice_translate/issues) · [Sürümler](https://github.com/TheRaven815/voice_translate/releases)
 
 </div>

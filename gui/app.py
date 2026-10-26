@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -38,6 +39,7 @@ from logger import append_history, log_exception, setup_logging
 from loop import SystemAudioLoop, validate_live_api_key
 from source_mute import DUB_BACKGROUND, DubPlan, SourceDub
 from meta import APP_AUTHOR, APP_TITLE, __version__
+from notifications import WindowsNotifier
 from updater import (
     UpdateError,
     UpdateInfo,
@@ -56,22 +58,57 @@ _PERMANENT_LIVE_ERRORS = (
     "permission_denied",
     "forbidden",
     "denied access",
-    "policy violation",
     "resource_exhausted",
     "quota",
     "not_found",
 )
 
 
-def _is_retryable_error(err: BaseException) -> bool:
+def _live_error_code(err: BaseException) -> int | None:
     code = getattr(err, "code", None)
+    received = getattr(err, "rcvd", None)
+    code = getattr(received, "code", None) or code
+    if isinstance(code, int):
+        return code
+    if re.search(r"\b1008\b", str(err)):
+        return 1008
+    return None
+
+
+def _is_retryable_error(err: BaseException, *, session_established: bool = False) -> bool:
+    code = _live_error_code(err)
     msg = str(err).lower()
-    if code in {400, 401, 403, 404, 429, 1008} or any(token in msg for token in _PERMANENT_LIVE_ERRORS):
+    if code in {400, 401, 403, 404, 429} or any(token in msg for token in _PERMANENT_LIVE_ERRORS):
         return False
-    if isinstance(code, int) and code >= 500:
+    session_expired = any(token in msg for token in (
+        "session expired", "session has expired", "session duration",
+        "session time limit", "maximum session", "max session",
+        "connection duration", "maximum connection", "deadline exceeded",
+    ))
+    if code == 1008:
+        # 1008 genel bir WebSocket politika kodudur; tek başına erişim reddi değildir.
+        # Açık erişim/anahtar/kota hataları yukarıda elenir. Belirsiz kapanış
+        # yalnızca zaten açılmış oturumda sınırlı yeniden denemeye alınır.
+        return session_expired or session_established
+    if session_expired:
         return True
-    kind = type(err).__name__.lower()
-    return any(token in kind or token in msg for token in ("connection", "socket", "timeout", "gaierror", "network"))
+    if code in {1000, 1001, 1006, 1011, 1012, 1013} or (isinstance(code, int) and 500 <= code < 600):
+        return True
+    if isinstance(err, (ConnectionError, TimeoutError)):
+        return True
+    kind = " ".join(cls.__name__.lower() for cls in type(err).__mro__)
+    return any(token in kind or token in msg for token in (
+        "connection", "socket", "timeout", "gaierror", "network", "transporterror",
+        "remoteprotocolerror", "keepalive ping", "service unavailable",
+    ))
+
+
+def _worker_error(err: BaseException) -> BaseException:
+    """TaskGroup içindeki asıl hatayı bul; kalıcı hatalar önceliklidir."""
+    if isinstance(err, BaseExceptionGroup):
+        errors = [_worker_error(child) for child in err.exceptions]
+        return next((child for child in errors if not _is_retryable_error(child)), errors[0])
+    return err
 
 
 class _InputPreviewMonitor:
@@ -224,7 +261,7 @@ def format_user_error(err: BaseException) -> str:
         return "Seçili uygulama kapandı veya yeniden başladı. Uygulamayı açın, Yenile'ye basıp yeniden seçin."
     if "mix bi" in msg_lower and "48000" in msg:
         return f"Ses aygıtı hatası: {msg}"
-    if "denied access" in msg_lower or "policy violation" in msg_lower or "1008" in msg:
+    if "denied access" in msg_lower:
         return "Google projesinin Gemini Live erişimi reddedildi (1008). Google AI Studio'da başka bir proje/anahtar oluşturun veya proje erişimi için Google desteğe başvurun."
 
     if "api_key_invalid" in msg_lower or "api key not valid" in msg_lower:
@@ -235,6 +272,8 @@ def format_user_error(err: BaseException) -> str:
         return "Belirtilen Gemini modeli bulunamadı (404 Not Found). Model adını kontrol edin."
     if "403" in msg or "permission_denied" in msg_lower or "forbidden" in msg_lower:
         return "Gemini API erişim izni reddedildi (403). Anahtarınızın Gemini Live API yetkisini kontrol edin."
+    if _live_error_code(err) == 1008:
+        return f"Gemini Live oturumu sunucu tarafından kapatıldı (1008). Bu kod tek başına proje erişiminin reddedildiğini göstermez. Sunucu ayrıntısı: {msg}"
     if any(k in err_type.lower() or k in msg_lower for k in ("connection", "socket", "timeout", "gaierror", "network")):
         return f"Ağ bağlantısı hatası ({err_type}): İnternet bağlantınızı ve güvenlik duvarınızı kontrol edin."
     if "ses aygıtı" in msg_lower or "soundcard" in msg_lower:
@@ -2076,6 +2115,9 @@ class App(tk.Tk):
                             status_text = payload
                             color = msg[2] if len(msg) > 2 else C.live
                             self._set_status(status_text, color)
+                        elif kind == "connection_failed":
+                            if payload == self._session_id and not self._stopping.is_set():
+                                self._notify_connection_failure()
                         elif kind == "detected_src":
                             detected_name = lang_code_to_name(payload, default=payload)
                             self.detected_lbl.configure(text=f"[{detected_name}]")
@@ -2346,17 +2388,20 @@ class App(tk.Tk):
             except BaseException as e:
                 if self._stopping.is_set():
                     break
-                root_err = e
-                if hasattr(e, "exceptions") and getattr(e, "exceptions"):
-                    root_err = getattr(e, "exceptions")[0]
+                root_err = _worker_error(e)
                 if isinstance(root_err, asyncio.CancelledError):
                     break
                 log_exception(root_err, "Worker loop error")
                 self.log_queue.put(f"\n[hata] {format_user_error(root_err)}\n")
-                if not _is_retryable_error(root_err):
+                connected_at = getattr(self.loop_obj, "connected_at", 0.0)
+                session_established = isinstance(connected_at, (int, float)) and connected_at > 0
+                if not _is_retryable_error(root_err, session_established=session_established):
                     self.log_queue.put(("status", "Hata", C.err))
                     self.log_queue.put("[hata] Bağlantı kurulamadı.\n")
                     break
+                # Uzun süre sağlıklı çalışan oturumun yeni kopması yeni bütçe alır.
+                if session_established and time.monotonic() - connected_at >= 30.0:
+                    retries = 0
                 retries += 1
                 if retries <= max_retries:
                     self.log_queue.put(("status", f"Yeniden bağlanılıyor ({retries}/{max_retries})", C.warn))
@@ -2364,12 +2409,39 @@ class App(tk.Tk):
                     if self._stopping.wait(2) or self._stopping.is_set():
                         break
                     if hasattr(self, "_loop_kwargs") and not self._stopping.is_set():
-                        self.loop_obj = SystemAudioLoop(**self._loop_kwargs)
+                        old_loop = self.loop_obj
+                        kwargs = dict(self._loop_kwargs)
+                        for name in ("source_mic", "output_speaker", "volume", "muted", "vad_threshold"):
+                            if name in vars(old_loop):
+                                kwargs[name] = getattr(old_loop, name)
+                        new_loop = SystemAudioLoop(**kwargs)
+                        if getattr(old_loop, "is_paused", False):
+                            new_loop.pause()
+                        if getattr(old_loop, "_dub_exclude", False):
+                            new_loop.set_dub_exclude(True)
+                        self.loop_obj = new_loop
+                        if self._stopping.is_set():
+                            new_loop.request_stop()
                 else:
                     self.log_queue.put(("status", "Hata", C.err))
-                    self.log_queue.put("[hata] Bağlantı kurulamadı.\n")
+                    self.log_queue.put(f"[hata] {t('connection_failed_message')}\n")
+                    self.log_queue.put(("connection_failed", session_id))
                     break
         self.log_queue.put(("__stopped__", session_id))
+
+    def _notify_connection_failure(self) -> None:
+        if sys.platform != "win32":
+            return
+        try:
+            notifier = self.__dict__.get("_connection_notifier")
+            if notifier is None:
+                notifier = WindowsNotifier(self.winfo_id())
+                self._connection_notifier = notifier
+            if not notifier.show(t("connection_failed_title"), t("connection_failed_message")):
+                self._append("[uyarı] Windows bildirimi gösterilemedi; bağlantı hatası günlüğe yazıldı.\n")
+        except Exception as exc:
+            log_exception(exc, "Windows connection notification error")
+            self._append("[uyarı] Windows bildirimi gösterilemedi; bağlantı hatası günlüğe yazıldı.\n")
 
     def stop(self, *args, cancel_restart: bool = True):
         if cancel_restart:
@@ -3087,6 +3159,9 @@ class App(tk.Tk):
         self.destroy()
 
     def destroy(self):
+        notifier = self.__dict__.get("_connection_notifier")
+        if notifier is not None:
+            notifier.close()
         try:
             self._release_source_dub()
         except Exception:
