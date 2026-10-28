@@ -39,6 +39,7 @@ py-modules = [
     "meta",
     "notifications",
     "process_audio",
+    "single_instance",
     "source_mute",
     "updater",
 ]

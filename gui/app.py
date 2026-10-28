@@ -282,7 +282,7 @@ def format_user_error(err: BaseException) -> str:
 
 
 class App(tk.Tk):
-    def __init__(self):
+    def __init__(self, activate_slot=None):
         prepare_app_id()
         cfg = load_config()
         self._cfg = cfg
@@ -291,6 +291,7 @@ class App(tk.Tk):
         C.apply_theme(self._theme)
         set_ui_lang(getattr(cfg, "ui_lang", "tr"))
         super().__init__()
+        self._activate_slot = activate_slot
         self.title(APP_TITLE)
         apply_icon(self)
         if getattr(self, "_cfg", None) and self._cfg.window_geom:
@@ -416,6 +417,7 @@ class App(tk.Tk):
         self._build_rail(self.rail)
         self._build_main(self.main)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._install_single_instance_activate()
         self.bind("<Control-Return>", lambda _e: self._toggle_start_stop())
         self.bind("<F5>", lambda _e: self._toggle_start_stop())
         self.bind("<Control-o>", lambda _e: self.toggle_overlay())
@@ -3113,6 +3115,85 @@ class App(tk.Tk):
         self._set_overlay_controls_visible(False)
         pop.deiconify()
         self._overlay_pointer_after_id = pop.after(50, self._poll_overlay_pointer)
+
+    def _install_single_instance_activate(self) -> None:
+        """İkinci başlatma, bu pencereyi simgeden çıkarıp öne getirsin.
+
+        UI thread kimliği paylaşılır. İkinci süreç PostThreadMessage bırakır;
+        Tk kuyruğu mesajı bu thread'e teslim eder.
+        """
+        slot = getattr(self, "_activate_slot", None)
+        if slot is None or os.name != "nt":
+            return
+        try:
+            from single_instance import activate_message_id, allow_activation, kernel32
+        except Exception:
+            return
+        try:
+            message = activate_message_id()
+        except OSError:
+            return
+        allow_activation()
+        slot.publish(int(kernel32.GetCurrentThreadId()))
+        self._single_instance_message = message
+        self._poll_activate_message()
+
+    def _poll_activate_message(self) -> None:
+        message = getattr(self, "_single_instance_message", 0)
+        if not message or os.name != "nt":
+            return
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            user32 = ctypes.WinDLL("user32", use_last_error=True)
+            user32.PeekMessageW.argtypes = [
+                ctypes.POINTER(wintypes.MSG), wintypes.HWND,
+                wintypes.UINT, wintypes.UINT, wintypes.UINT,
+            ]
+            user32.PeekMessageW.restype = wintypes.BOOL
+            PM_REMOVE = 0x0001
+            msg = wintypes.MSG()
+            while user32.PeekMessageW(ctypes.byref(msg), None, message, message, PM_REMOVE):
+                if int(msg.message) == message and int(msg.wParam) == 1 and int(msg.lParam) == 1:
+                    self._raise_existing_window()
+        except Exception:
+            pass
+        try:
+            self._activate_after_id = self.after(200, self._poll_activate_message)
+        except tk.TclError:
+            self._activate_after_id = None
+
+    def _stop_activate_listener(self) -> None:
+        after_id = getattr(self, "_activate_after_id", None)
+        self._activate_after_id = None
+        if after_id is not None:
+            try:
+                self.after_cancel(after_id)
+            except Exception:
+                pass
+        slot = getattr(self, "_activate_slot", None)
+        if slot is not None:
+            try:
+                slot.clear()
+            except Exception:
+                pass
+
+    def _raise_existing_window(self) -> None:
+        from single_instance import allow_activation, bring_to_front, root_hwnd
+
+        try:
+            if self.state() in {"iconic", "withdrawn"} or not self.winfo_viewable():
+                self.deiconify()
+            self.lift()
+            self.attributes("-topmost", True)
+            self.after(80, lambda: self.attributes("-topmost", bool(getattr(self, "always_on_top", False))))
+            self.focus_force()
+            bring_to_front(root_hwnd(self.winfo_id()))
+            allow_activation()
+        except tk.TclError:
+            pass
+
     def _on_close(self):
         if getattr(self, "_pump_after_id", None) is not None:
             try:
@@ -3159,6 +3240,7 @@ class App(tk.Tk):
         self.destroy()
 
     def destroy(self):
+        self._stop_activate_listener()
         notifier = self.__dict__.get("_connection_notifier")
         if notifier is not None:
             notifier.close()
