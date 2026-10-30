@@ -294,6 +294,17 @@ def save_api_key(key: str) -> Path:
     return _write_raw(raw)
 
 
+def reset(*, preserve_api_key: bool = True) -> Path:
+    """Tüm tercihleri varsayılana döndürür; API anahtarı korunabilir."""
+    raw = _read_raw()
+    fresh: dict = {}
+    if preserve_api_key:
+        stored = raw.get("api_key")
+        if stored:
+            fresh["api_key"] = stored
+    return _write_raw(fresh)
+
+
 def save_preferences(
     *,
     input_device: str | None = None,

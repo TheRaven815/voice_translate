@@ -68,7 +68,7 @@ def test_app_name_version_and_about():
     try:
         assert app.title() == APP_TITLE == "Ahenk"
         assert app.brand["text"] == "Ahenk"
-        assert app.version_lbl["text"] == "v0.7.0"
+        assert app.version_lbl["text"] == "v0.7.1"
         assert ICON_ICO.is_file()
         assert ICON_PNG.is_file()
         assert ABOUT_LOGO_PNG.is_file()
@@ -79,7 +79,7 @@ def test_app_name_version_and_about():
         assert app._about is not None
         assert app._about.title() == "Hakkında"
         assert app.about_name["text"] == "Ahenk"
-        assert app.about_version["text"] == "v0.7.0"
+        assert app.about_version["text"] == "v0.7.1"
         assert app.about_author["text"] == APP_AUTHOR == "Enes Eliağır"
         assert app.about_update_status["text"] == "Kaynak kod modu"
         assert app.about_update_btn["text"] == "Güncellemeleri denetle"
@@ -243,8 +243,10 @@ def test_settings_save_reports_only_general_success(monkeypatch):
         app.key_var.set("sk-test")
 
         app._save_settings()
+        app.update()
 
-        assert app._settings_status["text"] == "✓ Ayarlar kaydedildi."
+        assert app._save_status["text"] == "✓ Ayarlar kaydedildi."
+        assert app._save_status.winfo_rootx() > app.save_key_btn.winfo_rootx()
         assert "kaydedildi" not in app._shortcut_status["text"].lower()
         assert "API anahtarı kaydedildi" not in app.log.get("1.0", "end")
     finally:
@@ -1673,4 +1675,184 @@ def test_dub_mutes_source_only_while_translation_is_playing():
         assert ("engage", "mute_other_sessions") in events
         assert excluded[0] is True
     finally:
+        app.destroy()
+
+
+def test_ui_language_en_localizes_remaining_settings_and_lists():
+    from i18n import set_ui_lang
+
+    app = App()
+    try:
+        app._open_settings()
+        app._set_ui_language("en")
+        app.update()
+        assert app._settings_refs["api_title"].cget("text") == "Gemini API Key"
+        assert (
+            app._settings_refs["ui_help"].cget("text")
+            == "The interface language changes immediately."
+        )
+        assert app._reset_btn.cget("text") == "Reset settings"
+        assert app.src_box["values"][0] == "Automatic"
+        assert app.dst_box["values"][0] == "English"
+        assert app.out_box["values"][0] == "None"
+        geom = app._settings.geometry()
+        height = int(geom.split("x")[1].split("+")[0])
+        y = app._settings.winfo_y()
+        assert y + height <= app._settings.winfo_screenheight()
+    finally:
+        set_ui_lang("tr")
+        app.destroy()
+
+
+def test_language_names_follow_ui_lang_and_keep_canonical_codes():
+    from i18n import set_ui_lang
+    from languages import (
+        canonical_name,
+        display_language_names,
+        display_name,
+        display_source_names,
+        source_code,
+    )
+
+    try:
+        set_ui_lang("en")
+        assert display_name("Türkçe") == "Turkish"
+        assert display_name("İngilizce") == "English"
+        assert canonical_name("Turkish") == "Türkçe"
+        assert display_source_names()[0] == "Automatic"
+        assert display_language_names()[0] == "English"
+        assert source_code(canonical_name("English")) == "en"
+    finally:
+        set_ui_lang("tr")
+    assert display_name("Türkçe") == "Türkçe"
+
+
+def test_input_and_none_labels_localize_and_resolve_across_languages():
+    from types import SimpleNamespace
+
+    import devices
+    from i18n import set_ui_lang
+
+    mic = SimpleNamespace(id="1", name="Mic 1", isloopback=False)
+    speaker = SimpleNamespace(name="Speaker 1")
+    try:
+        set_ui_lang("en")
+        assert devices.display_input_label(mic) == "[Mic] Mic 1"
+        assert devices.find_input_by_label([mic], "[Mic] Mic 1") is mic
+        assert devices.find_input_by_label([mic], "[Mikrofon] Mic 1") is mic
+        assert devices.none_output_label() == "None"
+        assert devices.is_none_output("None") is True
+        assert devices.find_output_by_label([speaker], "None") is None
+    finally:
+        set_ui_lang("tr")
+    assert devices.display_input_label(mic) == "[Mikrofon] Mic 1"
+    assert devices.none_output_label() == "Hiçbiri"
+
+
+def test_settings_dialog_scrolls_on_a_short_screen(monkeypatch):
+    monkeypatch.setattr(tk.Toplevel, "winfo_screenheight", lambda self: 600)
+
+    app = App()
+    try:
+        app._open_settings()
+        app.update()
+        assert app._settings_scroll.winfo_manager() == "pack"
+        geom = app._settings.geometry()
+        height = int(geom.split("x")[1].split("+")[0])
+        assert height <= 600
+        assert app._settings.winfo_y() + height <= 600
+        app._settings_canvas.update_idletasks()
+        assert app._settings_canvas.yview() != (0.0, 1.0)
+    finally:
+        app.destroy()
+
+
+def test_ui_language_switch_applies_live_and_persists():
+    from i18n import set_ui_lang
+    from types import SimpleNamespace
+
+    app = App()
+    try:
+        app._open_settings()
+        assert app._settings.title() == "Ayarlar"
+        app._set_ui_language("en")
+        assert app.status.cget("text") == "Ready"
+        assert app.heard_lbl.cget("text") == "Heard"
+        assert app.trans_lbl.cget("text") == "Translation"
+        assert app.start_btn.cget("text") == "Start"
+        assert app.stop_btn.cget("text") == "Stop"
+        assert app.refresh_btn.cget("text") == "Refresh"
+        assert app._settings.title() == "Settings"
+        assert app._settings_close_btn.cget("text") == "Close"
+        assert config.load().ui_lang == "en"
+        app._set_ui_language("tr")
+        assert app._settings.title() == "Ayarlar"
+        assert app.heard_lbl.cget("text") == "Duyulan"
+    finally:
+        set_ui_lang("tr")
+        app.destroy()
+
+
+def test_shortcut_capture_suspends_hotkeys_and_records_shifted_digit(monkeypatch):
+    from types import SimpleNamespace
+    import hotkeys
+
+    monkeypatch.setattr(hotkeys.sys, "platform", "win32")
+    app = App()
+    try:
+        app._open_settings()
+        calls = []
+        monkeypatch.setattr(app._hotkeys, "replace", lambda shortcuts: calls.append(shortcuts) or None)
+        app._suspend_global_hotkeys()
+        assert app._hotkeys_suspended is True
+        assert calls[-1] == {}
+        event = SimpleNamespace(keysym="exclam", keycode=0x31, state=0x0004 | 0x0001)
+        app._capture_shortcut(event, app._mute_shortcut_var)
+        assert app._mute_shortcut_var.get() == "Ctrl+Shift+1"
+        assert "Ctrl+Shift+1" in app._shortcut_status.cget("text")
+        app._resume_global_hotkeys()
+        assert app._hotkeys_suspended is False
+        assert calls[-1] == {"mute": app.mute_shortcut, "start_stop": app.start_stop_shortcut}
+    finally:
+        app.destroy()
+
+
+def test_reset_settings_restores_defaults_and_keeps_api_key(monkeypatch):
+    asked = []
+    monkeypatch.setattr(
+        "gui.app.messagebox.askyesno",
+        lambda *args, **kwargs: asked.append(args) or True,
+    )
+    app = App()
+    try:
+        monkeypatch.setattr(app, "refresh_devices", lambda async_scan=True: None)
+        app.key_var.set("sk-reset")
+        app.save_key(report_success=False)
+        app._open_settings()
+        app.set_theme("light")
+        app._set_ui_language("en")
+        app.mute_shortcut = "Ctrl+Alt+M"
+        app.start_stop_shortcut = "F9"
+        app.dub_mute_source = True
+        app.dub_background = False
+
+        app._reset_settings()
+
+        cfg = config.load()
+        assert asked
+        assert cfg.api_key == "sk-reset"
+        assert cfg.theme == "dark"
+        assert cfg.ui_lang == "tr"
+        assert cfg.mute_shortcut == "Ctrl+Shift+M"
+        assert cfg.start_stop_shortcut == "Ctrl+Shift+Space"
+        assert app._theme == "dark"
+        assert app.mute_shortcut == "Ctrl+Shift+M"
+        assert app.start_stop_shortcut == "Ctrl+Shift+Space"
+        assert app.dub_mute_source is False
+        assert app._settings is not None
+        assert app._settings.title() == "Ayarlar"
+        assert app._mute_shortcut_var.get() == "Ctrl+Shift+M"
+    finally:
+        from i18n import set_ui_lang
+        set_ui_lang("tr")
         app.destroy()

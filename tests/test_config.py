@@ -187,3 +187,28 @@ def test_g02_ahenk_config_priority_and_isolation(tmp_path, monkeypatch):
     # AHENK_CONFIG kaldırıldığında VOICE_TRANSLATE_CONFIG'e düşmeli
     monkeypatch.delenv("AHENK_CONFIG", raising=False)
     assert config.config_path() == vt_cfg
+
+
+def test_reset_keeps_api_key_and_restores_defaults(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    config.save_api_key("sk-reset")
+    config.save_preferences(
+        theme="light",
+        ui_lang="en",
+        mute_shortcut="Ctrl+Alt+M",
+        start_stop_shortcut="F9",
+        dub_mute_source=True,
+    )
+
+    config.reset()
+
+    loaded = config.load()
+    assert loaded.api_key == "sk-reset"
+    assert loaded.theme == "dark"
+    assert loaded.ui_lang == "tr"
+    assert loaded.mute_shortcut == "Ctrl+Shift+M"
+    assert loaded.start_stop_shortcut == "Ctrl+Shift+Space"
+    assert loaded.dub_mute_source is False
+    path = tmp_path / "config.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert set(data) == {"api_key"}

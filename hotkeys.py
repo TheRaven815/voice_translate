@@ -34,6 +34,40 @@ _NAMED_KEYS = {
     "Insert": 0x2D,
     "Delete": 0x2E,
 }
+_EXTRA_KEYS = {
+    # Noktalama / OEM tuşları (Windows sanal tuş kodları)
+    "Semicolon": 0xBA,
+    "Plus": 0xBB,
+    "Comma": 0xBC,
+    "Minus": 0xBD,
+    "Period": 0xBE,
+    "Slash": 0xBF,
+    "Backtick": 0xC0,
+    "BracketLeft": 0xDB,
+    "Backslash": 0xDC,
+    "BracketRight": 0xDD,
+    "Quote": 0xDE,
+    # Sayısal tuş takımı
+    "Num0": 0x60,
+    "Num1": 0x61,
+    "Num2": 0x62,
+    "Num3": 0x63,
+    "Num4": 0x64,
+    "Num5": 0x65,
+    "Num6": 0x66,
+    "Num7": 0x67,
+    "Num8": 0x68,
+    "Num9": 0x69,
+    "NumMultiply": 0x6A,
+    "NumAdd": 0x6B,
+    "NumSeparator": 0x6C,
+    "NumSubtract": 0x6D,
+    "NumDecimal": 0x6E,
+    "NumDivide": 0x6F,
+}
+_KEY_VK = {**_NAMED_KEYS, **_EXTRA_KEYS}
+_KEY_BY_UPPER = {name.upper(): name for name in _KEY_VK}
+_VK_TO_KEY_NAME = {code: name for name, code in _KEY_VK.items()}
 _KEY_ALIASES = {
     "RETURN": "Enter",
     "ESC": "Escape",
@@ -65,10 +99,18 @@ def _normal_key_name(value: str) -> str:
         return raw.upper()
     if upper.startswith("F") and upper[1:].isdigit() and 1 <= int(upper[1:]) <= 24:
         return upper
-    for name in _NAMED_KEYS:
-        if upper == name.upper():
-            return name
+    if upper in _KEY_BY_UPPER:
+        return _KEY_BY_UPPER[upper]
     raise ShortcutError(f"Desteklenmeyen tuş: {raw}")
+
+
+def _key_name_from_vk(code: int) -> str | None:
+    """Windows sanal tuş kodunu kanonik tuş adına çevirir."""
+    if 0x30 <= code <= 0x39 or 0x41 <= code <= 0x5A:
+        return chr(code)
+    if 0x70 <= code <= 0x87:
+        return f"F{code - 0x70 + 1}"
+    return _VK_TO_KEY_NAME.get(code)
 
 
 def parse_shortcut(shortcut: str) -> tuple[str, int, int]:
@@ -93,13 +135,18 @@ def parse_shortcut(shortcut: str) -> tuple[str, int, int]:
     elif key.startswith("F") and key[1:].isdigit():
         virtual_key = 0x70 + int(key[1:]) - 1
     else:
-        virtual_key = _NAMED_KEYS[key]
+        virtual_key = _KEY_VK[key]
     canonical = "+".join([*(name for name in _MODIFIER_ORDER if name in modifiers), key])
     return canonical, modifier_value, virtual_key
 
 
 def shortcut_from_tk_event(event) -> str:
-    """Tk KeyPress olayını güvenli bir genel kısayola çevirir."""
+    """Tk KeyPress olayını güvenli bir genel kısayola çevirir.
+
+    Windows'ta tuş, klavye düzeninden bağımsız olarak sanal tuş kodundan
+    (``event.keycode``) çözülür; böylece Shift'li noktalama ve sayısal tuş
+    takımı da yakalanabilir ve RegisterHotKey ile aynı tuşa kaydolur.
+    """
     keysym = str(getattr(event, "keysym", ""))
     if keysym in {"Control_L", "Control_R", "Alt_L", "Alt_R", "Shift_L", "Shift_R"}:
         return ""
@@ -107,11 +154,19 @@ def shortcut_from_tk_event(event) -> str:
     modifiers = []
     if state & 0x0004:
         modifiers.append("Ctrl")
-    if state & 0x0008 or state & 0x20000:
+    # Windows'ta Mod1Mask (0x0008) NumLock'tur, Alt değildir. Alt = ALT_MASK (0x20000).
+    # X11'de Alt normalde Mod1 (0x0008) olarak gelir.
+    alt_bit = 0x20000 if sys.platform == "win32" else 0x0008
+    if state & alt_bit:
         modifiers.append("Alt")
     if state & 0x0001:
         modifiers.append("Shift")
-    canonical, _, _ = parse_shortcut("+".join([*modifiers, _normal_key_name(keysym)]))
+    name = ""
+    if sys.platform == "win32":
+        name = _key_name_from_vk(int(getattr(event, "keycode", 0) or 0)) or ""
+    if not name:
+        name = _normal_key_name(keysym)
+    canonical, _, _ = parse_shortcut("+".join([*modifiers, name]))
     return canonical
 
 

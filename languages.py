@@ -57,6 +57,61 @@ CODE_TO_NAME["zh"] = "Çince (Basitleştirilmiş)"
 CODE_TO_NAME["zh-cn"] = "Çince (Basitleştirilmiş)"
 CODE_TO_NAME["zh-tw"] = "Çince (Geleneksel)"
 
+# Arayüz diline göre görünen adlar. Kanonik anahtarlar (LANGS) Türkçe kalır.
+_EN_NAMES = {
+    AUTO_SRC: "Automatic",
+    "Türkçe": "Turkish",
+    "İngilizce": "English",
+    "Almanca": "German",
+    "Fransızca": "French",
+    "İspanyolca": "Spanish",
+    "İtalyanca": "Italian",
+    "Portekizce": "Portuguese",
+    "Rusça": "Russian",
+    "Arapça": "Arabic",
+    "Felemenkçe": "Dutch",
+    "Japonca": "Japanese",
+    "Çince (Basitleştirilmiş)": "Chinese (Simplified)",
+    "Çince (Geleneksel)": "Chinese (Traditional)",
+    "Korece": "Korean",
+    "Hintçe": "Hindi",
+    "Lehçe": "Polish",
+    "Ukraynaca": "Ukrainian",
+    "Endonezce": "Indonesian",
+    "Vietnamca": "Vietnamese",
+    "İsveççe": "Swedish",
+}
+_EN_TO_CANONICAL = {english: canonical for canonical, english in _EN_NAMES.items()}
+
+
+def canonical_name(name: str | None) -> str | None:
+    """Görünen (TR/EN) dil adını kanonik Türkçe ada çevirir."""
+    if not name:
+        return name
+    if name in _EN_NAMES:
+        return name
+    return _EN_TO_CANONICAL.get(name, name)
+
+
+def display_name(name: str | None) -> str | None:
+    """Kanonik dil adını geçerli arayüz dilinde gösterir."""
+    if not name:
+        return name
+    canonical = canonical_name(name)
+    from i18n import get_ui_lang
+
+    if get_ui_lang() == "en":
+        return _EN_NAMES.get(canonical, canonical)
+    return canonical
+
+
+def display_source_names() -> list[str]:
+    return [display_name(name) for name in source_names()]
+
+
+def display_language_names() -> list[str]:
+    return [display_name(name) for name in LANGS]
+
 def lang_code_to_name(code: str, default: str = "Türkçe") -> str:
     if not code:
         return default

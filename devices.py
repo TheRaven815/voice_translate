@@ -8,6 +8,28 @@ import soundcard as sc
 NONE_OUTPUT = "Hiçbiri"
 
 
+def none_output_label() -> str:
+    """Çıkış listesinde gösterilen yerelleştirilmiş “Hiçbiri” etiketi."""
+    from i18n import t
+
+    return t("none_output_short", NONE_OUTPUT)
+
+
+def none_output_labels() -> set[str]:
+    from i18n import STRINGS
+
+    labels = {NONE_OUTPUT}
+    for strings in STRINGS.values():
+        value = strings.get("none_output_short")
+        if value:
+            labels.add(value)
+    return labels
+
+
+def is_none_output(label: str | None) -> bool:
+    return not label or label in none_output_labels()
+
+
 def list_devices() -> None:
     print("Hoparlörler:")
     def_sp = sc.default_speaker()
@@ -52,12 +74,52 @@ def device_key(dev) -> tuple:
     )
 
 
+def _all_label_values(key: str, default: str) -> set[str]:
+    """Bir etiketin tüm dillerdeki değerleri (eski kayıtları eşlemek için)."""
+    from i18n import STRINGS
+
+    values = {default}
+    for strings in STRINGS.values():
+        value = strings.get(key)
+        if value:
+            values.add(value)
+    return values
+
+
+def application_input_prefix() -> str:
+    from i18n import t
+
+    return t("label_application", "[Uygulama]")
+
+
+def is_application_input_label(label: str | None) -> bool:
+    text = str(label or "")
+    return any(
+        text.startswith(prefix + " ")
+        for prefix in _all_label_values("label_application", "[Uygulama]")
+    )
+
+
 def display_input_label(dev) -> str:
     """GUI giriş etiketi; uygulamalar sistem sesinden ayrı gösterilir."""
+    from i18n import t
+
     if getattr(dev, "is_application", False):
-        return "[Uygulama] " + str(dev.name)
-    prefix = "[Sistem] " if getattr(dev, "isloopback", False) else "[Mikrofon] "
-    return prefix + str(getattr(dev, "name", "?"))
+        return application_input_prefix() + " " + str(dev.name)
+    key = "label_system" if getattr(dev, "isloopback", False) else "label_microphone"
+    return t(key) + " " + str(getattr(dev, "name", "?"))
+
+
+def _strip_input_prefix(text: str) -> str:
+    for prefixes in (
+        _all_label_values("label_application", "[Uygulama]"),
+        _all_label_values("label_system", "[Sistem]"),
+        _all_label_values("label_microphone", "[Mikrofon]"),
+    ):
+        for prefix in prefixes:
+            if text.startswith(prefix + " "):
+                return text[len(prefix) + 1:]
+    return text
 
 
 def find_input_by_label(devices, label: str | None):
@@ -65,18 +127,14 @@ def find_input_by_label(devices, label: str | None):
     if not label or not devices:
         return None
     text = str(label).strip()
-    if text.startswith("[Uygulama] "):
+    bare = _strip_input_prefix(text)
+    application_prefixes = _all_label_values("label_application", "[Uygulama]")
+    if any(text.startswith(prefix + " ") for prefix in application_prefixes):
         return next((dev for dev in devices if getattr(dev, "is_application", False)
-                     and text == display_input_label(dev)), None)
+                     and str(getattr(dev, "name", "")) == bare), None)
     for dev in devices:
         if text == display_input_label(dev) or text == str(getattr(dev, "name", "")):
             return dev
-    # Önek değişmiş olabilir; ada göre gevşek eşleşme.
-    bare = text
-    for prefix in ("[Sistem] ", "[Mikrofon] "):
-        if bare.startswith(prefix):
-            bare = bare[len(prefix):]
-            break
     for dev in devices:
         if str(getattr(dev, "name", "")) == bare:
             return dev
@@ -85,7 +143,7 @@ def find_input_by_label(devices, label: str | None):
 
 def find_output_by_label(devices, label: str | None):
     """Görünen ada göre çıkış aygıtını bulur (NONE_OUTPUT -> None)."""
-    if not label or label == NONE_OUTPUT:
+    if is_none_output(label):
         return None
     text = str(label).strip()
     for dev in (devices or []):
