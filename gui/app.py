@@ -296,6 +296,105 @@ def format_user_error(err: BaseException) -> str:
     return f"{err_type}: {msg}"
 
 
+def _virtual_screen_bounds(widget) -> tuple[int, int, int, int]:
+    """Tüm monitörleri kapsayan sanal ekranın (x, y, genişlik, yükseklik) sınırları.
+
+    Tk'nin winfo_screenwidth/height yalnızca birincil monitörü verir; ikinci
+    ekrana taşınan altyazı bu yüzden birinci ekrana geri sıçrıyordu.
+    """
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            metrics = ctypes.windll.user32.GetSystemMetrics
+            x, y = int(metrics(76)), int(metrics(77))  # SM_X/YVIRTUALSCREEN
+            width, height = int(metrics(78)), int(metrics(79))  # SM_CX/CYVIRTUALSCREEN
+            if width > 0 and height > 0:
+                return x, y, width, height
+        except Exception:
+            pass
+    try:
+        return 0, 0, int(widget.winfo_screenwidth()), int(widget.winfo_screenheight())
+    except (AttributeError, tk.TclError):
+        return 0, 0, 1920, 1080
+
+
+def _monitor_work_area(x: int, y: int) -> tuple[int, int, int, int] | None:
+    """Noktayı içeren (yoksa en yakın) monitörün görev çubuğu hariç alanı."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _RECT(ctypes.Structure):
+            _fields_ = [
+                ("left", wintypes.LONG),
+                ("top", wintypes.LONG),
+                ("right", wintypes.LONG),
+                ("bottom", wintypes.LONG),
+            ]
+
+        class _MONITORINFO(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", wintypes.DWORD),
+                ("rcMonitor", _RECT),
+                ("rcWork", _RECT),
+                ("dwFlags", wintypes.DWORD),
+            ]
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+        user32.MonitorFromPoint.restype = wintypes.HANDLE
+        user32.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_MONITORINFO)]
+        user32.GetMonitorInfoW.restype = wintypes.BOOL
+
+        monitor = user32.MonitorFromPoint(wintypes.POINT(int(x), int(y)), 2)  # NEAREST
+        if not monitor:
+            return None
+        info = _MONITORINFO()
+        info.cbSize = ctypes.sizeof(_MONITORINFO)
+        if not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            return None
+        work = info.rcWork
+        width, height = work.right - work.left, work.bottom - work.top
+        if width <= 0 or height <= 0:
+            return None
+        return int(work.left), int(work.top), int(width), int(height)
+    except Exception:
+        return None
+
+
+_GEOMETRY_RE = re.compile(r"^=?(\d+)x(\d+)([+-]\d+)([+-]\d+)$")
+
+
+def _parse_geometry(
+    g: str, screen_width: int, screen_height: int
+) -> tuple[int, int, int, int] | None:
+    """Tk geometri dizgesini gerçek (sanal masaüstü) koordinatlara çözer.
+
+    Tk'de ``-N`` sağ/alt kenardan ölçülür; bu yüzden negatif konumlar ekran
+    genişliği üzerinden geri hesaplanır.
+    """
+    match = _GEOMETRY_RE.match((g or "").strip())
+    if not match:
+        return None
+    width, height = int(match.group(1)), int(match.group(2))
+    x_token, y_token = match.group(3), match.group(4)
+    x = int(x_token[1:]) if x_token[0] == "+" else screen_width - width - int(x_token[1:])
+    y = int(y_token[1:]) if y_token[0] == "+" else screen_height - height - int(y_token[1:])
+    return x, y, width, height
+
+
+def _clamp_to_bounds(
+    x: int, y: int, width: int, height: int, bounds: tuple[int, int, int, int]
+) -> tuple[int, int]:
+    bx, by, bw, bh = bounds
+    x = min(max(bx, int(x)), max(bx, bx + bw - int(width)))
+    y = min(max(by, int(y)), max(by, by + bh - int(height)))
+    return x, y
+
+
 class App(tk.Tk):
     def __init__(self, activate_slot=None):
         prepare_app_id()
@@ -1554,7 +1653,7 @@ class App(tk.Tk):
             return
         anchor, justify = self._overlay_text_layout()
         self.overlay_label.configure(text=tail, anchor=anchor, justify=justify)
-        self._fit_overlay()
+        # Metin güncellemesi pencereyi yeniden konumlandırmaz; konum kullanıcıya ait.
 
     def _write_pane(self, widget, text: str):
         # Akış sırasında eski bir seçim gri blok gibi görünmesin diye kaldır.
@@ -3342,34 +3441,60 @@ class App(tk.Tk):
         self._settings_scroll = None
         self._refresh_key_notice()
 
-    def _fit_overlay(self, anchor: str = "bottom") -> None:
-        pop = self._overlay
-        if pop is None or not pop.winfo_exists():
-            return
-        pop.update_idletasks()
-        width = max(220, pop.winfo_width())
-        height = max(40, pop.winfo_height())
-        max_x = max(0, pop.winfo_screenwidth() - width)
-        max_y = max(0, pop.winfo_screenheight() - height)
-        x = min(max(0, pop.winfo_x()), max_x)
-        if anchor == "top":
-            y = min(max(0, pop.winfo_y()), max_y)
-        else:
-            bottom = pop.winfo_y() + pop.winfo_height()
-            y = min(max(0, bottom - height), max_y)
-        pop.geometry(f"{width}x{height}{x:+d}{y:+d}")
-
-    def _resize_overlay(self, width: int, height: int) -> None:
+    def _place_overlay(self, x: int, y: int, width: int, height: int) -> None:
+        """Altyazıyı gerçek koordinata taşır; negatif eksende Tk referansını düzeltir."""
         pop = self._overlay
         if pop is None or not pop.winfo_exists():
             return
         screen_width = pop.winfo_screenwidth()
         screen_height = pop.winfo_screenheight()
+
+        def geometry(dx: int = 0, dy: int = 0) -> str:
+            x_part = f"+{x}" if x >= 0 else f"-{screen_width - width - x + dx}"
+            y_part = f"+{y}" if y >= 0 else f"-{screen_height - height - y + dy}"
+            return f"{width}x{height}{x_part}{y_part}"
+
+        pop.geometry(geometry())
+        if x < 0 or y < 0:
+            # Tk sağ/alt kenar referansını birincil ekranla sınırlıyorsa sapmayı düzelt.
+            pop.update_idletasks()
+            actual_x, actual_y = pop.winfo_x(), pop.winfo_y()
+            if (actual_x, actual_y) != (x, y):
+                pop.geometry(geometry(actual_x - x, actual_y - y))
+
+    def _overlay_bounds(self, x: int, y: int, width: int, height: int) -> tuple[int, int, int, int]:
+        """Verilen dikdörtgenin durduğu monitörün sınırları; yoksa sanal ekran."""
+        center_x = int(x) + max(1, int(width)) // 2
+        center_y = int(y) + max(1, int(height)) // 2
+        return _monitor_work_area(center_x, center_y) or _virtual_screen_bounds(self)
+
+    def _fit_overlay(self, anchor: str = "bottom") -> None:
+        pop = self._overlay
+        if pop is None or not pop.winfo_exists():
+            return
+        pop.update_idletasks()
+        # winfo_* gerçek konumu verir; geometry() negatif x'i sağ kenardan yazar.
+        cur_x, cur_y = pop.winfo_x(), pop.winfo_y()
+        cur_width, cur_height = pop.winfo_width(), pop.winfo_height()
+        width = max(220, cur_width)
+        height = max(40, cur_height)
+        x = cur_x
+        y = cur_y if anchor == "top" else cur_y + cur_height - height
+        x, y = _clamp_to_bounds(x, y, width, height, self._overlay_bounds(x, y, width, height))
+        if (x, y, width, height) != (cur_x, cur_y, width, cur_height):
+            self._place_overlay(x, y, width, height)
+
+    def _resize_overlay(self, width: int, height: int) -> None:
+        pop = self._overlay
+        if pop is None or not pop.winfo_exists():
+            return
+        cur_x, cur_y = pop.winfo_x(), pop.winfo_y()
+        bounds = self._overlay_bounds(cur_x, cur_y, max(1, pop.winfo_width()), max(1, pop.winfo_height()))
+        _, _, screen_width, screen_height = bounds
         width = max(220, min(screen_width, width))
         height = max(40, min(screen_height, height))
-        x = min(max(0, pop.winfo_x()), max(0, screen_width - width))
-        y = min(max(0, pop.winfo_y()), max(0, screen_height - height))
-        pop.geometry(f"{width}x{height}{x:+d}{y:+d}")
+        x, y = _clamp_to_bounds(cur_x, cur_y, width, height, bounds)
+        self._place_overlay(x, y, width, height)
         pop.update_idletasks()
         self.overlay_label.configure(
             wraplength=max(120, width - 64),
@@ -3477,7 +3602,7 @@ class App(tk.Tk):
         def do_move(e):
             x = e.x_root - pop._drag_x
             y = e.y_root - pop._drag_y
-            pop.geometry(f"+{x}+{y}")
+            self._place_overlay(x, y, pop.winfo_width(), pop.winfo_height())
 
         wrap = tk.Frame(pop, bg=C.overlay_bg, highlightthickness=1, highlightbackground=C.line, bd=0)
         wrap.pack(fill=tk.BOTH, expand=True)
@@ -3552,36 +3677,46 @@ class App(tk.Tk):
             widget.bind("<ButtonPress-1>", start_move)
             widget.bind("<B1-Motion>", do_move)
 
-        sw = self.winfo_screenwidth()
-        sh = self.winfo_screenheight()
-        w, h = 580, 40
+        vx, vy, vw, vh = _virtual_screen_bounds(self)
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+        w, h = min(580, vw), 40
 
-        def _clamped_geom(g: str) -> str | None:
-            try:
-                normalized = g.replace("-", "+-").split("+")
-                gw, gh = (int(value) for value in normalized[0].split("x"))
-                gx = int(normalized[1]) if len(normalized) > 1 and normalized[1] else 0
-                gy = int(normalized[2]) if len(normalized) > 2 and normalized[2] else 0
-                if not (220 <= gw <= sw and 40 <= gh <= sh):
-                    return None
-                gx = min(max(0, gx), max(0, sw - gw))
-                gy = min(max(0, gy), max(0, sh - gh))
-                return f"{gw}x{gh}{gx:+d}{gy:+d}"
-            except (TypeError, ValueError):
+        def _clamped_rect(g: str) -> tuple[int, int, int, int] | None:
+            rect = _parse_geometry(g, screen_w, screen_h)
+            if rect is None:
                 return None
+            gx, gy, gw, gh = rect
+            if gw < 220 or gh < 40:
+                return None
+            bounds = _monitor_work_area(gx + gw // 2, gy + gh // 2) or (vx, vy, vw, vh)
+            if gw > bounds[2] or gh > bounds[3]:
+                # Monitöre sığmıyorsa sanal ekran sınırlarına düş.
+                bounds = (vx, vy, vw, vh)
+                if gw > vw or gh > vh:
+                    return None
+            gx, gy = _clamp_to_bounds(gx, gy, gw, gh, bounds)
+            return gx, gy, gw, gh
 
         applied = False
         for cand in (geom, getattr(self._cfg, "overlay_geom", "") if getattr(self, "_cfg", None) else ""):
-            safe_geom = _clamped_geom(cand) if cand else None
-            if safe_geom:
-                try:
-                    pop.geometry(safe_geom)
-                    applied = True
-                    break
-                except tk.TclError:
-                    pass
+            rect = _clamped_rect(cand) if cand else None
+            if rect:
+                self._place_overlay(*rect)
+                applied = True
+                break
         if not applied:
-            pop.geometry(f"{w}x{h}+{(sw - w) // 2}+{sh - h - 100}")
+            # Varsayılan: ana pencerenin bulunduğu monitörün alt-orta kısmı.
+            host = _monitor_work_area(
+                self.winfo_rootx() + self.winfo_width() // 2,
+                self.winfo_rooty() + self.winfo_height() // 2,
+            ) or (vx, vy, vw, vh)
+            hx, hy, hw, hh = host
+            w = min(w, hw)
+            h = min(h, hh)
+            fx = hx + max(0, (hw - w) // 2)
+            fy = hy + max(0, hh - h - 100)
+            self._place_overlay(fx, fy, w, h)
         pop.update_idletasks()
         self.overlay_label.configure(wraplength=max(120, pop.winfo_width() - 44))
         self.overlay_label.configure(text=self._overlay_tail(self._overlay_text) or "...")
