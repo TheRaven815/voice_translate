@@ -68,7 +68,7 @@ def test_app_name_version_and_about():
     try:
         assert app.title() == APP_TITLE == "Ahenk"
         assert app.brand["text"] == "Ahenk"
-        assert app.version_lbl["text"] == "v0.7.3"
+        assert app.version_lbl["text"] == "v0.7.4"
         assert ICON_ICO.is_file()
         assert ICON_PNG.is_file()
         assert ABOUT_LOGO_PNG.is_file()
@@ -79,7 +79,7 @@ def test_app_name_version_and_about():
         assert app._about is not None
         assert app._about.title() == "Hakkında"
         assert app.about_name["text"] == "Ahenk"
-        assert app.about_version["text"] == "v0.7.3"
+        assert app.about_version["text"] == "v0.7.4"
         assert app.about_author["text"] == APP_AUTHOR == "Enes Eliağır"
         assert app.about_update_status["text"] == "Kaynak kod modu"
         assert app.about_update_btn["text"] == "Güncellemeleri denetle"
@@ -1675,6 +1675,36 @@ def test_background_level_slider_saves_a_fraction_and_applies_it(monkeypatch):
         engages = [item for item in seen if item[0] == "engage"]
         assert engages[-1][1] == pytest.approx(0.35)
     finally:
+        app.destroy()
+
+
+def test_dub_controls_stay_visible_without_hover(monkeypatch):
+    """Kutu ve kaydırıcı dinlenirken de panelden ayrılır. Hover şart değil."""
+    from gui.theme import C
+
+    monkeypatch.setattr("gui.app.save_preferences", lambda **kwargs: None)
+    app = App()
+    previous = C.current
+    try:
+        app._open_settings()
+        for theme in ("dark", "light"):
+            C.apply_theme(theme)
+            for toggle in (app._dub_toggle, app._dub_bg_toggle):
+                toggle.configure(bg=C.panel, fg=C.text)
+                outline = toggle.indicator_outline().lower()
+                assert outline
+                assert outline != C.panel.lower()
+            app._dub_var.set(True)
+            assert app._dub_toggle.indicator_fill().lower() == C.accent.lower()
+            app._dub_var.set(False)
+            scale = app._dub_bg_scale
+            scale.configure(bg=C.panel)
+            assert scale.track_color().lower() != C.panel.lower()
+            scale.configure(state="normal")
+            assert scale._fill_color().lower() == C.accent.lower()
+            scale.configure(state="disabled")
+    finally:
+        C.apply_theme(previous)
         app.destroy()
 
 

@@ -65,7 +65,7 @@ from updater import (
     launch_update_helper,
 )
 from .theme import ABOUT_LOGO_PNG, C, ICON_PNG, apply_icon, dark_titlebar, pick_fonts, prepare_app_id
-from .widgets import IconButton, Select, ThemeSwitch
+from .widgets import CheckToggle, IconButton, LevelSlider, Select, ThemeSwitch
 
 _PERMANENT_LIVE_ERRORS = (
     "api_key_invalid",
@@ -481,11 +481,11 @@ class App(tk.Tk):
         self._dub_logged: tuple | None = None
         self._dub_was_active = False
         self._dub_var: tk.BooleanVar | None = None
-        self._dub_toggle: tk.Checkbutton | None = None
+        self._dub_toggle: CheckToggle | None = None
         self._dub_bg_var: tk.BooleanVar | None = None
-        self._dub_bg_toggle: tk.Checkbutton | None = None
+        self._dub_bg_toggle: CheckToggle | None = None
         self._dub_bg_gain_var: tk.IntVar | None = None
-        self._dub_bg_scale: tk.Scale | None = None
+        self._dub_bg_scale: LevelSlider | None = None
         self._dub_bg_gain_lbl: tk.Label | None = None
         self._dub_bg_pct_lbl: tk.Label | None = None
         self._dub_gain_timer: str | None = None
@@ -1544,11 +1544,6 @@ class App(tk.Tk):
             return DUB_BACKGROUND
         return max(0.0, min(1.0, gain))
 
-    @staticmethod
-    def _check_selectcolor() -> str:
-        """Windows tikı siyah çizer. Koyu selectcolor tikı yutar, açık/kapalı aynı görünür."""
-        return "#f4f1ea" if C.current != "light" else "#fffdf8"
-
     def _refresh_dub_gain_label(self) -> None:
         label = getattr(self, "_dub_bg_pct_lbl", None)
         if label is None:
@@ -1594,14 +1589,7 @@ class App(tk.Tk):
         try:
             if not scale.winfo_exists():
                 return
-            scale.configure(
-                bg=C.panel,
-                fg=C.text,
-                troughcolor=C.line,
-                activebackground=C.accent,
-                highlightbackground=C.panel,
-                highlightthickness=0,
-            )
+            scale.configure(bg=C.panel)
         except tk.TclError:
             pass
 
@@ -2364,14 +2352,6 @@ class App(tk.Tk):
             elif isinstance(child, tk.Button):
                 try:
                     child.configure(bg=bg, fg=C.text, activebackground=C.hover, activeforeground=C.text)
-                except tk.TclError:
-                    pass
-            elif isinstance(child, tk.Checkbutton):
-                try:
-                    child.configure(
-                        bg=bg, fg=C.text, activebackground=bg, activeforeground=C.text,
-                        selectcolor=self._check_selectcolor(), highlightbackground=bg,
-                    )
                 except tk.TclError:
                     pass
             elif isinstance(child, tk.Scale):
@@ -3161,43 +3141,25 @@ class App(tk.Tk):
         )
         self._settings_refs["dub_desc"].pack(fill=tk.X, pady=(4, 8))
         self._dub_var = tk.BooleanVar(value=bool(self.dub_mute_source))
-        self._dub_toggle = tk.Checkbutton(
+        self._dub_toggle = CheckToggle(
             main,
             text=t("dub_toggle"),
             variable=self._dub_var,
             command=self._on_dub_toggle,
             font=self.font_ui,
-            fg=C.text,
             bg=C.panel,
-            activeforeground=C.text,
-            activebackground=C.panel,
-            selectcolor=self._check_selectcolor(),
-            anchor="w",
-            justify="left",
-            bd=0,
-            highlightthickness=0,
-            padx=0,
-            pady=2,
+            fg=C.text,
         )
         self._dub_toggle.pack(fill=tk.X)
         self._dub_bg_var = tk.BooleanVar(value=bool(self.dub_background) and not self.dub_mute_source)
-        self._dub_bg_toggle = tk.Checkbutton(
+        self._dub_bg_toggle = CheckToggle(
             main,
             text=t("dub_background"),
             variable=self._dub_bg_var,
             command=self._on_dub_background,
             font=self.font_ui,
-            fg=C.text,
             bg=C.panel,
-            activeforeground=C.text,
-            activebackground=C.panel,
-            selectcolor=self._check_selectcolor(),
-            anchor="w",
-            justify="left",
-            bd=0,
-            highlightthickness=0,
-            padx=0,
-            pady=2,
+            fg=C.text,
         )
         self._dub_bg_toggle.pack(fill=tk.X, pady=(2, 0))
         gain_row = tk.Frame(main, bg=C.panel)
@@ -3216,20 +3178,13 @@ class App(tk.Tk):
         percent = int(round(self._clamp_bed_gain(self.dub_background_gain) * 100))
         self._dub_bg_gain_var = tk.IntVar(value=max(0, min(100, percent)))
         self._dub_gain_ui = False
-        self._dub_bg_scale = tk.Scale(
+        self._dub_bg_scale = LevelSlider(
             gain_row,
-            from_=0,
-            to=100,
-            orient=tk.HORIZONTAL,
             variable=self._dub_bg_gain_var,
             command=self._on_dub_background_gain,
-            showvalue=False,
-            resolution=1,
-            sliderlength=16,
-            width=10,
-            bd=0,
-            highlightthickness=0,
-            takefocus=0,
+            from_=0,
+            to=100,
+            bg=C.panel,
         )
         self._dub_bg_scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(10, 8))
         self._style_dub_scale()

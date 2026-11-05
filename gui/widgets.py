@@ -908,3 +908,351 @@ class Select(tk.Frame):
                 pop.destroy()
             except tk.TclError:
                 pass
+
+
+class CheckToggle(tk.Frame):
+    """Kutu her zaman görünür.
+
+    Windows temalı Checkbutton, özel zeminde normal halde kutuyu çizmez;
+    kare yalnız hover'da çıkar. Tik de sistemin siyah boyasıyla koyu selectcolor'da kaybolur.
+    """
+
+    BOX = 14
+
+    def __init__(self, master, text, variable, command, *, font, bg, fg):
+        super().__init__(master, bg=bg, highlightthickness=0, bd=0, cursor="hand2", takefocus=1)
+        self._text = text
+        self._var = variable
+        self._command = command
+        self._fg = fg
+        self._bg = bg
+        self._hover = False
+        self._box = tk.Canvas(
+            self,
+            width=self.BOX + 4,
+            height=self.BOX + 4,
+            bg=bg,
+            highlightthickness=0,
+            bd=0,
+            cursor="hand2",
+        )
+        self._box.pack(side=tk.LEFT, padx=(0, 8), pady=3)
+        self._label = tk.Label(
+            self, text=text, font=font, fg=fg, bg=bg, anchor="w", justify="left", cursor="hand2",
+        )
+        self._label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        for widget in (self, self._box, self._label):
+            widget.bind("<Button-1>", self._on_click)
+            widget.bind("<Enter>", self._on_enter)
+            widget.bind("<Leave>", self._on_leave)
+        self.bind("<space>", self._on_click)
+        self._trace = variable.trace_add("write", self._on_var)
+        self._draw()
+
+    def destroy(self):
+        try:
+            self._var.trace_remove("write", self._trace)
+        except (tk.TclError, ValueError):
+            pass
+        super().destroy()
+
+    def invoke(self):
+        self._var.set(not bool(self._var.get()))
+        if self._command:
+            self._command()
+
+    def indicator_outline(self) -> str:
+        return self._outline_color()
+
+    def indicator_fill(self) -> str:
+        return C.accent if self._checked() else self._bg
+
+    def cget(self, key):
+        if key == "text":
+            return self._text
+        if key == "bg":
+            return self._bg
+        if key == "fg":
+            return self._fg
+        return super().cget(key)
+
+    def configure(self, cnf=None, **kw):  # noqa: A003
+        if isinstance(cnf, dict):
+            kw = {**cnf, **kw}
+        text = kw.pop("text", None)
+        fg = kw.pop("fg", None)
+        bg = kw.pop("bg", None)
+        if text is not None:
+            self._text = text
+            self._label.configure(text=text)
+        if fg is not None:
+            self._fg = fg
+        if bg is not None:
+            self._bg = bg
+            self._fg = C.text
+            super().configure(bg=bg)
+            self._box.configure(bg=bg)
+            self._label.configure(bg=bg)
+        if text is not None or fg is not None or bg is not None:
+            self._draw()
+        if kw:
+            super().configure(**kw)
+
+    config = configure
+
+    def _checked(self) -> bool:
+        try:
+            return bool(self._var.get())
+        except tk.TclError:
+            return False
+
+    def _outline_color(self) -> str:
+        # Hover yalnız koyulaştırır. Kutu dinlenirken de panelden ayrılır.
+        return mix(self._bg, C.text, 0.78 if self._hover else 0.55)
+
+    def _on_click(self, _event=None):
+        try:
+            self.focus_set()
+        except tk.TclError:
+            pass
+        self.invoke()
+        return "break"
+
+    def _on_enter(self, _event=None):
+        self._hover = True
+        self._draw()
+
+    def _on_leave(self, _event=None):
+        if self._pointer_inside():
+            return
+        self._hover = False
+        self._draw()
+
+    def _pointer_inside(self) -> bool:
+        try:
+            widget = self.winfo_containing(*self.winfo_pointerxy())
+        except tk.TclError:
+            return False
+        while widget is not None:
+            if widget == self:
+                return True
+            widget = getattr(widget, "master", None)
+        return False
+
+    def _on_var(self, *_args):
+        try:
+            if self.winfo_exists():
+                self._draw()
+        except tk.TclError:
+            pass
+
+    def _draw(self) -> None:
+        box = self._box
+        box.delete("all")
+        box.configure(bg=self._bg)
+        self._label.configure(fg=self._fg, bg=self._bg)
+        x1, y1, x2, y2 = 1.5, 1.5, self.BOX + 1.5, self.BOX + 1.5
+        if self._checked():
+            fill = C.accent
+            box.create_rectangle(x1, y1, x2, y2, outline=fill, fill=fill, width=1)
+            ink = C.fill_fg
+            box.create_line(
+                4.2, 8.0, 6.7, 10.7, fill=ink, width=1.8, capstyle=tk.ROUND, joinstyle=tk.ROUND,
+            )
+            box.create_line(
+                6.7, 10.7, 11.6, 4.8, fill=ink, width=1.8, capstyle=tk.ROUND, joinstyle=tk.ROUND,
+            )
+            return
+        box.create_rectangle(
+            x1, y1, x2, y2, outline=self._outline_color(), fill=self._bg, width=1.4,
+        )
+
+
+class LevelSlider(tk.Canvas):
+    """İnce yuvarlak yüzde kaydırıcı. Windows Scale oluğu temayı ezer."""
+
+    H = 22
+
+    def __init__(self, master, variable, command, *, from_=0, to=100, bg=None):
+        self._bg = bg or C.panel
+        self._var = variable
+        self._command = command
+        self._from = int(from_)
+        self._to = int(to)
+        self._state = tk.NORMAL
+        self._hover = False
+        super().__init__(
+            master,
+            width=160,
+            height=self.H,
+            bg=self._bg,
+            highlightthickness=0,
+            bd=0,
+            cursor="hand2",
+            takefocus=1,
+        )
+        self._trace = variable.trace_add("write", self._on_var)
+        self.bind("<Configure>", self._on_configure)
+        self.bind("<Button-1>", self._on_press)
+        self.bind("<B1-Motion>", self._on_drag)
+        self.bind("<ButtonRelease-1>", lambda _e: self._release_drag())
+        self.bind("<Enter>", lambda _e: self._set_hover(True))
+        self.bind("<Leave>", lambda _e: self._set_hover(False))
+        self.bind("<Left>", lambda _e: self._nudge(-1))
+        self.bind("<Right>", lambda _e: self._nudge(1))
+        self._draw()
+
+    def destroy(self):
+        try:
+            self._var.trace_remove("write", self._trace)
+        except (tk.TclError, ValueError):
+            pass
+        super().destroy()
+
+    def track_color(self) -> str:
+        return self._track_color()
+
+    def cget(self, key):
+        if key == "state":
+            return self._state
+        if key == "bg":
+            return self._bg
+        return super().cget(key)
+
+    def configure(self, cnf=None, **kw):  # noqa: A003
+        if isinstance(cnf, dict):
+            kw = {**cnf, **kw}
+        state = kw.pop("state", None)
+        bg = kw.pop("bg", None)
+        if state is not None:
+            self._state = tk.DISABLED if str(state) == str(tk.DISABLED) else tk.NORMAL
+            super().configure(cursor="hand2" if self._enabled() else "arrow")
+        if bg is not None:
+            self._bg = bg
+            super().configure(bg=bg)
+        if kw:
+            super().configure(**kw)
+        if state is not None or bg is not None:
+            self._draw()
+
+    config = configure
+
+    def _enabled(self) -> bool:
+        return str(self._state) != str(tk.DISABLED)
+
+    def _value(self) -> int:
+        try:
+            value = int(round(float(self._var.get())))
+        except (tk.TclError, TypeError, ValueError):
+            value = self._from
+        return max(self._from, min(self._to, value))
+
+    def _span(self) -> tuple[int, float, float]:
+        width = self.winfo_width()
+        if width <= 1:
+            try:
+                width = int(float(super().cget("width")))
+            except (tk.TclError, TypeError, ValueError):
+                width = 160
+        pad = 9.0
+        return width, pad, max(pad + 1.0, width - pad)
+
+    def _x_for(self, value: int) -> float:
+        _width, left, right = self._span()
+        span = self._to - self._from
+        t = 0.0 if span == 0 else (value - self._from) / span
+        return left + max(0.0, min(1.0, t)) * (right - left)
+
+    def _value_for(self, x: float) -> int:
+        _width, left, right = self._span()
+        t = 0.0 if right <= left else (x - left) / (right - left)
+        t = max(0.0, min(1.0, t))
+        return int(round(self._from + t * (self._to - self._from)))
+
+    def _track_color(self) -> str:
+        amount = 0.12 if not self._enabled() else (0.34 if self._hover else 0.26)
+        return mix(self._bg, C.text, amount)
+
+    def _fill_color(self) -> str:
+        if not self._enabled():
+            return mix(C.accent, self._bg, 0.62)
+        return C.accent
+
+    def _knob_fill(self) -> str:
+        if not self._enabled():
+            return mix(self._bg, C.text, 0.28)
+        return C.panel if C.current == "light" else C.fill
+
+    def _apply(self, value: int, *, notify: bool) -> None:
+        value = max(self._from, min(self._to, int(value)))
+        if self._value() != value:
+            self._var.set(value)
+        else:
+            self._draw()
+        if notify and self._command is not None:
+            self._command(value)
+
+    def _on_press(self, event):
+        if not self._enabled():
+            return "break"
+        try:
+            self.focus_set()
+        except tk.TclError:
+            pass
+        self._apply(self._value_for(event.x), notify=True)
+        return "break"
+
+    def _on_drag(self, event):
+        if not self._enabled():
+            return "break"
+        self._apply(self._value_for(event.x), notify=True)
+        return "break"
+
+    def _release_drag(self) -> None:
+        self._draw()
+
+    def _nudge(self, delta: int):
+        if not self._enabled():
+            return "break"
+        self._apply(self._value() + delta, notify=True)
+        return "break"
+
+    def _set_hover(self, hover: bool) -> None:
+        if self._hover == hover:
+            return
+        self._hover = hover
+        self._draw()
+
+    def _on_configure(self, event):
+        if event.width > 1:
+            self._draw()
+
+    def _on_var(self, *_args):
+        try:
+            if self.winfo_exists():
+                self._draw()
+        except tk.TclError:
+            pass
+
+    def _draw(self) -> None:
+        self.delete("all")
+        width, left, right = self._span()
+        if width <= 1 or right <= left:
+            return
+        cy = self.H / 2
+        knob_x = self._x_for(self._value())
+        track = self._track_color()
+        fill = self._fill_color()
+        self.create_line(left, cy, right, cy, fill=track, width=4, capstyle=tk.ROUND)
+        if knob_x > left + 0.6:
+            self.create_line(left, cy, knob_x, cy, fill=fill, width=4, capstyle=tk.ROUND)
+        radius = 6.5
+        self.create_oval(
+            knob_x - radius,
+            cy - radius,
+            knob_x + radius,
+            cy + radius,
+            fill=self._knob_fill(),
+            outline=fill,
+            width=1.6,
+        )
