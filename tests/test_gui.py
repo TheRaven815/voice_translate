@@ -68,7 +68,7 @@ def test_app_name_version_and_about():
     try:
         assert app.title() == APP_TITLE == "Ahenk"
         assert app.brand["text"] == "Ahenk"
-        assert app.version_lbl["text"] == "v0.7.2"
+        assert app.version_lbl["text"] == "v0.7.3"
         assert ICON_ICO.is_file()
         assert ICON_PNG.is_file()
         assert ABOUT_LOGO_PNG.is_file()
@@ -79,7 +79,7 @@ def test_app_name_version_and_about():
         assert app._about is not None
         assert app._about.title() == "Hakkında"
         assert app.about_name["text"] == "Ahenk"
-        assert app.about_version["text"] == "v0.7.2"
+        assert app.about_version["text"] == "v0.7.3"
         assert app.about_author["text"] == APP_AUTHOR == "Enes Eliağır"
         assert app.about_update_status["text"] == "Kaynak kod modu"
         assert app.about_update_btn["text"] == "Güncellemeleri denetle"
@@ -1609,6 +1609,71 @@ def test_idle_meter_shows_preview_level():
         app._preview._set_level(0.0)
         app._pump_log()
         assert app.meter.coords(app._meter_bar)[2] == 0.0
+    finally:
+        app.destroy()
+
+
+def test_background_level_slider_saves_a_fraction_and_applies_it(monkeypatch):
+    from types import SimpleNamespace
+
+    from devices import display_input_label
+    from source_mute import DubPlan
+
+    saved = []
+    monkeypatch.setattr("gui.app.save_preferences", lambda **kwargs: saved.append(kwargs))
+    seen = []
+
+    class FakeDub:
+        def preview(self, source, output, *, enabled, gain=None):
+            seen.append(("preview", enabled, gain))
+            if not enabled:
+                return DubPlan("idle")
+            return DubPlan("mute_endpoint", endpoint_id="spk", gain=gain)
+
+        def engage(self, plan):
+            seen.append(("engage", plan.gain))
+
+        def release(self):
+            seen.append(("release",))
+
+    app = App()
+    try:
+        app._open_settings()
+        assert str(app._dub_bg_scale.cget("state")) == "disabled"
+        assert app._dub_bg_pct_lbl.cget("text") == "17%"
+        app._dub_bg_toggle.invoke()
+        assert app.dub_background is True
+        assert str(app._dub_bg_scale.cget("state")) == "normal"
+        app._dub_bg_gain_var.set(35)
+        app._on_dub_background_gain("35")
+        assert app.dub_background_gain == pytest.approx(0.35)
+        assert app._dub_bg_pct_lbl.cget("text") == "35%"
+        timer = app._dub_gain_timer
+        if timer is not None:
+            app.after_cancel(timer)
+            app._dub_gain_timer = None
+        app._commit_dub_gain()
+        assert saved[-1]["dub_background_gain"] == pytest.approx(0.35)
+
+        app._source_dub = FakeDub()
+        speaker = SimpleNamespace(name="Kulaklık", id="hp")
+        source = SimpleNamespace(name="Hoparlör", id="spk", isloopback=True, is_application=False)
+        app.outputs = [speaker]
+        app.inputs = [source]
+        app.out_box["values"] = (NONE_OUTPUT, "Kulaklık")
+        app.loop_obj = type("Loop", (), {"set_dub_exclude": lambda self, enabled: None})()
+        app.worker = type("Worker", (), {"is_alive": lambda self: True})()
+        app._stopping.clear()
+        app.in_var.set(display_input_label(source))
+        app.out_var.set("Kulaklık")
+        seen.clear()
+        app._sync_source_dub()
+        previews = [item for item in seen if item[0] == "preview"]
+        assert previews
+        assert previews[-1][1] is True
+        assert previews[-1][2] == pytest.approx(0.35)
+        engages = [item for item in seen if item[0] == "engage"]
+        assert engages[-1][1] == pytest.approx(0.35)
     finally:
         app.destroy()
 

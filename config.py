@@ -123,6 +123,8 @@ class Settings:
     start_stop_shortcut: str = "Ctrl+Shift+Space"
     dub_mute_source: bool = False
     dub_background: bool = False
+    # 1/6 ≈ −15.6 dB: duyulan orijinalin katı. source_mute.DUB_BACKGROUND ile aynı.
+    dub_background_gain: float = 1.0 / 6.0
 
 def config_dir() -> Path:
     if os.name == "nt":
@@ -214,6 +216,17 @@ def _safe_int(val, default: int, min_val: int | None = None, max_val: int | None
         return default
 
 
+def _clamp_unit(val, default: float) -> float:
+    """0–1 aralığına sıkıştır. Bozuk değer varsayılana döner, aralık dışı kırpılır."""
+    try:
+        res = float(val)
+    except (TypeError, ValueError):
+        return default
+    if res != res:  # NaN
+        return default
+    return max(0.0, min(1.0, res))
+
+
 def _safe_float(val, default: float, min_val: float | None = None, max_val: float | None = None) -> float:
     try:
         res = float(val)
@@ -241,6 +254,7 @@ def load() -> Settings:
     dub_background = bool(raw.get("dub_background")) if isinstance(raw.get("dub_background"), (bool, int)) else False
     if dub_mute_source and dub_background:
         dub_background = False
+    dub_background_gain = _clamp_unit(raw.get("dub_background_gain"), default=1.0 / 6.0)
     overlay_font_size = _safe_int(raw.get("overlay_font_size"), default=13, min_val=8, max_val=72)
     overlay_alpha = _safe_float(raw.get("overlay_alpha"), default=0.92, min_val=0.1, max_val=1.0)
 
@@ -264,6 +278,7 @@ def load() -> Settings:
         start_stop_shortcut=str(raw.get("start_stop_shortcut") or "Ctrl+Shift+Space"),
         dub_mute_source=dub_mute_source,
         dub_background=dub_background,
+        dub_background_gain=dub_background_gain,
     )
 def save(settings: Settings) -> Path:
     raw = _read_raw()
@@ -286,6 +301,7 @@ def save(settings: Settings) -> Path:
     raw["start_stop_shortcut"] = settings.start_stop_shortcut
     raw["dub_mute_source"] = settings.dub_mute_source
     raw["dub_background"] = settings.dub_background
+    raw["dub_background_gain"] = settings.dub_background_gain
     return _write_raw(raw)
 
 def save_api_key(key: str) -> Path:
@@ -325,6 +341,7 @@ def save_preferences(
     start_stop_shortcut: str | None = None,
     dub_mute_source: bool | None = None,
     dub_background: bool | None = None,
+    dub_background_gain: float | None = None,
 ) -> Path:
     raw = _read_raw()
     if input_device is not None:
@@ -363,6 +380,8 @@ def save_preferences(
         raw["dub_mute_source"] = dub_mute_source
     if dub_background is not None:
         raw["dub_background"] = dub_background
+    if dub_background_gain is not None:
+        raw["dub_background_gain"] = max(0.0, min(1.0, float(dub_background_gain)))
     return _write_raw(raw)
 
 

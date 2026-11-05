@@ -10,7 +10,8 @@ import pytest
 from applications import process_tree_pids
 from loop import SystemAudioLoop
 from source_mute import (
-    DUB_BACKGROUND, DubPlan, MuteHold, SourceDub, WindowsRenderMute, plan_dub, same_render_endpoint,
+    DUB_BACKGROUND, DubPlan, MuteHold, SourceDub, WindowsRenderMute, bed_target, plan_dub,
+    same_render_endpoint,
 )
 
 
@@ -45,6 +46,17 @@ def test_plan_is_idle_without_output_or_opt_in():
 def test_plan_mutes_only_the_selected_application():
     plan = plan_dub(_app(42), _speaker("Hoparlör", "spk"), enabled=True, own_pid=7, exclude_supported=True)
     assert plan == DubPlan("mute_process", root_pid=42)
+
+
+def test_bed_target_scales_the_current_level_instead_of_capping_it():
+    """Mutlak 1/6 tavan, hoparlör zaten kısıkken açık ile kapalıyı aynı bırakırdı."""
+    assert bed_target(1.0, DUB_BACKGROUND) == pytest.approx(DUB_BACKGROUND)
+    assert bed_target(0.12, DUB_BACKGROUND) == pytest.approx(0.12 * DUB_BACKGROUND)
+    assert bed_target(0.12, DUB_BACKGROUND) < 0.12
+    assert bed_target(0.4, 0.0) == 0.0
+    assert bed_target(0.4, 1.0) == pytest.approx(0.4)
+    assert bed_target(0.4, 1.4) == pytest.approx(0.4)
+    assert bed_target(-1.0, 0.5) == 0.0
 
 
 def test_plan_can_leave_the_original_as_a_quiet_bed():
@@ -103,13 +115,31 @@ class _Backend:
 
     def apply(self, plan):
         self.applied.append(plan.action)
-        return MuteHold(plan)
+        self.hold = MuteHold(plan)
+        return self.hold
 
     def refresh(self, hold):
         self.refreshed += 1
+        self.last_gain = hold.plan.gain
 
     def restore(self, hold):
         self.restored.append(None if hold is None else hold.plan.action)
+
+
+def test_gain_change_updates_the_hold_without_restoring_full_volume():
+    backend = _Backend()
+    dub = SourceDub(backend, own_pid=7, tree=lambda pid: frozenset({pid}), exclude_supported=lambda: True)
+    try:
+        quiet = dub.preview(_app(), _speaker("Hoparlör", "spk"), enabled=True, gain=0.2)
+        dub.engage(quiet)
+        louder = DubPlan(quiet.action, root_pid=quiet.root_pid, endpoint_id=quiet.endpoint_id, gain=0.55)
+        dub.engage(louder)
+        assert backend.applied == ["mute_process"]
+        assert backend.restored == []
+        assert backend.last_gain == pytest.approx(0.55)
+        assert backend.hold.plan.gain == pytest.approx(0.55)
+    finally:
+        dub.release()
 
 
 def test_source_dub_restores_exactly_what_it_muted_and_refreshes_while_held():
@@ -201,7 +231,7 @@ def test_windows_endpoint_mute_restores_the_previous_bit():
         hold = control.apply(DubPlan("mute_endpoint", endpoint_id=endpoint, gain=DUB_BACKGROUND))
         ducked = control.endpoint_level(endpoint)
         assert ducked.muted is False
-        assert abs(ducked.volume - min(before.volume, DUB_BACKGROUND)) < 0.05
+        assert abs(ducked.volume - bed_target(before.volume, DUB_BACKGROUND)) < 0.05
     finally:
         control.restore(hold)
     restored = control.endpoint_level(endpoint)

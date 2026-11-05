@@ -24,7 +24,8 @@ from applications import process_tree_pids
 from process_audio import process_audio_supported
 
 
-# Doğrusal 1/6 ≈ −15.6 dB: çevirinin altında duyulan, sözü örtmeden kalan yatak.
+# Doğrusal 1/6 ≈ −15.6 dB: duyulan orijinalin bu katı. Mutlak tavan değil;
+# hoparlör zaten bu düzeyin altındaysa tavan hiç fark ettirmez.
 DUB_BACKGROUND = 1 / 6
 
 
@@ -32,7 +33,8 @@ DUB_BACKGROUND = 1 / 6
 class DubPlan:
     """Ne susturulacağı. action: idle | mute_process | mute_endpoint | mute_other_sessions.
 
-    gain None ise kaynak tamamen susar. Sayı ise duyulan düzeyin tavanıdır.
+    gain None ise kaynak tamamen susar. Sayı ise önceki düzeyin katıdır
+    (0 susar, 1 değiştirmez). Mutlak tavan değildir.
     """
 
     action: str = "idle"
@@ -59,6 +61,17 @@ def same_render_endpoint(source, output) -> bool:
     if src_name and dst_name:
         return str(src_name).strip().casefold() == str(dst_name).strip().casefold()
     return False
+
+
+def bed_target(prior_volume: float, gain: float) -> float:
+    """Önceki doğrusal düzeyin gain katı.
+
+    0 kaynağı susturur, 1 düzeyi değiştirmez. Mutlak tavan olsaydı kısık
+    hoparlörde (ör. %12) varsayılan 1/6 hiç kısmaz, açık ile kapalı aynı kalırdı.
+    """
+    prior = max(0.0, min(1.0, float(prior_volume)))
+    factor = max(0.0, min(1.0, float(gain)))
+    return prior * factor
 
 
 def plan_dub(
@@ -135,6 +148,18 @@ class SourceDub:
                 self._active = plan
                 if plan.action != "idle" and self._token is not None and self._backend is not None:
                     self._backend.refresh(self._token)
+                return
+            # Aynı hedef, yalnız düzey: eski sesi geri basıp patlatma.
+            if (
+                self._token is not None
+                and self._backend is not None
+                and plan.action != "idle"
+                and (plan.action, plan.root_pid, plan.endpoint_id)
+                == (self._active.action, self._active.root_pid, self._active.endpoint_id)
+            ):
+                self._token.plan = plan
+                self._active = plan
+                self._backend.refresh(self._token)
                 return
             self._restore_locked()
             self._active = DubPlan()
@@ -351,16 +376,17 @@ def _read_level(volume, kind: str) -> PriorLevel:
 
 
 def _shape_level(volume, kind: str, prior: PriorLevel, gain: float | None) -> None:
-    """gain yoksa sustur. Sayıysa önceki düzeyin üstüne çıkmadan o tavana indir."""
+    """gain yoksa sustur. Sayıysa önceki düzeyin o katına indir."""
     get_mute, set_mute, get_volume, set_volume = _volume_indices(kind)
     if gain is None:
         if not _get_mute(volume, get_mute):
             _set_mute(volume, set_mute, True)
         return
-    target = min(prior.volume, max(0.0, min(1.0, gain)))
+    target = bed_target(prior.volume, gain)
     if _get_mute(volume, get_mute):
         _set_mute(volume, set_mute, False)
-    if abs(_get_scalar(volume, get_volume) - target) > 0.02:
+    # 0.02 ölü bant kaydırıcı adımını yutuyordu (kısık kaynakta %1 duyulmuyordu).
+    if abs(_get_scalar(volume, get_volume) - target) > 0.001:
         _set_scalar(volume, set_volume, target)
 
 

@@ -474,6 +474,9 @@ class App(tk.Tk):
         self.dub_background = bool(getattr(self._cfg, "dub_background", False))
         if self.dub_mute_source and self.dub_background:
             self.dub_background = False
+        self.dub_background_gain = self._clamp_bed_gain(
+            getattr(self._cfg, "dub_background_gain", DUB_BACKGROUND)
+        )
         self._source_dub = SourceDub()
         self._dub_logged: tuple | None = None
         self._dub_was_active = False
@@ -481,6 +484,12 @@ class App(tk.Tk):
         self._dub_toggle: tk.Checkbutton | None = None
         self._dub_bg_var: tk.BooleanVar | None = None
         self._dub_bg_toggle: tk.Checkbutton | None = None
+        self._dub_bg_gain_var: tk.IntVar | None = None
+        self._dub_bg_scale: tk.Scale | None = None
+        self._dub_bg_gain_lbl: tk.Label | None = None
+        self._dub_bg_pct_lbl: tk.Label | None = None
+        self._dub_gain_timer: str | None = None
+        self._dub_gain_ui = False
         self._overlay_text = ""
         self.transcript_items: list[TranscriptItem] = []
         self.session_start_time: float | None = None
@@ -1394,7 +1403,11 @@ class App(tk.Tk):
             except Exception:
                 output = source = None
         mute = bool(getattr(self, "dub_mute_source", False))
-        background = bool(getattr(self, "dub_background", False)) and not mute
+        bed_gain = self._clamp_bed_gain(getattr(self, "dub_background_gain", DUB_BACKGROUND))
+        # %100 katı 1: dokunmamak ile aynı. Tutmak, kullanıcının kendi sesini geri çeker.
+        background = (
+            bool(getattr(self, "dub_background", False)) and not mute and bed_gain < 0.995
+        )
         enabled = bool(
             (mute or background)
             and running
@@ -1403,7 +1416,7 @@ class App(tk.Tk):
         )
         try:
             plan = dub.preview(
-                source, output, enabled=enabled, gain=DUB_BACKGROUND if background else None,
+                source, output, enabled=enabled, gain=bed_gain if background else None,
             )
         except Exception as exc:
             self._announce_dub_failure(exc)
@@ -1454,7 +1467,9 @@ class App(tk.Tk):
                 return
         except tk.TclError:
             return
-        signature = (plan.action, plan.note, plan.root_pid, plan.endpoint_id, plan.gain)
+        signature = (
+            plan.action, plan.note, plan.root_pid, plan.endpoint_id, plan.gain is not None,
+        )
         if signature == getattr(self, "_dub_logged", None):
             return
         self._dub_logged = signature
@@ -1475,7 +1490,10 @@ class App(tk.Tk):
             "mute_other_sessions": "dub_bed_sessions" if bed else "dub_muted_sessions",
         }.get(plan.action)
         if key:
-            self._append(f"[bilgi] {t(key)}\n")
+            extra = ""
+            if bed and plan.gain is not None:
+                extra = f" ({int(round(float(plan.gain) * 100))}%)"
+            self._append(f"[bilgi] {t(key)}{extra}\n")
 
     def _announce_dub_failure(self, exc: BaseException) -> None:
         log_exception(exc, "source dub")
@@ -1501,14 +1519,125 @@ class App(tk.Tk):
         self.dub_background = bool(self._dub_bg_var.get()) if self._dub_bg_var is not None else False
         if self.dub_mute_source:
             self.dub_background = False
+            if self._dub_bg_var is not None:
+                self._dub_bg_var.set(False)
+        self._sync_dub_gain_controls()
         try:
             save_preferences(
                 dub_mute_source=self.dub_mute_source,
                 dub_background=self.dub_background,
+                dub_background_gain=self._clamp_bed_gain(
+                    getattr(self, "dub_background_gain", DUB_BACKGROUND)
+                ),
             )
         except OSError as exc:
             self._append(f"[uyarı] {t('dub_failed')}: {exc}\n")
         self._sync_source_dub()
+
+    @staticmethod
+    def _clamp_bed_gain(value) -> float:
+        try:
+            gain = float(value)
+        except (TypeError, ValueError):
+            return DUB_BACKGROUND
+        if gain != gain:
+            return DUB_BACKGROUND
+        return max(0.0, min(1.0, gain))
+
+    @staticmethod
+    def _check_selectcolor() -> str:
+        """Windows tikı siyah çizer. Koyu selectcolor tikı yutar, açık/kapalı aynı görünür."""
+        return "#f4f1ea" if C.current != "light" else "#fffdf8"
+
+    def _refresh_dub_gain_label(self) -> None:
+        label = getattr(self, "_dub_bg_pct_lbl", None)
+        if label is None:
+            return
+        try:
+            if not label.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        percent = int(round(self._clamp_bed_gain(getattr(self, "dub_background_gain", DUB_BACKGROUND)) * 100))
+        label.configure(text=f"{percent}%")
+
+    def _sync_dub_gain_controls(self) -> None:
+        enabled = bool(getattr(self, "dub_background", False)) and not bool(
+            getattr(self, "dub_mute_source", False)
+        )
+        scale = getattr(self, "_dub_bg_scale", None)
+        if scale is not None:
+            try:
+                if scale.winfo_exists():
+                    scale.configure(state=tk.NORMAL if enabled else tk.DISABLED)
+            except tk.TclError:
+                pass
+        name = getattr(self, "_dub_bg_gain_lbl", None)
+        if name is not None:
+            try:
+                if name.winfo_exists():
+                    name.configure(fg=C.muted if enabled else C.dim)
+            except tk.TclError:
+                pass
+        pct = getattr(self, "_dub_bg_pct_lbl", None)
+        if pct is not None:
+            try:
+                if pct.winfo_exists():
+                    pct.configure(fg=C.text if enabled else C.dim)
+            except tk.TclError:
+                pass
+
+    def _style_dub_scale(self) -> None:
+        scale = getattr(self, "_dub_bg_scale", None)
+        if scale is None:
+            return
+        try:
+            if not scale.winfo_exists():
+                return
+            scale.configure(
+                bg=C.panel,
+                fg=C.text,
+                troughcolor=C.line,
+                activebackground=C.accent,
+                highlightbackground=C.panel,
+                highlightthickness=0,
+            )
+        except tk.TclError:
+            pass
+
+    def _on_dub_background_gain(self, value=None) -> None:
+        if not getattr(self, "_dub_gain_ui", False):
+            return
+        if value is None and self._dub_bg_gain_var is not None:
+            value = self._dub_bg_gain_var.get()
+        try:
+            percent = int(round(float(value)))
+        except (TypeError, ValueError):
+            percent = int(round(DUB_BACKGROUND * 100))
+        percent = max(0, min(100, percent))
+        self.dub_background_gain = percent / 100.0
+        self._refresh_dub_gain_label()
+        timer = getattr(self, "_dub_gain_timer", None)
+        if timer is not None:
+            try:
+                self.after_cancel(timer)
+            except tk.TclError:
+                pass
+        try:
+            self._dub_gain_timer = self.after(80, self._commit_dub_gain)
+        except tk.TclError:
+            self._commit_dub_gain()
+
+    def _commit_dub_gain(self) -> None:
+        self._dub_gain_timer = None
+        gain = self._clamp_bed_gain(getattr(self, "dub_background_gain", DUB_BACKGROUND))
+        self.dub_background_gain = gain
+        try:
+            save_preferences(dub_background_gain=gain)
+        except OSError as exc:
+            self._append(f"[uyarı] {t('dub_failed')}: {exc}\n")
+        if getattr(self, "dub_background", False) and not getattr(self, "dub_mute_source", False):
+            self._sync_source_dub()
 
     def _suspend_global_hotkeys(self) -> None:
         """Kısayol kaydederken mevcut global kayıtlar tuşu yutmasın."""
@@ -1787,6 +1916,9 @@ class App(tk.Tk):
                 overlay_click_through=getattr(self, "overlay_click_through", False),
                 dub_mute_source=getattr(self, "dub_mute_source", False),
                 dub_background=getattr(self, "dub_background", False),
+                dub_background_gain=self._clamp_bed_gain(
+                    getattr(self, "dub_background_gain", DUB_BACKGROUND)
+                ),
             )
         except OSError:
             pass
@@ -2153,6 +2285,8 @@ class App(tk.Tk):
                     entry.configure(bg=C.panel, fg=C.text, insertbackground=C.text)
             for child in self._settings.winfo_children():
                 self._retint_frame(child, bg=C.panel)
+            self._style_dub_scale()
+            self._sync_dub_gain_controls()
             # Ayarlar diyalog butonlarının (özellikle birincil Kaydet) stilini koru.
             for attr in ("test_key_btn", "save_key_btn", "_settings_close_btn"):
                 btn = getattr(self, attr, None)
@@ -2236,7 +2370,15 @@ class App(tk.Tk):
                 try:
                     child.configure(
                         bg=bg, fg=C.text, activebackground=bg, activeforeground=C.text,
-                        selectcolor=C.hover, highlightbackground=bg,
+                        selectcolor=self._check_selectcolor(), highlightbackground=bg,
+                    )
+                except tk.TclError:
+                    pass
+            elif isinstance(child, tk.Scale):
+                try:
+                    child.configure(
+                        bg=bg, fg=C.text, troughcolor=C.line, activebackground=C.accent,
+                        highlightbackground=bg,
                     )
                 except tk.TclError:
                     pass
@@ -3029,7 +3171,7 @@ class App(tk.Tk):
             bg=C.panel,
             activeforeground=C.text,
             activebackground=C.panel,
-            selectcolor=C.hover,
+            selectcolor=self._check_selectcolor(),
             anchor="w",
             justify="left",
             bd=0,
@@ -3049,7 +3191,7 @@ class App(tk.Tk):
             bg=C.panel,
             activeforeground=C.text,
             activebackground=C.panel,
-            selectcolor=C.hover,
+            selectcolor=self._check_selectcolor(),
             anchor="w",
             justify="left",
             bd=0,
@@ -3058,6 +3200,42 @@ class App(tk.Tk):
             pady=2,
         )
         self._dub_bg_toggle.pack(fill=tk.X, pady=(2, 0))
+        gain_row = tk.Frame(main, bg=C.panel)
+        gain_row.pack(fill=tk.X, pady=(6, 0))
+        self._dub_bg_gain_lbl = tk.Label(
+            gain_row, text=t("dub_background_level"), anchor="w",
+            font=self.font_ui, fg=C.muted, bg=C.panel,
+        )
+        self._dub_bg_gain_lbl.pack(side=tk.LEFT)
+        self._settings_refs["dub_level"] = self._dub_bg_gain_lbl
+        self._dub_bg_pct_lbl = tk.Label(
+            gain_row, text="", width=5, anchor="e",
+            font=self.font_ui, fg=C.text, bg=C.panel,
+        )
+        self._dub_bg_pct_lbl.pack(side=tk.RIGHT)
+        percent = int(round(self._clamp_bed_gain(self.dub_background_gain) * 100))
+        self._dub_bg_gain_var = tk.IntVar(value=max(0, min(100, percent)))
+        self._dub_gain_ui = False
+        self._dub_bg_scale = tk.Scale(
+            gain_row,
+            from_=0,
+            to=100,
+            orient=tk.HORIZONTAL,
+            variable=self._dub_bg_gain_var,
+            command=self._on_dub_background_gain,
+            showvalue=False,
+            resolution=1,
+            sliderlength=16,
+            width=10,
+            bd=0,
+            highlightthickness=0,
+            takefocus=0,
+        )
+        self._dub_bg_scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(10, 8))
+        self._style_dub_scale()
+        self._refresh_dub_gain_label()
+        self._sync_dub_gain_controls()
+        self._dub_gain_ui = True
         tk.Frame(main, bg=C.line, height=1).pack(fill=tk.X, pady=(14, 12))
         self._settings_refs["shortcuts_title"] = tk.Label(
             main, text=t("shortcuts"), font=(self.font_ui[0], self.font_ui[1], "bold"),
@@ -3217,6 +3395,7 @@ class App(tk.Tk):
             ("api_help", t("api_key_help")),
             ("dub_title", t("dub_section")),
             ("dub_desc", t("dub_description")),
+            ("dub_level", t("dub_background_level")),
             ("shortcuts_title", t("shortcuts")),
             ("shortcuts_desc", t("shortcuts_description")),
         ):
@@ -3364,6 +3543,9 @@ class App(tk.Tk):
             self.overlay_click_through = cfg.overlay_click_through
             self.dub_mute_source = cfg.dub_mute_source
             self.dub_background = cfg.dub_background
+            self.dub_background_gain = self._clamp_bed_gain(
+                getattr(cfg, "dub_background_gain", DUB_BACKGROUND)
+            )
             self._input_application_path = cfg.input_application
             try:
                 self.attributes("-topmost", self.always_on_top)
@@ -3379,6 +3561,14 @@ class App(tk.Tk):
                 self._dub_var.set(False)
             if self._dub_bg_var is not None:
                 self._dub_bg_var.set(False)
+            if self._dub_bg_gain_var is not None:
+                self._dub_gain_ui = False
+                self._dub_bg_gain_var.set(
+                    int(round(self._clamp_bed_gain(self.dub_background_gain) * 100))
+                )
+                self._dub_gain_ui = True
+            self._refresh_dub_gain_label()
+            self._sync_dub_gain_controls()
             self.src_var.set(display_name(src_code_to_name(cfg.src_lang)))
             self.dst_var.set(display_name(lang_code_to_name(cfg.dst_lang)))
             if not self._worker_alive():
@@ -3430,8 +3620,21 @@ class App(tk.Tk):
         self._shortcut_status = None
         self._dub_var = None
         self._dub_toggle = None
+        timer = getattr(self, "_dub_gain_timer", None)
+        if timer is not None:
+            try:
+                self.after_cancel(timer)
+            except tk.TclError:
+                pass
+            self._dub_gain_timer = None
+            self._commit_dub_gain()
         self._dub_bg_var = None
         self._dub_bg_toggle = None
+        self._dub_bg_gain_var = None
+        self._dub_bg_scale = None
+        self._dub_bg_gain_lbl = None
+        self._dub_bg_pct_lbl = None
+        self._dub_gain_ui = False
         self._settings_refs = {}
         self._ui_lang_btns = {}
         self._reset_btn = None

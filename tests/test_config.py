@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 import config
 
 
@@ -111,6 +113,11 @@ def test_save_preferences(tmp_path, monkeypatch):
     bed = config.load()
     assert bed.dub_background is True
     assert bed.dub_mute_source is False
+    assert bed.dub_background_gain == pytest.approx(1.0 / 6.0)
+    config.save_preferences(dub_background_gain=0.4)
+    assert config.load().dub_background_gain == pytest.approx(0.4)
+    config.save_preferences(dub_background_gain=1.8)
+    assert config.load().dub_background_gain == pytest.approx(1.0)
 
 def test_dpapi_failure_raises_oserror_and_does_not_save_plaintext(tmp_path, monkeypatch):
     _isolate(tmp_path, monkeypatch)
