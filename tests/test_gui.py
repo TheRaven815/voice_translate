@@ -68,7 +68,7 @@ def test_app_name_version_and_about():
     try:
         assert app.title() == APP_TITLE == "Ahenk"
         assert app.brand["text"] == "Ahenk"
-        assert app.version_lbl["text"] == "v0.7.4"
+        assert app.version_lbl["text"] == "v0.7.5"
         assert ICON_ICO.is_file()
         assert ICON_PNG.is_file()
         assert ABOUT_LOGO_PNG.is_file()
@@ -79,7 +79,7 @@ def test_app_name_version_and_about():
         assert app._about is not None
         assert app._about.title() == "Hakkında"
         assert app.about_name["text"] == "Ahenk"
-        assert app.about_version["text"] == "v0.7.4"
+        assert app.about_version["text"] == "v0.7.5"
         assert app.about_author["text"] == APP_AUTHOR == "Enes Eliağır"
         assert app.about_update_status["text"] == "Kaynak kod modu"
         assert app.about_update_btn["text"] == "Güncellemeleri denetle"
@@ -1510,6 +1510,31 @@ def test_r05_select_widget_measures_font_and_bounds_popup():
         # Popup kapat
         sel._close()
         assert sel._pop is None
+    finally:
+        app.destroy()
+
+
+def test_select_popup_does_not_clip_last_row():
+    """Son satır (ör. Bluetooth çıkışı) popup yüksekliği yüzünden kırpılmamalı."""
+    app = App()
+    try:
+        from gui.widgets import Select
+        var = tk.StringVar(value="Option 1")
+        values = [f"Option {i}" for i in range(4)]
+        top = tk.Toplevel(app)
+        sel = Select(top, values=values, textvariable=var)
+        sel.pack()
+        top.update_idletasks()
+        sel._toggle()
+        top.update()
+
+        last = sel._rows[-1]
+        assert last.winfo_height() >= last.winfo_reqheight()
+        assert sel._pop.winfo_height() >= sum(
+            row.winfo_reqheight() for row in sel._rows
+        ) + 2
+
+        sel._close()
     finally:
         app.destroy()
 

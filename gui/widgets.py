@@ -712,7 +712,9 @@ class Select(tk.Frame):
 
         font_obj = tkfont.Font(self, font=self._font)
         linespace = font_obj.metrics("linespace")
-        row_h = max(24, linespace + 8)
+        # Satır etiketi varsayılan 2 px kenarlık ve 3 px dikey iç boşluk taşır;
+        # yükseklik yalnızca linespace'e göre hesaplanırsa son satır kırpılır.
+        row_h = max(24, linespace + 10)
 
         screen_h = self.winfo_screenheight()
         btn_y = self.winfo_rooty()
