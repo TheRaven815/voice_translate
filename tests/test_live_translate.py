@@ -677,6 +677,31 @@ def test_capture_routes_echo_to_silence_without_stopping_stream(output_id):
     finally:
         loop_obj.close()
 
+def test_capture_gain_restores_source_ducked_by_dubbing():
+    """Dublaj oturum sesini kısınca yakalanan PCM eski düzeye geri yükselir."""
+    posted = []
+
+    class Mic(FakeMic):
+        id = "mic"
+        name = "Mikrofon"
+        isloopback = False
+        is_application = False
+
+        def record(self, numframes):
+            loop_obj._cap_stop.set()
+            return np.full((numframes, 2), 0.02, dtype=np.float32)
+
+    loop_obj = SystemAudioLoop("en", "tr", Mic(), "key", output_speaker=None)
+    loop_obj._post = posted.append
+    loop_obj.set_capture_gain(5.0)
+    try:
+        loop_obj._capture_inner()
+        pcm = np.frombuffer(posted[0]["data"], dtype=np.int16).astype(np.float32) / 32768.0
+        assert float(np.mean(pcm)) == pytest.approx(0.1, abs=0.01)
+    finally:
+        loop_obj.close()
+
+
 def test_h13_audio_converter_anti_aliasing():
     """H13: 48 kHz -> 16 kHz dönüşümünde 8 kHz üstü frekanslar (örn 12 kHz) filtrelenmeli."""
     from audio import AudioConverter

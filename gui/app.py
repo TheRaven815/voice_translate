@@ -52,7 +52,7 @@ from i18n import get_ui_lang, set_ui_lang, t
 from hotkeys import GlobalHotkeys, ShortcutError, parse_shortcut, shortcut_from_tk_event
 from logger import append_history, log_exception, setup_logging
 from loop import SystemAudioLoop, validate_live_api_key
-from source_mute import DUB_BACKGROUND, DubPlan, SourceDub
+from source_mute import DUB_BACKGROUND, DubPlan, SourceDub, source_capture_gain
 from meta import APP_AUTHOR, APP_TITLE, __version__
 from notifications import WindowsNotifier
 from updater import (
@@ -1423,13 +1423,21 @@ class App(tk.Tk):
             return
         loop_obj = getattr(self, "loop_obj", None)
         set_exclude = getattr(loop_obj, "set_dub_exclude", None)
+        set_capture_gain = getattr(loop_obj, "set_capture_gain", None)
         try:
             if plan.action == "mute_other_sessions" and set_exclude is not None:
                 set_exclude(True)
             dub.engage(plan)
+            if set_capture_gain is not None:
+                set_capture_gain(source_capture_gain(plan))
             if plan.action != "mute_other_sessions" and set_exclude is not None:
                 set_exclude(False)
         except Exception as exc:
+            if set_capture_gain is not None:
+                try:
+                    set_capture_gain(1.0)
+                except Exception:
+                    pass
             if set_exclude is not None:
                 try:
                     set_exclude(False)
@@ -1444,7 +1452,14 @@ class App(tk.Tk):
         self._announce_dub(plan)
 
     def _release_source_dub(self) -> None:
-        set_exclude = getattr(getattr(self, "loop_obj", None), "set_dub_exclude", None)
+        loop_obj = getattr(self, "loop_obj", None)
+        set_capture_gain = getattr(loop_obj, "set_capture_gain", None)
+        if set_capture_gain is not None:
+            try:
+                set_capture_gain(1.0)
+            except Exception:
+                pass
+        set_exclude = getattr(loop_obj, "set_dub_exclude", None)
         if set_exclude is not None:
             try:
                 set_exclude(False)
@@ -2760,6 +2775,9 @@ class App(tk.Tk):
                             new_loop.pause()
                         if getattr(old_loop, "_dub_exclude", False):
                             new_loop.set_dub_exclude(True)
+                        set_capture_gain = getattr(new_loop, "set_capture_gain", None)
+                        if set_capture_gain is not None:
+                            set_capture_gain(getattr(old_loop, "_capture_gain", 1.0))
                         self.loop_obj = new_loop
                         if self._stopping.is_set():
                             new_loop.request_stop()

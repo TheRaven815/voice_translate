@@ -7,11 +7,12 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+import source_mute
 from applications import process_tree_pids
 from loop import SystemAudioLoop
 from source_mute import (
-    DUB_BACKGROUND, DubPlan, MuteHold, SourceDub, WindowsRenderMute, bed_target, plan_dub,
-    same_render_endpoint,
+    DUB_BACKGROUND, SESSION_MUTE_FLOOR, DubPlan, MuteHold, SourceDub, WindowsRenderMute,
+    bed_target, plan_dub, same_render_endpoint, source_capture_gain,
 )
 
 
@@ -57,6 +58,40 @@ def test_bed_target_scales_the_current_level_instead_of_capping_it():
     assert bed_target(0.4, 1.0) == pytest.approx(0.4)
     assert bed_target(0.4, 1.4) == pytest.approx(0.4)
     assert bed_target(-1.0, 0.5) == 0.0
+
+
+def test_session_attenuation_is_compensated_in_capture():
+    """Oturum sesi yakalamadan önce uygulanır; kısma yakalamada geri açılmalı."""
+    assert source_capture_gain(DubPlan("idle")) == 1.0
+    assert source_capture_gain(DubPlan("mute_endpoint", endpoint_id="spk")) == 1.0
+    assert source_capture_gain(DubPlan("mute_process")) == 1.0
+    assert source_capture_gain(DubPlan("mute_process", root_pid=42)) == pytest.approx(
+        1.0 / SESSION_MUTE_FLOOR
+    )
+    assert source_capture_gain(DubPlan("mute_other_sessions", root_pid=7, gain=0.0)) == pytest.approx(
+        1.0 / SESSION_MUTE_FLOOR
+    )
+    assert source_capture_gain(DubPlan("mute_process", root_pid=42, gain=0.25)) == pytest.approx(4.0)
+
+
+def test_session_mute_keeps_a_capture_floor_but_endpoint_still_mutes(monkeypatch):
+    """Sıfır ses yerine taban bırak; uç noktası susturması ise gerçek mute kalsın."""
+    state = {"muted": False, "volume": 0.8}
+
+    monkeypatch.setattr(source_mute, "_get_mute", lambda _volume, _index: state["muted"])
+    monkeypatch.setattr(source_mute, "_set_mute", lambda _volume, _index, value: state.update(muted=value))
+    monkeypatch.setattr(source_mute, "_get_scalar", lambda _volume, _index: state["volume"])
+    monkeypatch.setattr(source_mute, "_set_scalar", lambda _volume, _index, value: state.update(volume=value))
+
+    source_mute._shape_level(object(), "session", source_mute.PriorLevel(False, 0.8), None)
+    assert state == {"muted": False, "volume": pytest.approx(SESSION_MUTE_FLOOR)}
+
+    source_mute._shape_level(object(), "session", source_mute.PriorLevel(False, 0.8), 0.0)
+    assert state["muted"] is False
+    assert state["volume"] == pytest.approx(SESSION_MUTE_FLOOR)
+
+    source_mute._shape_level(object(), "endpoint", source_mute.PriorLevel(False, 0.8), None)
+    assert state["muted"] is True
 
 
 def test_plan_can_leave_the_original_as_a_quiet_bed():

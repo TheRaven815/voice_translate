@@ -1764,7 +1764,7 @@ def test_dub_mutes_source_only_while_translation_is_playing():
     from types import SimpleNamespace
 
     from devices import display_input_label
-    from source_mute import DubPlan
+    from source_mute import SESSION_MUTE_FLOOR, DubPlan
 
     events = []
 
@@ -1793,6 +1793,7 @@ def test_dub_mutes_source_only_while_translation_is_playing():
         app.inputs = [source]
         app.out_box["values"] = (NONE_OUTPUT, "Kulaklık")
         excluded = []
+        capture_gains = []
 
         class Loop:
             def swap_output(self, dev):
@@ -1804,6 +1805,9 @@ def test_dub_mutes_source_only_while_translation_is_playing():
             def set_dub_exclude(self, enabled):
                 excluded.append(enabled)
 
+            def set_capture_gain(self, gain):
+                capture_gains.append(gain)
+
         app.loop_obj = Loop()
         app.worker = type("Worker", (), {"is_alive": lambda self: True})()
         app._stopping.clear()
@@ -1811,13 +1815,16 @@ def test_dub_mutes_source_only_while_translation_is_playing():
         app.out_var.set("Kulaklık")
         events.clear()
         excluded.clear()
+        capture_gains.clear()
         app._sync_source_dub()
         assert ("engage", "mute_endpoint") in events
         assert excluded[-1] is False
+        assert capture_gains[-1] == pytest.approx(1.0)
 
         app.translation_muted = True
         app._sync_source_dub()
         assert events[-1] == ("engage", "idle")
+        assert capture_gains[-1] == pytest.approx(1.0)
 
         app.translation_muted = False
         app.out_var.set(NONE_OUTPUT)
@@ -1830,9 +1837,14 @@ def test_dub_mutes_source_only_while_translation_is_playing():
         app.out_var.set("Hoparlör")
         events.clear()
         excluded.clear()
+        capture_gains.clear()
         app._sync_source_dub()
         assert ("engage", "mute_other_sessions") in events
         assert excluded[0] is True
+        assert capture_gains[-1] == pytest.approx(1.0 / SESSION_MUTE_FLOOR)
+
+        app._release_source_dub()
+        assert capture_gains[-1] == pytest.approx(1.0)
     finally:
         app.destroy()
 

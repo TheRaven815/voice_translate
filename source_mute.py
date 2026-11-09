@@ -28,6 +28,12 @@ from process_audio import process_audio_supported
 # hoparlör zaten bu düzeyin altındaysa tavan hiç fark ettirmez.
 DUB_BACKGROUND = 1 / 6
 
+# WASAPI oturum düzeyi döngü yakalamasından ÖNCE uygulanır. Kaynağı tam 0'a
+# indirmek yakalanan sesi de sıfırlar ve çeviri duyduğu sesi kaybeder. Bu
+# yüzden oturum susturmasında duyulmayacak kadar küçük bir taban bırakılır;
+# yakalama tarafı aynı katsayıyla geri yükseltir (source_capture_gain).
+SESSION_MUTE_FLOOR = 1.0 / 256.0
+
 
 @dataclass(frozen=True, slots=True)
 class DubPlan:
@@ -72,6 +78,23 @@ def bed_target(prior_volume: float, gain: float) -> float:
     prior = max(0.0, min(1.0, float(prior_volume)))
     factor = max(0.0, min(1.0, float(gain)))
     return prior * factor
+
+
+def source_capture_gain(plan: DubPlan) -> float:
+    """Oturum düzeyi dublaj kısmasını yakalama tarafında geri yükselt.
+
+    Uygulama ve "diğer oturumlar" kısması WASAPI döngüsünden önce uygulanır;
+    kısılmış sesi olduğu gibi göndermek çeviriyi sessizliğe boğar. Uç noktası
+    kısması döngü yakalamasının önünde kaldığı için onu telafi etmeyiz.
+    """
+    if plan.action not in ("mute_process", "mute_other_sessions"):
+        return 1.0
+    if int(plan.root_pid) <= 0:
+        return 1.0
+    if plan.gain is None:
+        return 1.0 / SESSION_MUTE_FLOOR
+    factor = max(0.0, min(1.0, float(plan.gain)))
+    return 1.0 / max(factor, SESSION_MUTE_FLOOR)
 
 
 def plan_dub(
@@ -376,13 +399,25 @@ def _read_level(volume, kind: str) -> PriorLevel:
 
 
 def _shape_level(volume, kind: str, prior: PriorLevel, gain: float | None) -> None:
-    """gain yoksa sustur. Sayıysa önceki düzeyin o katına indir."""
+    """gain yoksa sustur. Sayıysa önceki düzeyin o katına indir.
+
+    Oturum düzeyinde tam susturma yerine SESSION_MUTE_FLOOR bırakılır; aksi
+    halde WASAPI döngü yakalaması da sıfırlanır ve çeviri kaynağı kesilir.
+    """
     get_mute, set_mute, get_volume, set_volume = _volume_indices(kind)
     if gain is None:
-        if not _get_mute(volume, get_mute):
-            _set_mute(volume, set_mute, True)
+        if kind == "endpoint":
+            if not _get_mute(volume, get_mute):
+                _set_mute(volume, set_mute, True)
+            return
+        if _get_mute(volume, get_mute):
+            _set_mute(volume, set_mute, False)
+        if abs(_get_scalar(volume, get_volume) - SESSION_MUTE_FLOOR) > 0.001:
+            _set_scalar(volume, set_volume, SESSION_MUTE_FLOOR)
         return
     target = bed_target(prior.volume, gain)
+    if kind != "endpoint":
+        target = max(target, SESSION_MUTE_FLOOR)
     if _get_mute(volume, get_mute):
         _set_mute(volume, set_mute, False)
     # 0.02 ölü bant kaydırıcı adımını yutuyordu (kısık kaynakta %1 duyulmuyordu).

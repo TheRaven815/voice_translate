@@ -346,6 +346,8 @@ class SystemAudioLoop:
         # Aynı hoparlörde dublaj: yakalama kendi çaldığımız sesi hariç tutar.
         self._dub_exclude = False
         self._dub_generation: int = 0
+        # Dublaj oturum düzeyinde kısarken yakalamayı eski düzeye çıkarır.
+        self._capture_gain: float = 1.0
         self._capture_heartbeat: float = time.monotonic()
         self._play_heartbeat: float = time.monotonic()
         self._capture_opened_once: bool = False
@@ -392,6 +394,21 @@ class SystemAudioLoop:
                 return
             self._dub_exclude = enabled
             self._dub_generation += 1
+
+    def set_capture_gain(self, gain: float) -> None:
+        """Dublaj kısmasını telafi et: yakalanan PCM'i kaynağın eski düzeyine çek.
+
+        Yalnızca güçlendirme uygulanır (1.0 = dokunma); WASAPI oturum sesi
+        yakalamadan önce uygulandığı için kısılan kaynak aksi halde sessiz kalır.
+        """
+        try:
+            value = float(gain)
+        except (TypeError, ValueError):
+            value = 1.0
+        if value != value or value < 1.0:
+            value = 1.0
+        with self._io_lock:
+            self._capture_gain = min(value, 1.0 / 0.0001)
 
     def _dub_state(self) -> tuple[bool, int]:
         with self._io_lock:
@@ -698,6 +715,9 @@ class SystemAudioLoop:
                             continue
                         arr = np.asarray(frame, dtype=np.float32)
                         mono = arr.mean(axis=1) if arr.ndim > 1 else arr
+                        gain = getattr(self, "_capture_gain", 1.0)
+                        if gain and gain > 1.0:
+                            mono = np.clip(mono * gain, -1.0, 1.0)
                         rms = (
                             float(np.sqrt(np.dot(mono, mono) / len(mono)))
                             if len(mono) > 0
