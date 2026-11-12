@@ -17,6 +17,7 @@ import numpy as np
 from google import genai
 from google.genai import types
 
+from logger import get_logger
 from audio import (
     CAPTURE_BLOCK,
     CAPTURE_RATE,
@@ -56,6 +57,65 @@ def _is_discontinuity_warning(message, category=None) -> bool:
     except Exception:
         return False
     return bool(_DISC_RE.search(text))
+
+
+def _goaway_seconds(go_away) -> float | None:
+    """GoAway.time_left süresini saniyeye çevirir; biçim tanınmazsa None."""
+    raw = getattr(go_away, "time_left", None)
+    if raw is None:
+        raw = getattr(go_away, "timeLeft", None)
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw) if raw >= 0 else None
+    total = getattr(raw, "total_seconds", None)
+    if callable(total):
+        try:
+            value = float(total())
+        except (TypeError, ValueError):
+            value = None
+        if value is not None and value >= 0:
+            return value
+    seconds = getattr(raw, "seconds", None)
+    if isinstance(seconds, int) and not isinstance(raw, str):
+        nanos = getattr(raw, "nanos", 0) or 0
+        try:
+            return float(seconds) + float(nanos) / 1_000_000_000
+        except (TypeError, ValueError):
+            pass
+    text = str(raw).strip().lower()
+    match = re.fullmatch(r"(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?", text)
+    if match and any(match.groups()):
+        hours = float(match.group(1) or 0)
+        minutes = float(match.group(2) or 0)
+        secs = float(match.group(3) or 0)
+        return hours * 3600 + minutes * 60 + secs
+    try:
+        value = float(text)
+    except ValueError:
+        return None
+    return value if value >= 0 else None
+
+
+def _resumption_rejected(err: BaseException) -> bool:
+    """Sunucu session resumption alanını tanımıyorsa sessizce kapatmak için."""
+    msg = str(err).lower()
+    return any(token in msg for token in (
+        "session_resumption", "sessionresumption", "unknown field",
+        "cannot find field", "unknown name", "invalid json payload",
+    ))
+
+
+def _goaway_grace_seconds(go_away) -> float | None:
+    """Sunucu kesmeden kısa süre önce yenileme gecikmesi.
+
+    GoAway, bağlantı bitmeden (~60 sn) gelir. Hemen kesmek çeviriyi erken
+    düşürür; süre bilinmiyorsa sunucunun kapanmasını bekle.
+    """
+    left = _goaway_seconds(go_away)
+    if left is None:
+        return None
+    return max(0.5, left - 2.0)
 
 
 def ensure_discontinuity_suppressed() -> None:
@@ -320,6 +380,16 @@ class SystemAudioLoop:
         self._waiting_response: bool = False
         self.session = None
         self.connected_at: float = 0.0
+        # Yeniden bağlanma başarısını ayrıca yazmak için; ilk bağlantıda kapalı.
+        self._announce_reconnect = False
+        self._goaway_noted = False
+        self._renew_requested = False
+        # GoAway'de ses hattını düşürmeden bir sonraki sokete geçmek için.
+        self._resume_handle: str | None = None
+        self._resumption_disabled = False
+        self._session_generation = 0
+        self._session_cm = None
+        self._handoff_lock: asyncio.Lock | None = None
         self.audio_in_queue: asyncio.Queue | None = None
         self.out_queue: asyncio.Queue | None = None
         self._stop: asyncio.Event | None = None
@@ -573,7 +643,17 @@ class SystemAudioLoop:
     async def send_realtime(self):
         while True:
             msg = await self.out_queue.get()
-            await self.session.send_realtime_input(audio=msg)
+            session = self.session
+            if session is None:
+                continue
+            try:
+                await session.send_realtime_input(audio=msg)
+            except Exception:
+                # Emekli sokete giden parça; yenisine bir kez daha ver.
+                if session is not self.session and self.session is not None:
+                    await self.session.send_realtime_input(audio=msg)
+                else:
+                    raise
 
     def _post(self, msg):
         try:
@@ -837,44 +917,192 @@ class SystemAudioLoop:
             self._bufs[stream] = ""
             self._emit((f"{stream}_end",))
 
+    def _take_resume_handle(self, response) -> None:
+        update = getattr(response, "session_resumption_update", None)
+        if update is None:
+            return
+        handle = getattr(update, "new_handle", None)
+        if getattr(update, "resumable", False) and handle:
+            self._resume_handle = handle
+
+    def _next_config(self):
+        """Bir sonraki soket: varsa devam belirteci, yoksa yeni oturum."""
+        if self._resumption_disabled:
+            return self.config
+        try:
+            return self.config.model_copy(update={
+                "session_resumption": types.SessionResumptionConfig(
+                    handle=self._resume_handle or None,
+                ),
+            })
+        except Exception:
+            return self.config
+
+    async def _aexit(self, cm) -> None:
+        if cm is None:
+            return
+        try:
+            await cm.__aexit__(None, None, None)
+        except Exception:
+            pass
+
+    async def _connect_new(self):
+        config = self._next_config()
+        cm = self.client.aio.live.connect(model=self.model, config=config)
+        try:
+            session = await cm.__aenter__()
+        except BaseException as exc:
+            await self._aexit(cm)
+            if (
+                isinstance(exc, Exception)
+                and not self._resumption_disabled
+                and _resumption_rejected(exc)
+            ):
+                self._resumption_disabled = True
+                return await self._connect_new()
+            raise
+        return cm, session
+
+    async def _close_session(self) -> None:
+        cm = self._session_cm
+        self._session_cm = None
+        await self._aexit(cm)
+
+    async def _handoff_session(self) -> None:
+        """GoAway penceresinde yeni soketi aç, ses hattını yerinde değiştir.
+
+        Mikrofon ve hoparlör açık kalır. Yeni soket ısınırken eski çeviri
+        çalmaya devam eder; geçişten sonra eski soket kapanır.
+        """
+        if self._user_stop.is_set() or (self._stop is not None and self._stop.is_set()):
+            return
+        if self._handoff_lock is None:
+            self._handoff_lock = asyncio.Lock()
+        if self._handoff_lock.locked():
+            return
+        async with self._handoff_lock:
+            if self._user_stop.is_set() or (self._stop is not None and self._stop.is_set()):
+                return
+            new_cm = None
+            retired = None
+            try:
+                # Yavaş kısım (yeni soket) eski çeviri sürerken biter.
+                # İki soketi birden okumak SDK'de çakışır; okumayı tek receive
+                # döngüsü, geçişten sonra devralır.
+                new_cm, new_session = await asyncio.wait_for(self._connect_new(), timeout=12)
+                if self._user_stop.is_set() or (self._stop is not None and self._stop.is_set()):
+                    raise asyncio.CancelledError()
+                retired = self._session_cm
+                self._session_cm = new_cm
+                new_cm = None
+                self.session = new_session
+                self._session_generation += 1
+                self._goaway_noted = False
+                self._renew_requested = False
+                self.connected_at = time.monotonic()
+                self._note("[bilgi] Yeniden bağlandı.\n")
+                try:
+                    get_logger().info("Gemini Live bağlantısı kesintisiz yenilendi.")
+                except Exception:
+                    pass
+                await asyncio.sleep(0.05)
+                await self._aexit(retired)
+                retired = None
+            except asyncio.CancelledError:
+                await self._aexit(new_cm)
+                await self._aexit(retired)
+                raise
+            except Exception as exc:
+                await self._aexit(new_cm)
+                await self._aexit(retired)
+                self._note("[uyarı] Sessiz yenileme olmadı; bağlantı yeniden kurulacak.\n")
+                try:
+                    get_logger().info("Sessiz GoAway yenilemesi olmadı: %s", exc)
+                except Exception:
+                    pass
+                raise ConnectionError(
+                    "Gemini Live GoAway: sunucu bağlantının yenilenmesini istedi."
+                ) from exc
+
+    def _schedule_goaway(self, go_away) -> None:
+        """Kesintisiz el değiştir; TaskGroup yoksa eski sert yenilemeye düş."""
+        if self._goaway_noted:
+            return
+        self._goaway_noted = True
+        self._renew_requested = True
+        left = _goaway_seconds(go_away)
+        try:
+            get_logger().info(
+                "Gemini Live GoAway alındı; bağlantı arka planda yenilenecek (kalan=%s).",
+                left,
+            )
+        except Exception:
+            pass
+        tg = getattr(self, "_tg", None)
+        if tg is None:
+            self._note("[bilgi] Gemini Live oturumu yenileniyor (sunucu GoAway bildirimi).\n")
+            raise ConnectionError("Gemini Live GoAway: sunucu bağlantının yenilenmesini istedi.")
+        try:
+            tg.create_task(self._handoff_session())
+        except Exception:
+            raise ConnectionError(
+                "Gemini Live GoAway: sunucu bağlantının yenilenmesini istedi."
+            ) from None
+
     async def receive(self):
-        while True:
-            turn = self.session.receive()
-            async for response in turn:
-                if data := response.data:
-                    if self._waiting_response and self._last_speech_time > 0:
-                        latency = (time.monotonic() - self._last_speech_time) * 1000.0
-                        self.last_latency_ms = latency
-                        self._waiting_response = False
-                        self._emit(("latency", round(latency, 1)))
-                    if self.audio_in_queue is not None:
-                        try:
-                            self.audio_in_queue.put_nowait(data)
-                        except asyncio.QueueFull:
-                            try:
-                                self.audio_in_queue.get_nowait()
-                            except asyncio.QueueEmpty:
-                                pass
+        while not self._user_stop.is_set():
+            session = self.session
+            generation = self._session_generation
+            if session is None:
+                await asyncio.sleep(0.05)
+                continue
+            try:
+                turn = session.receive()
+                async for response in turn:
+                    if generation != self._session_generation or session is not self.session:
+                        break
+                    self._take_resume_handle(response)
+                    if data := response.data:
+                        if self._waiting_response and self._last_speech_time > 0:
+                            latency = (time.monotonic() - self._last_speech_time) * 1000.0
+                            self.last_latency_ms = latency
+                            self._waiting_response = False
+                            self._emit(("latency", round(latency, 1)))
+                        if self.audio_in_queue is not None:
                             try:
                                 self.audio_in_queue.put_nowait(data)
                             except asyncio.QueueFull:
-                                pass
-                content = getattr(response, "server_content", None)
-                if content is not None:
-                    self._handle_tr("heard", getattr(content, "input_transcription", None))
-                    out_tr = getattr(content, "output_transcription", None)
-                    if out_tr is not None:
-                        self._handle_tr("trans", out_tr)
-                    else:
-                        text = response.text or ""
-                        turn_done = bool(getattr(content, "turn_complete", False))
-                        if text or (turn_done and self._bufs["trans"]):
-                            self._handle_tr("trans", SimpleNamespace(text=text, finished=turn_done))
-                if getattr(response, "go_away", None) is not None:
-                    # Sunucu uzun bağlantıyı kapatacağını bildirdi. Yeni oturum
-                    # kur; bunu erişim reddi veya kullanıcı çıkışı sayma.
-                    self._note("[bilgi] Gemini Live oturumu yenileniyor (sunucu GoAway bildirimi).\n")
-                    raise ConnectionError("Gemini Live GoAway: sunucu bağlantının yenilenmesini istedi.")
+                                try:
+                                    self.audio_in_queue.get_nowait()
+                                except asyncio.QueueEmpty:
+                                    pass
+                                try:
+                                    self.audio_in_queue.put_nowait(data)
+                                except asyncio.QueueFull:
+                                    pass
+                    content = getattr(response, "server_content", None)
+                    if content is not None:
+                        self._handle_tr("heard", getattr(content, "input_transcription", None))
+                        out_tr = getattr(content, "output_transcription", None)
+                        if out_tr is not None:
+                            self._handle_tr("trans", out_tr)
+                        else:
+                            text = response.text or ""
+                            turn_done = bool(getattr(content, "turn_complete", False))
+                            if text or (turn_done and self._bufs["trans"]):
+                                self._handle_tr(
+                                    "trans", SimpleNamespace(text=text, finished=turn_done)
+                                )
+                    go_away = getattr(response, "go_away", None)
+                    if go_away is not None:
+                        # Eski soket çevirmeye devam eder; yeni soket arkada açılır.
+                        self._schedule_goaway(go_away)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                if generation != self._session_generation or session is not self.session:
+                    continue
+                raise
             # Çeviride turn_complete kuyruğu boşaltmaz: her cümle bir turn,
             # kuyruk silinince ses kesik kesik kalır.
 
@@ -1250,17 +1478,27 @@ class SystemAudioLoop:
             # request_stop() may have run before the event loop was available.
             if self._user_stop.is_set():
                 raise asyncio.CancelledError("Kullanıcı çıkışı")
-            async with (
-                self.client.aio.live.connect(model=self.model, config=self.config) as session,
-                asyncio.TaskGroup() as tg,
-            ):
-                # Connection entry can finish before the queued stop callback runs.
-                if self._user_stop.is_set():
-                    raise asyncio.CancelledError("Kullanıcı çıkışı")
-                self.session = session
+            self._handoff_lock = asyncio.Lock()
+            # Bağlantı TaskGroup'un dışında açılır: bekleyen connect iptali
+            # ExceptionGroup'a sarılmasın, GoAway el değişimi de aynı soketi
+            # değiştirebilsin.
+            cm, session = await self._connect_new()
+            self._session_cm = cm
+            self.session = session
+            self._session_generation += 1
+            self._goaway_noted = False
+            if self._user_stop.is_set():
+                raise asyncio.CancelledError("Kullanıcı çıkışı")
+            async with asyncio.TaskGroup() as tg:
                 self.connected_at = time.monotonic()
                 if self._emit is not None:
                     self._emit(("status", "Dinleniyor"))
+                if self._announce_reconnect:
+                    self._note("[bilgi] Yeniden bağlandı.\n")
+                    try:
+                        get_logger().info("Gemini Live oturumu yeniden bağlandı.")
+                    except Exception:
+                        pass
                 self.audio_in_queue = (
                     asyncio.Queue(maxsize=200) if self.output_speaker is not None else None
                 )
@@ -1284,6 +1522,7 @@ class SystemAudioLoop:
             self._tg = None
             stop_task.cancel()
             await asyncio.gather(stop_task, return_exceptions=True)
+            await self._close_session()
             self.session = None
             if hasattr(self.client, "aio") and hasattr(self.client.aio, "aclose"):
                 try:

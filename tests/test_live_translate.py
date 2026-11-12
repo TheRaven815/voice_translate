@@ -171,6 +171,143 @@ def _stub_client(session):
     )
 
 
+def test_goaway_grace_uses_remaining_window_instead_of_cutting_now():
+    from loop import _goaway_grace_seconds, _goaway_seconds
+
+    soon = SimpleNamespace(time_left="60s")
+    assert _goaway_seconds(soon) == 60
+    assert _goaway_grace_seconds(soon) == 58
+    assert _goaway_grace_seconds(SimpleNamespace(time_left="1.5s")) == 0.5
+    assert _goaway_seconds(SimpleNamespace(time_left=SimpleNamespace(seconds=9, nanos=500_000_000))) == 9.5
+    assert _goaway_grace_seconds(SimpleNamespace(time_left=None)) is None
+
+
+def test_go_away_schedules_silent_handoff_without_cutting_audio():
+    messages = []
+    loop = SystemAudioLoop("en", "tr", None, "dummy_key", on_text=messages.append)
+    scheduled = []
+
+    class TaskGroup:
+        def create_task(self, coro):
+            scheduled.append(coro.cr_code.co_name)
+            coro.close()
+            return None
+
+    class ExpiringSession:
+        def receive(self):
+            return self._gen()
+
+        async def _gen(self):
+            yield SimpleNamespace(
+                data=None, text=None, server_content=None,
+                go_away=SimpleNamespace(time_left="60s"),
+            )
+            await asyncio.Event().wait()
+
+    loop._tg = TaskGroup()
+    loop.session = ExpiringSession()
+
+    async def _until_noted():
+        task = asyncio.create_task(loop.receive())
+        try:
+            for _ in range(20):
+                if loop._goaway_noted:
+                    break
+                await asyncio.sleep(0.01)
+            assert loop._goaway_noted
+            assert loop._renew_requested
+            assert not task.done()
+            assert len(scheduled) == 1
+            assert scheduled == ["_handoff_session"]
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    try:
+        asyncio.run(_until_noted())
+        assert not any("oturumu yenileniyor" in str(message) for message in messages)
+    finally:
+        loop.close()
+
+
+def test_handoff_swaps_socket_without_restarting_the_loop():
+    messages = []
+    loop = SystemAudioLoop("en", "tr", None, "dummy_key", on_text=messages.append)
+    seen = []
+    exited = []
+
+    class CM:
+        def __init__(self, session):
+            self.session = session
+
+        async def __aenter__(self):
+            return self.session
+
+        async def __aexit__(self, *args):
+            exited.append(self.session)
+            return False
+
+    new_session = SimpleNamespace(name="new")
+
+    def connect(*, model, config):
+        seen.append(config)
+        return CM(new_session)
+
+    old_cm = CM(SimpleNamespace(name="old"))
+    loop.client = SimpleNamespace(aio=SimpleNamespace(live=SimpleNamespace(connect=connect)))
+    loop.session = old_cm.session
+    loop._session_cm = old_cm
+    loop._session_generation = 1
+    loop._resume_handle = "resume-token"
+    loop._handoff_lock = asyncio.Lock()
+    loop._goaway_noted = True
+
+    asyncio.run(loop._handoff_session())
+
+    assert loop.session is new_session
+    assert loop._session_generation == 2
+    assert not loop._goaway_noted
+    assert seen[0].session_resumption.handle == "resume-token"
+    assert exited == [old_cm.session]
+    assert any(
+        isinstance(m, tuple) and m[0] == "log" and "Yeniden bağlandı" in m[1]
+        for m in messages
+    )
+    loop.close()
+
+
+def test_reconnect_success_is_logged():
+    heard: list = []
+    session = FakeSession()
+    loop_obj = SystemAudioLoop(
+        "en", "tr", FakeMic(), "dummy-key",
+        on_text=heard.append,
+        console_input=False,
+    )
+    loop_obj.client = _stub_client(session)
+    loop_obj._announce_reconnect = True
+    errors: list = []
+    worker = threading.Thread(target=_run_worker, args=(loop_obj, errors), daemon=True)
+    worker.start()
+    try:
+        deadline = time.time() + 15
+        while time.time() < deadline and not any(
+            isinstance(m, tuple) and m[0] == "log" and "Yeniden bağlandı" in str(m[1])
+            for m in heard
+        ):
+            time.sleep(0.05)
+        assert any(
+            isinstance(m, tuple) and m[0] == "log" and "Yeniden bağlandı" in str(m[1])
+            for m in heard
+        ), heard
+    finally:
+        loop_obj.request_stop()
+        worker.join(timeout=20)
+    assert not worker.is_alive()
+    assert errors == []
+
+
 def test_go_away_requests_reconnection_instead_of_access_denial():
     messages = []
     loop = SystemAudioLoop("en", "tr", None, "dummy_key", on_text=messages.append)

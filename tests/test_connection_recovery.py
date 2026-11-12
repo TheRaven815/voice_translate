@@ -152,6 +152,18 @@ def test_worker_does_not_retry_explicit_access_denial_after_active_session(monke
     assert not any(isinstance(msg, tuple) and msg[0] == "connection_failed" for msg in messages)
 
 
+def test_goaway_renewal_reconnects_without_a_network_error_log(monkeypatch):
+    messages, made, waits = run_worker(monkeypatch, [
+        ConnectionError("Gemini Live GoAway: sunucu bağlantının yenilenmesini istedi."),
+        None,
+    ])
+    assert waits == [0.5]
+    assert made[1]._announce_reconnect is True
+    assert any("Yeniden bağlanılıyor (1/3)" in str(m) for m in messages)
+    assert not any(isinstance(m, str) and m.startswith("\n[hata]") for m in messages)
+    assert not any(isinstance(m, tuple) and m[0] == "connection_failed" for m in messages)
+
+
 def test_successful_reconnect_does_not_notify(monkeypatch):
     messages, made, _ = run_worker(monkeypatch, [ConnectionError("network"), None])
     assert len(made) == 2

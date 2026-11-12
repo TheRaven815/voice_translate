@@ -50,7 +50,7 @@ from languages import (
 )
 from i18n import get_ui_lang, set_ui_lang, t
 from hotkeys import GlobalHotkeys, ShortcutError, parse_shortcut, shortcut_from_tk_event
-from logger import append_history, log_exception, setup_logging
+from logger import append_history, get_logger, log_exception, setup_logging
 from loop import SystemAudioLoop, validate_live_api_key
 from source_mute import DUB_BACKGROUND, DubPlan, SourceDub, source_capture_gain
 from meta import APP_AUTHOR, APP_TITLE, __version__
@@ -88,6 +88,11 @@ def _live_error_code(err: BaseException) -> int | None:
     if re.search(r"\b1008\b", str(err)):
         return 1008
     return None
+
+
+def _is_planned_renewal(err: BaseException) -> bool:
+    """Sunucunun ~10 dk bağlantı sınırında istediği yenileme; ağ kopması değil."""
+    return "goaway" in str(err).lower()
 
 
 def _is_retryable_error(err: BaseException, *, session_established: bool = False) -> bool:
@@ -287,6 +292,11 @@ def format_user_error(err: BaseException) -> str:
         return "Belirtilen Gemini modeli bulunamadı (404 Not Found). Model adını kontrol edin."
     if "403" in msg or "permission_denied" in msg_lower or "forbidden" in msg_lower:
         return "Gemini API erişim izni reddedildi (403). Anahtarınızın Gemini Live API yetkisini kontrol edin."
+    if "goaway" in msg_lower:
+        return (
+            "Gemini Live bağlantısı süre sınırına ulaştı; oturum yenileniyor. "
+            "Bu bir internet kopması değildir."
+        )
     if _live_error_code(err) == 1008:
         return f"Gemini Live oturumu sunucu tarafından kapatıldı (1008). Bu kod tek başına proje erişiminin reddedildiğini göstermez. Sunucu ayrıntısı: {msg}"
     if any(k in err_type.lower() or k in msg_lower for k in ("connection", "socket", "timeout", "gaierror", "network")):
@@ -2747,10 +2757,20 @@ class App(tk.Tk):
                 root_err = _worker_error(e)
                 if isinstance(root_err, asyncio.CancelledError):
                     break
-                log_exception(root_err, "Worker loop error")
-                self.log_queue.put(f"\n[hata] {format_user_error(root_err)}\n")
                 connected_at = getattr(self.loop_obj, "connected_at", 0.0)
                 session_established = isinstance(connected_at, (int, float)) and connected_at > 0
+                renewal = _is_planned_renewal(root_err) or (
+                    getattr(self.loop_obj, "_renew_requested", False)
+                    and _is_retryable_error(root_err, session_established=session_established)
+                )
+                if renewal:
+                    try:
+                        get_logger().info("Gemini Live bağlantısı planlı yenileniyor: %s", root_err)
+                    except Exception:
+                        pass
+                else:
+                    log_exception(root_err, "Worker loop error")
+                    self.log_queue.put(f"\n[hata] {format_user_error(root_err)}\n")
                 if not _is_retryable_error(root_err, session_established=session_established):
                     self.log_queue.put(("status", "Hata", C.err))
                     self.log_queue.put("[hata] Bağlantı kurulamadı.\n")
@@ -2762,7 +2782,8 @@ class App(tk.Tk):
                 if retries <= max_retries:
                     self.log_queue.put(("status", f"Yeniden bağlanılıyor ({retries}/{max_retries})", C.warn))
                     self.log_queue.put(f"[bilgi] Yeniden bağlanılıyor ({retries}/{max_retries})...\n")
-                    if self._stopping.wait(2) or self._stopping.is_set():
+                    # Planlı yenilemede ağı toparlamayı beklemeye gerek yok.
+                    if self._stopping.wait(0.5 if renewal else 2) or self._stopping.is_set():
                         break
                     if hasattr(self, "_loop_kwargs") and not self._stopping.is_set():
                         old_loop = self.loop_obj
@@ -2778,6 +2799,7 @@ class App(tk.Tk):
                         set_capture_gain = getattr(new_loop, "set_capture_gain", None)
                         if set_capture_gain is not None:
                             set_capture_gain(getattr(old_loop, "_capture_gain", 1.0))
+                        new_loop._announce_reconnect = True
                         self.loop_obj = new_loop
                         if self._stopping.is_set():
                             new_loop.request_stop()

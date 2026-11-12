@@ -833,6 +833,11 @@ def test_format_user_error_mappings():
     err_net = ConnectionResetError("Connection reset by peer")
     assert "Ağ bağlantısı hatası" in format_user_error(err_net)
 
+    err_goaway = ConnectionError("Gemini Live GoAway: sunucu bağlantının yenilenmesini istedi.")
+    goaway_text = format_user_error(err_goaway)
+    assert "internet kopması değildir" in goaway_text
+    assert "Ağ bağlantısı hatası" not in goaway_text
+
     err_sound = RuntimeError("Ses aygıtı bağlantısı koptu")
     assert "Ses aygıtı hatası" in format_user_error(err_sound)
 
