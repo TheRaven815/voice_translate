@@ -10,7 +10,7 @@ Sistem sesi · Mikrofon · Tek uygulama sesi → **metin + sesli çeviri**
 
 **[Türkçe](#ahenk)** · [English](README.en.md)
 
-[![Version](https://img.shields.io/badge/version-0.7.5-blue?style=flat-square)](meta.py)
+[![Version](https://img.shields.io/badge/version-0.7.6-blue?style=flat-square)](meta.py)
 [![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6?style=flat-square&logo=windows&logoColor=white)](#gereksinimler)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
