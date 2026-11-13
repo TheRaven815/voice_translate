@@ -2297,11 +2297,20 @@ class App(tk.Tk):
                 if entry is not None and entry.winfo_exists():
                     entry.configure(bg=C.panel, fg=C.text, insertbackground=C.text)
             for child in self._settings.winfo_children():
+                if isinstance(child, tk.Frame):
+                    child.configure(bg=C.panel)
                 self._retint_frame(child, bg=C.panel)
+            for key, widget in self._settings_refs.items():
+                if isinstance(widget, tk.Label) and widget.winfo_exists():
+                    widget.configure(fg=C.text if key.endswith("title") else C.muted)
+            for label, _key in self._settings_refs.get("shortcut_labels", []):
+                label.configure(fg=C.muted)
+            if self._shortcut_status is not None and self._shortcut_status.winfo_exists():
+                self._shortcut_status.configure(fg=C.muted)
             self._style_dub_scale()
             self._sync_dub_gain_controls()
             # Ayarlar diyalog butonlarının (özellikle birincil Kaydet) stilini koru.
-            for attr in ("test_key_btn", "save_key_btn", "_settings_close_btn"):
+            for attr in ("test_key_btn", "save_key_btn", "_settings_close_btn", "_reset_btn"):
                 btn = getattr(self, attr, None)
                 try:
                     if btn is not None and btn.winfo_exists():
@@ -3016,6 +3025,8 @@ class App(tk.Tk):
         pop.protocol("WM_DELETE_WINDOW", self._close_settings)
         pop.bind("<Escape>", lambda _e: self._close_settings())
 
+        footer = tk.Frame(pop, bg=C.panel, padx=22, pady=12)
+        footer.pack(side=tk.BOTTOM, fill=tk.X)
         host = tk.Frame(pop, bg=C.panel)
         host.pack(fill=tk.BOTH, expand=True)
         canvas = tk.Canvas(
@@ -3037,7 +3048,7 @@ class App(tk.Tk):
         canvas.configure(yscrollcommand=scroll.set)
         self._settings_canvas = canvas
         self._settings_scroll = scroll
-        main = tk.Frame(canvas, bg=C.panel, padx=22, pady=16)
+        main = tk.Frame(canvas, bg=C.panel, padx=22, pady=14)
         main_id = canvas.create_window((0, 0), window=main, anchor="nw")
         main.bind(
             "<Configure>",
@@ -3058,18 +3069,18 @@ class App(tk.Tk):
         self._ui_lang_btns = {}
 
         # -- Arayüz ------------------------------------------------------
+        lang_row = tk.Frame(main, bg=C.panel)
+        lang_row.pack(fill=tk.X)
         self._settings_refs["ui_title"] = tk.Label(
-            main,
+            lang_row,
             text=t("ui_language"),
             font=(self.font_ui[0], self.font_ui[1], "bold"),
             fg=C.text,
             bg=C.panel,
             anchor="w",
         )
-        self._settings_refs["ui_title"].pack(fill=tk.X)
+        self._settings_refs["ui_title"].pack(side=tk.LEFT, expand=True, fill=tk.X)
 
-        lang_row = tk.Frame(main, bg=C.panel)
-        lang_row.pack(fill=tk.X, pady=(7, 0))
         for code, label in (("tr", "Türkçe"), ("en", "English")):
             lang_btn = tk.Button(
                 lang_row,
@@ -3083,23 +3094,11 @@ class App(tk.Tk):
                 cursor="hand2",
                 command=lambda value=code: self._set_ui_language(value),
             )
-            lang_btn.pack(side=tk.LEFT, padx=(0, 6))
+            lang_btn.pack(side=tk.LEFT, padx=(6, 0))
             self._ui_lang_btns[code] = lang_btn
         self._style_lang_buttons()
 
-        self._settings_refs["ui_help"] = tk.Label(
-            main,
-            text=t("ui_language_help"),
-            font=self.font_ui,
-            fg=C.dim,
-            bg=C.panel,
-            anchor="w",
-            justify="left",
-            wraplength=440,
-        )
-        self._settings_refs["ui_help"].pack(fill=tk.X, pady=(6, 0))
-
-        tk.Frame(main, bg=C.line, height=1).pack(fill=tk.X, pady=(14, 12))
+        tk.Frame(main, bg=C.line, height=1).pack(fill=tk.X, pady=(12, 10))
 
         # -- API anahtarı ------------------------------------------------
         sec_h = tk.Frame(main, bg=C.panel)
@@ -3122,21 +3121,10 @@ class App(tk.Tk):
         link_lbl.bind("<Leave>", lambda _e: link_lbl.configure(fg=C.dim))
         self._settings_refs["link"] = link_lbl
 
-        desc_lbl = tk.Label(
-            main,
-            text=t("api_key_help"),
-            font=self.font_ui,
-            fg=C.dim,
-            bg=C.panel,
-            anchor="w",
-            justify="left",
-            wraplength=440,
-        )
-        desc_lbl.pack(anchor="w", fill=tk.X, pady=(4, 10))
-        self._settings_refs["api_help"] = desc_lbl
-
-        self.key_edge = tk.Frame(main, bg=C.line, bd=0, highlightthickness=0)
-        self.key_edge.pack(fill=tk.X)
+        key_row = tk.Frame(main, bg=C.panel)
+        key_row.pack(fill=tk.X, pady=(8, 0))
+        self.key_edge = tk.Frame(key_row, bg=C.line, bd=0, highlightthickness=0)
+        self.key_edge.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         self.key_entry = tk.Entry(
             self.key_edge,
@@ -3169,14 +3157,14 @@ class App(tk.Tk):
             main, text="", font=self.font_ui, fg=C.dim, bg=C.panel, anchor="w"
         )
         self._settings_status.pack(anchor="w", fill=tk.X, pady=(8, 0))
-        tk.Frame(main, bg=C.line, height=1).pack(fill=tk.X, pady=(14, 12))
+        tk.Frame(main, bg=C.line, height=1).pack(fill=tk.X, pady=(12, 10))
         self._settings_refs["dub_title"] = tk.Label(
             main, text=t("dub_section"), font=(self.font_ui[0], self.font_ui[1], "bold"),
             fg=C.text, bg=C.panel, anchor="w",
         )
         self._settings_refs["dub_title"].pack(fill=tk.X)
         self._settings_refs["dub_desc"] = tk.Label(
-            main, text=t("dub_description"), font=self.font_ui, fg=C.dim, bg=C.panel,
+            main, text=t("dub_summary"), font=self.font_ui, fg=C.muted, bg=C.panel,
             anchor="w", justify="left", wraplength=440,
         )
         self._settings_refs["dub_desc"].pack(fill=tk.X, pady=(4, 8))
@@ -3231,17 +3219,13 @@ class App(tk.Tk):
         self._refresh_dub_gain_label()
         self._sync_dub_gain_controls()
         self._dub_gain_ui = True
-        tk.Frame(main, bg=C.line, height=1).pack(fill=tk.X, pady=(14, 12))
+        tk.Frame(main, bg=C.line, height=1).pack(fill=tk.X, pady=(12, 10))
         self._settings_refs["shortcuts_title"] = tk.Label(
             main, text=t("shortcuts"), font=(self.font_ui[0], self.font_ui[1], "bold"),
             fg=C.text, bg=C.panel, anchor="w",
         )
         self._settings_refs["shortcuts_title"].pack(fill=tk.X)
-        self._settings_refs["shortcuts_desc"] = tk.Label(
-            main, text=t("shortcuts_description"), font=self.font_ui, fg=C.dim, bg=C.panel,
-            anchor="w", justify="left", wraplength=440,
-        )
-        self._settings_refs["shortcuts_desc"].pack(fill=tk.X, pady=(4, 9))
+        self._settings_refs["shortcuts_title"].pack_configure(pady=(0, 6))
 
         self._mute_shortcut_var = tk.StringVar(value=self.mute_shortcut)
         self._start_stop_shortcut_var = tk.StringVar(value=self.start_stop_shortcut)
@@ -3251,7 +3235,7 @@ class App(tk.Tk):
             row = tk.Frame(main, bg=C.panel)
             row.pack(fill=tk.X, pady=3)
             label = tk.Label(
-                row, text=t(label_key), width=29, anchor="w", font=self.font_ui, fg=C.muted,
+                row, text=t(label_key), width=25, anchor="w", font=self.font_ui, fg=C.muted,
                 bg=C.panel,
             )
             label.pack(side=tk.LEFT)
@@ -3273,12 +3257,11 @@ class App(tk.Tk):
         self._mute_shortcut_entry = _shortcut_row("mute_shortcut", self._mute_shortcut_var)
         self._start_stop_shortcut_entry = _shortcut_row("start_stop_shortcut", self._start_stop_shortcut_var)
         self._shortcut_status = tk.Label(
-            main, text=t("shortcut_clear"), font=self.font_ui, fg=C.dim, bg=C.panel, anchor="w",
+            main, text=t("shortcut_hint"), font=self.font_ui, fg=C.muted, bg=C.panel, anchor="w",
         )
         self._shortcut_status.pack(fill=tk.X, pady=(5, 0))
 
-        btn_row = tk.Frame(main, bg=C.panel)
-        btn_row.pack(fill=tk.X, pady=(16, 0))
+        btn_row = footer
 
         def _dialog_btn(parent, label: str, command, *, primary: bool = False,
                           side: str = tk.LEFT, padx: tuple = (0, 0)) -> tk.Button:
@@ -3309,10 +3292,8 @@ class App(tk.Tk):
             return btn
 
         self._reset_btn = _dialog_btn(btn_row, t("reset_settings"), self._reset_settings)
-        self.test_key_btn = _dialog_btn(btn_row, t("test"), self._test_api_key, padx=(8, 0))
-        self.save_key_btn = _dialog_btn(
-            btn_row, t("save"), self._save_settings, primary=True, padx=(8, 0)
-        )
+        self.test_key_btn = _dialog_btn(key_row, t("test"), self._test_api_key, side=tk.RIGHT, padx=(8, 0))
+        self.save_key_btn = _dialog_btn(btn_row, t("save"), self._save_settings, primary=True, side=tk.RIGHT, padx=(8, 0))
         self._save_status = tk.Label(
             btn_row, text="", font=self.font_ui, fg=C.live, bg=C.panel, anchor="w"
         )
@@ -3323,16 +3304,17 @@ class App(tk.Tk):
         )
 
         pop.update_idletasks()
-        content_w = max(480, main.winfo_reqwidth() + 2)
+        content_w = max(460, main.winfo_reqwidth() + 2, footer.winfo_reqwidth())
         content_h = main.winfo_reqheight()
+        footer_h = footer.winfo_reqheight()
         screen_w = pop.winfo_screenwidth()
         screen_h = pop.winfo_screenheight()
         max_h = max(360, screen_h - 140)
-        scrolls = content_h > max_h
+        scrolls = content_h + footer_h > max_h
         if scrolls:
             scroll.pack(side=tk.RIGHT, fill=tk.Y)
             content_w += 12
-        h = min(content_h, max_h)
+        h = min(content_h + footer_h, max_h)
         w = min(content_w, max(320, screen_w - 40))
         x = self.winfo_rootx() + (self.winfo_width() - w) // 2
         y = self.winfo_rooty() + (self.winfo_height() - h) // 2
@@ -3384,15 +3366,12 @@ class App(tk.Tk):
         refs = self._settings_refs
         for key, value in (
             ("ui_title", t("ui_language")),
-            ("ui_help", t("ui_language_help")),
             ("api_title", t("api_key_section")),
             ("link", t("get_key")),
-            ("api_help", t("api_key_help")),
             ("dub_title", t("dub_section")),
-            ("dub_desc", t("dub_description")),
+            ("dub_desc", t("dub_summary")),
             ("dub_level", t("dub_background_level")),
             ("shortcuts_title", t("shortcuts")),
-            ("shortcuts_desc", t("shortcuts_description")),
         ):
             widget = refs.get(key)
             if widget is not None and widget.winfo_exists():
@@ -3405,7 +3384,7 @@ class App(tk.Tk):
         if self._dub_bg_toggle is not None and self._dub_bg_toggle.winfo_exists():
             self._dub_bg_toggle.configure(text=t("dub_background"))
         if self._shortcut_status is not None and self._shortcut_status.winfo_exists():
-            self._shortcut_status.configure(text=t("shortcut_clear"), fg=C.dim)
+            self._shortcut_status.configure(text=t("shortcut_hint"), fg=C.muted)
         for btn, key in (
             (self.test_key_btn, "test"),
             (self.save_key_btn, "save"),

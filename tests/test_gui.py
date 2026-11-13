@@ -246,7 +246,7 @@ def test_settings_save_reports_only_general_success(monkeypatch):
         app.update()
 
         assert app._save_status["text"] == "✓ Ayarlar kaydedildi."
-        assert app._save_status.winfo_rootx() > app.save_key_btn.winfo_rootx()
+        assert app._save_status.winfo_rootx() < app.save_key_btn.winfo_rootx()
         assert "kaydedildi" not in app._shortcut_status["text"].lower()
         assert "API anahtarı kaydedildi" not in app.log.get("1.0", "end")
     finally:
@@ -1863,10 +1863,10 @@ def test_ui_language_en_localizes_remaining_settings_and_lists():
         app._set_ui_language("en")
         app.update()
         assert app._settings_refs["api_title"].cget("text") == "Gemini API Key"
-        assert (
-            app._settings_refs["ui_help"].cget("text")
-            == "The interface language changes immediately."
-        )
+        assert "ui_help" not in app._settings_refs
+        assert "api_help" not in app._settings_refs
+        assert app._settings_refs["dub_desc"].cget("text") == "Applies only while translation audio plays."
+        assert app._shortcut_status.cget("text") == "Press a key combination · Clear: Backspace / Delete"
         assert app._reset_btn.cget("text") == "Reset settings"
         assert app.src_box["values"][0] == "Automatic"
         assert app.dst_box["values"][0] == "English"
@@ -1925,8 +1925,29 @@ def test_input_and_none_labels_localize_and_resolve_across_languages():
     assert devices.none_output_label() == "Hiçbiri"
 
 
+def test_settings_dialog_is_compact_and_groups_related_controls():
+    app = App()
+    try:
+        app._open_settings()
+        app.update()
+        assert app._settings.winfo_height() <= 520
+        assert app._settings_scroll.winfo_manager() == ""
+        title = app._settings_refs["ui_title"]
+        assert title.master is app._ui_lang_btns["tr"].master
+        assert app.test_key_btn.master.master is app.key_edge.master
+        assert app.save_key_btn.master.master.master is app._settings
+        assert "shortcuts_desc" not in app._settings_refs
+        app.set_theme("light")
+        assert title.cget("fg") == C.text
+        assert app.save_key_btn.master.master.cget("bg") == C.panel
+        app.set_theme("dark")
+        assert title.cget("fg") == C.text
+    finally:
+        app.destroy()
+
+
 def test_settings_dialog_scrolls_on_a_short_screen(monkeypatch):
-    monkeypatch.setattr(tk.Toplevel, "winfo_screenheight", lambda self: 600)
+    monkeypatch.setattr(tk.Toplevel, "winfo_screenheight", lambda self: 480)
 
     app = App()
     try:
@@ -1935,10 +1956,17 @@ def test_settings_dialog_scrolls_on_a_short_screen(monkeypatch):
         assert app._settings_scroll.winfo_manager() == "pack"
         geom = app._settings.geometry()
         height = int(geom.split("x")[1].split("+")[0])
-        assert height <= 600
-        assert app._settings.winfo_y() + height <= 600
+        assert height <= 480
+        assert app._settings.winfo_y() + height <= 480
         app._settings_canvas.update_idletasks()
         assert app._settings_canvas.yview() != (0.0, 1.0)
+        # Actions stay visible even when the form is scrolled.
+        footer = app.save_key_btn.master.master
+        footer_y = footer.winfo_rooty()
+        app._settings_canvas.yview_moveto(1.0)
+        app.update()
+        assert footer.winfo_rooty() == footer_y
+        assert app.save_key_btn.winfo_viewable()
     finally:
         app.destroy()
 
