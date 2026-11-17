@@ -219,3 +219,52 @@ def test_reset_keeps_api_key_and_restores_defaults(tmp_path, monkeypatch):
     path = tmp_path / "config.json"
     data = json.loads(path.read_text(encoding="utf-8"))
     assert set(data) == {"api_key"}
+
+
+def test_translation_volume_glossary_and_ducking_persistence(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    raw_glossary = (
+        "# yorum satırı\n"
+        "- Kubernetes\n"
+        "* LLM: Büyük Dil Modeli\n"
+        "• RAG = Erişim Destekli Üretim\n"
+        "Zero-shot -> Sıfır Örnekli\n"
+    )
+    parsed = config.parse_glossary(raw_glossary)
+    assert parsed == [
+        "Kubernetes",
+        "LLM: Büyük Dil Modeli",
+        "RAG = Erişim Destekli Üretim",
+        "Zero-shot -> Sıfır Örnekli",
+    ]
+    assert config.parse_glossary("   \n# sadece yorum\n") is None
+
+    config.save_preferences(
+        translation_volume=1.65,
+        glossary="Ahenk: Ahenk\nWASAPI: WASAPI",
+        dub_ducking=False,
+        save_history=False,
+    )
+    loaded = config.load()
+    assert loaded.translation_volume == pytest.approx(1.65)
+    assert loaded.glossary == "Ahenk: Ahenk\nWASAPI: WASAPI"
+    assert loaded.dub_ducking is False
+    assert loaded.save_history is False
+
+    # Sınır ve NaN koruması
+    config.save_preferences(translation_volume=5.0)
+    assert config.load().translation_volume == pytest.approx(2.0)
+    (tmp_path / "config.json").write_text(
+        json.dumps({"translation_volume": float("nan")}), encoding="utf-8"
+    )
+    assert config.load().translation_volume == pytest.approx(1.0)
+
+    config.save_api_key("sk-keep")
+    config.save_preferences(translation_volume=0.5, glossary="Test", dub_ducking=False)
+    config.reset()
+    after_reset = config.load()
+    assert after_reset.api_key == "sk-keep"
+    assert after_reset.translation_volume == pytest.approx(1.0)
+    assert after_reset.glossary == ""
+    assert after_reset.dub_ducking is True
+    assert after_reset.save_history is True

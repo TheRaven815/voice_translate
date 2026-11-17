@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import math
 import queue
 import re
@@ -17,6 +18,7 @@ import numpy as np
 from google import genai
 from google.genai import types
 
+from i18n import t as _t
 from logger import get_logger
 from audio import (
     CAPTURE_BLOCK,
@@ -35,6 +37,8 @@ DEFAULT_MODEL = "models/gemini-3.5-live-translate-preview"
 # ~100 ms'lik tampon tutulur; zamanlama dalgalanmalarında "data
 # discontinuity" kesintileri azalır.
 CAPTURE_BUFFER_BLOCKS = CAPTURE_BLOCK * 5
+FALLBACK_CAPTURE_RATES = (CAPTURE_RATE, 44100, 32000, 24000, SEND_SAMPLE_RATE)
+DUCK_HOLD_S = 0.40
 
 try:  # yalnızca Windows WASAPI arka ucunda bulunur
     from soundcard.mediafoundation import SoundcardRuntimeWarning as _SoundcardRuntimeWarning
@@ -140,7 +144,86 @@ except Exception:
     pass
 
 
-def _record_block(mic):
+@contextlib.contextmanager
+def open_capture_recorder(dev, *, exclude: bool = False):
+    """Aygıtı tercih edilen 48 kHz biçiminde açar; sürücü mix uyumsuzluğunda
+    (AssertionError/ValueError) yedek örnekleme hızlarını ve mono kanalı dener.
+    (mic, samplerate, block_frames, channels, used_fallback) üretir.
+    """
+    if exclude:
+        from process_audio import exclude_self_recorder
+        cm = exclude_self_recorder(
+            samplerate=CAPTURE_RATE, channels=2, blocksize=CAPTURE_BUFFER_BLOCKS,
+        )
+        with cm as mic:
+            yield mic, CAPTURE_RATE, CAPTURE_BLOCK, 2, False
+        return
+
+    pref_ch = 1 if getattr(dev, "channels", 2) == 1 else 2
+    if getattr(dev, "is_application", False):
+        cm = dev.recorder(
+            samplerate=CAPTURE_RATE, channels=pref_ch, blocksize=CAPTURE_BUFFER_BLOCKS,
+        )
+        with cm as mic:
+            yield mic, CAPTURE_RATE, CAPTURE_BLOCK, pref_ch, False
+        return
+
+    candidates: list[tuple[int, int]] = []
+    for rate in FALLBACK_CAPTURE_RATES:
+        if (rate, pref_ch) not in candidates:
+            candidates.append((rate, pref_ch))
+        if pref_ch != 1 and (rate, 1) not in candidates:
+            candidates.append((rate, 1))
+
+    first_err: BaseException | None = None
+    chosen_cm = None
+    chosen_mic = None
+    chosen_rate = CAPTURE_RATE
+    chosen_block = CAPTURE_BLOCK
+    chosen_ch = pref_ch
+
+    for rate, ch in candidates:
+        block_frames = CAPTURE_BLOCK if rate == CAPTURE_RATE else max(1, int(round(rate * 0.02)))
+        buf_blocks = block_frames * 5
+        cm = None
+        try:
+            cm = dev.recorder(samplerate=rate, channels=ch, blocksize=buf_blocks)
+            chosen_mic = cm.__enter__()
+            chosen_cm = cm
+            chosen_rate = rate
+            chosen_block = block_frames
+            chosen_ch = ch
+            break
+        except (AssertionError, ValueError) as exc:
+            if cm is not None:
+                try:
+                    cm.__exit__(type(exc), exc, exc.__traceback__)
+                except Exception:
+                    pass
+            if first_err is None:
+                first_err = exc
+            continue
+
+    if chosen_cm is None:
+        assert first_err is not None
+        raise first_err
+
+    try:
+        yield (
+            chosen_mic,
+            chosen_rate,
+            chosen_block,
+            chosen_ch,
+            (chosen_rate != CAPTURE_RATE or chosen_ch != pref_ch),
+        )
+    except BaseException as exc:
+        if not chosen_cm.__exit__(type(exc), exc, exc.__traceback__):
+            raise
+    else:
+        chosen_cm.__exit__(None, None, None)
+
+
+def _record_block(mic, block_frames: int = CAPTURE_BLOCK):
     """Tek 20 ms kayıt bloğu (uyarı yakalama YOK; sayım dış hook'tadır).
 
     Uyarı bastırma/sayım `_capture_inner` içindeki oturum-seviyesi
@@ -150,7 +233,7 @@ def _record_block(mic):
     (sızıntının asıl sebebi buydu). Geriye uyumluluk için (frame, bool)
     döner; bool her zaman False'tur, gerçek sayım hook'tadır.
     """
-    frame = mic.record(numframes=CAPTURE_BLOCK)
+    frame = mic.record(numframes=block_frames)
     return frame, False
 
 
@@ -402,6 +485,8 @@ class SystemAudioLoop:
         self._active_stream: str | None = None
         self.last_level: float = 0.0
         self._playback_until: float = 0.0
+        self._duck_active: bool = False
+        self._fallback_rate_logged_gen: int = -1
         # --- Hot-swap + dayanıklılık durumu ---------------------------------
         # Ses thread'leri tek sahiplidir: soundcard COM nesneleri yalnızca
         # kendisini açan thread'de kapatılır. GUI/başka thread yalnızca
@@ -448,9 +533,31 @@ class SystemAudioLoop:
 
     def set_volume(self, val: float) -> None:
         self.volume = max(0.0, min(2.0, float(val)))
+        if self.volume <= 0.0:
+            self._set_duck_active(False)
 
     def set_muted(self, muted: bool) -> None:
         self.muted = bool(muted)
+        if self.muted:
+            self._set_duck_active(False)
+
+    def is_playing_audio(self, hold_s: float = DUCK_HOLD_S) -> bool:
+        """Çeviri sesi şu an duyulabilir biçimde çalıyor mu (kuyruk + tutma payı)."""
+        if self.muted or self.volume <= 0.0 or self.output_speaker is None:
+            return False
+        until = getattr(self, "_playback_until", 0.0)
+        return until > 0.0 and time.monotonic() < until + max(0.0, float(hold_s))
+
+    def _set_duck_active(self, active: bool) -> None:
+        active = bool(active)
+        if getattr(self, "_duck_active", False) == active:
+            return
+        self._duck_active = active
+        try:
+            if callable(getattr(self, "_emit", None)):
+                self._emit(("playback_active", active))
+        except Exception:
+            pass
 
     def set_dub_exclude(self, enabled: bool) -> None:
         """Aynı hoparlörde dublaj açıkken yakalamayı kendi sürecimiz dışında tut.
@@ -743,20 +850,22 @@ class SystemAudioLoop:
         is_loopback = False if exclude else getattr(self.source_mic, "isloopback", False)
         same_endpoint = is_loopback and _is_same_endpoint(self.source_mic, self.output_speaker)
         seen_output_gen = self._output_generation
-        conv = AudioConverter(in_rate=CAPTURE_RATE, out_rate=SEND_SAMPLE_RATE)
-        ch = 2 if exclude else (1 if getattr(self.source_mic, "channels", 2) == 1 else 2)
-        if exclude:
-            from process_audio import exclude_self_recorder
-            opener = exclude_self_recorder(
-                samplerate=CAPTURE_RATE, channels=ch, blocksize=CAPTURE_BUFFER_BLOCKS,
-            )
-        else:
-            opener = self.source_mic.recorder(
-                samplerate=CAPTURE_RATE, channels=ch, blocksize=CAPTURE_BUFFER_BLOCKS,
-            )
-        with opener as mic:
+        with open_capture_recorder(self.source_mic, exclude=exclude) as (
+            mic,
+            active_rate,
+            block_frames,
+            active_ch,
+            used_fallback,
+        ):
+            conv = AudioConverter(in_rate=active_rate, out_rate=SEND_SAMPLE_RATE)
             self._capture_opened_once = True
             self._capture_heartbeat = time.monotonic()
+            if used_fallback and getattr(self, "_fallback_rate_logged_gen", -1) != self._input_generation:
+                self._fallback_rate_logged_gen = self._input_generation
+                dev_name = getattr(self.source_mic, "name", "?")
+                self._note(
+                    f"[bilgi] {_t('fallback_rate_log').format(name=dev_name, rate=active_rate, channels=active_ch)}\n"
+                )
             # Oturum-seviyesi uyarı hook'u: recorder ömrü boyunca BİR kez kurulur.
             # Blok başına catch_warnings global filtreyi saniyede ~50 kez
             # değiştirip diğer thread'lerin uyarılarını yutuyor/sızdırıyordu.
@@ -785,7 +894,7 @@ class SystemAudioLoop:
                             # Eski akış `with` çıkışında düzgün kapatılır.
                             return
                         try:
-                            frame, _discontinued = _record_block(mic)
+                            frame, _discontinued = _record_block(mic, block_frames)
                         except Exception:
                             # Kayıt hatası: iç bağlamı kapatıp dış döngüde yeniden aç.
                             raise
@@ -815,19 +924,22 @@ class SystemAudioLoop:
                                 self.source_mic, self.output_speaker
                             )
                         suppress_echo = same_endpoint and time.monotonic() < self._playback_until + 0.15
-                        pcm = conv.process(np.zeros_like(mono) if suppress_echo else mono)
-                        if not pcm:
-                            continue
-
-                        if suppress_echo or (self.vad_threshold > 0.0 and rms < self.vad_threshold):
-                            # Live Translate sürekli ses akışı bekler. Paket atmak
-                            # yerine aynı süreli sessizlik gönder; yankı/sessizlik
-                            # sonraki çeviriyi bekleyen modeli aç bırakmasın.
-                            pcm = bytes(len(pcm))
-                        elif rms >= max(0.005, self.vad_threshold):
-                            if not self._waiting_response:
-                                self._last_speech_time = time.monotonic()
-                                self._waiting_response = True
+                        if suppress_echo:
+                            # Live Translate sürekli ses akışı bekler. Yankı süresince
+                            # FIR filtreyi sıfırlayıp doğrudan eş süreli sessizlik üret.
+                            conv.reset()
+                            silent_samples = max(1, int(round(len(mono) * SEND_SAMPLE_RATE / active_rate)))
+                            pcm = bytes(silent_samples * 2)
+                        else:
+                            pcm = conv.process(mono)
+                            if not pcm:
+                                continue
+                            if self.vad_threshold > 0.0 and rms < self.vad_threshold:
+                                pcm = bytes(len(pcm))
+                            elif rms >= max(0.005, self.vad_threshold):
+                                if not self._waiting_response:
+                                    self._last_speech_time = time.monotonic()
+                                    self._waiting_response = True
 
                         try:
                             if self._loop is not None and not self._loop.is_closed():
@@ -1114,60 +1226,66 @@ class SystemAudioLoop:
         sonraki kopmalar oturumu öldürmeden yeniden denenir.
         """
         delay = 0.25
-        while not self._play_stop.is_set() and not self._user_stop.is_set():
-            self._playback_until = 0.0
-            pending_dev, has_pending = self._take_pending_output()
-            if has_pending:
-                old = self.output_speaker
-                self.output_speaker = pending_dev
-                self._output_generation += 1
-                old_name = getattr(old, "name", "Hiçbiri") if old is not None else "Hiçbiri"
-                new_name = getattr(pending_dev, "name", "Hiçbiri") if pending_dev is not None else "Hiçbiri"
-                self._watch_warned_play = False
-                if old_name != new_name:
-                    self._note(f"[bilgi] Çıkış aygıtı değiştirildi: {old_name} -> {new_name}\n")
-            speaker = self.output_speaker
-            if speaker is None:
-                self._play_drain_until_speaker_or_stop()
-                if self._play_stop.is_set() or self._user_stop.is_set():
-                    break
-                # Bekleyen aygıt geldi (veya stop): döngü başı yeniden değerlendirir.
-                continue
-            try:
-                done_reason = self._play_inner(speaker)
-            except Exception as e:
+        try:
+            while not self._play_stop.is_set() and not self._user_stop.is_set():
                 self._playback_until = 0.0
-                if self._play_stop.is_set() or self._user_stop.is_set():
-                    break
-                if isinstance(e, AssertionError):
-                    raise RuntimeError(
-                        describe_audio_error(e, getattr(self, "output_speaker", None))
-                    ) from e
-                if not self._play_opened_once:
-                    raise
-                self._note(
-                    f"[uyarı] Çıkış aygıtı sorunu "
-                    f"({describe_audio_error(e)}); yeniden deneniyor...\n"
-                )
-                # Yeniden denemeden önce kısa bekle; beklerken swap/stop gözet.
-                deadline = time.monotonic() + min(delay, 5.0)
-                delay = min(delay * 2.0, 5.0)
-                while time.monotonic() < deadline:
+                self._set_duck_active(False)
+                pending_dev, has_pending = self._take_pending_output()
+                if has_pending:
+                    old = self.output_speaker
+                    self.output_speaker = pending_dev
+                    self._output_generation += 1
+                    old_name = getattr(old, "name", "Hiçbiri") if old is not None else "Hiçbiri"
+                    new_name = getattr(pending_dev, "name", "Hiçbiri") if pending_dev is not None else "Hiçbiri"
+                    self._watch_warned_play = False
+                    if old_name != new_name:
+                        self._note(f"[bilgi] Çıkış aygıtı değiştirildi: {old_name} -> {new_name}\n")
+                speaker = self.output_speaker
+                if speaker is None:
+                    self._play_drain_until_speaker_or_stop()
                     if self._play_stop.is_set() or self._user_stop.is_set():
                         break
-                    if self._peek_pending_output():
+                    # Bekleyen aygıt geldi (veya stop): döngü başı yeniden değerlendirir.
+                    continue
+                try:
+                    done_reason = self._play_inner(speaker)
+                except Exception as e:
+                    self._playback_until = 0.0
+                    self._set_duck_active(False)
+                    if self._play_stop.is_set() or self._user_stop.is_set():
                         break
-                    time.sleep(0.05)
-                continue
-            delay = 0.25
-            if self._play_stop.is_set() or self._user_stop.is_set():
+                    if isinstance(e, AssertionError):
+                        raise RuntimeError(
+                            describe_audio_error(e, getattr(self, "output_speaker", None))
+                        ) from e
+                    if not self._play_opened_once:
+                        raise
+                    self._note(
+                        f"[uyarı] Çıkış aygıtı sorunu "
+                        f"({describe_audio_error(e)}); yeniden deneniyor...\n"
+                    )
+                    # Yeniden denemeden önce kısa bekle; beklerken swap/stop gözet.
+                    deadline = time.monotonic() + min(delay, 5.0)
+                    delay = min(delay * 2.0, 5.0)
+                    while time.monotonic() < deadline:
+                        if self._play_stop.is_set() or self._user_stop.is_set():
+                            break
+                        if self._peek_pending_output():
+                            break
+                        time.sleep(0.05)
+                    continue
+                delay = 0.25
+                if self._play_stop.is_set() or self._user_stop.is_set():
+                    break
+                if self._peek_pending_output():
+                    continue
+                if done_reason == "swap":
+                    continue
+                # Temiz kapanış (kuyruktaki None): test ve teardown davranışını koru.
                 break
-            if self._peek_pending_output():
-                continue
-            if done_reason == "swap":
-                continue
-            # Temiz kapanış (kuyruktaki None): test ve teardown davranışını koru.
-            break
+        finally:
+            self._playback_until = 0.0
+            self._set_duck_active(False)
 
     def _play_drain_until_speaker_or_stop(self):
         """Text-only modu: gelen sesi çalmadan tüket, aygıt/stop bekle."""
@@ -1238,6 +1356,9 @@ class SystemAudioLoop:
                     loud = float(np.dot(piece, piece)) > n * 1e-8
                     if loud:
                         self._playback_until = queued_until
+                        self._set_duck_active(True)
+                    elif getattr(self, "_duck_active", False) and time.monotonic() >= self._playback_until + DUCK_HOLD_S:
+                        self._set_duck_active(False)
 
                     def _halt() -> bool:
                         return (
@@ -1314,6 +1435,8 @@ class SystemAudioLoop:
                 except queue.Empty:
                     self._play_heartbeat = time.monotonic()
                     now = time.monotonic()
+                    if getattr(self, "_duck_active", False) and now >= self._playback_until + DUCK_HOLD_S:
+                        self._set_duck_active(False)
                     if empty_since is None:
                         empty_since = now
                     elapsed = now - empty_since

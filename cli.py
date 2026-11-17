@@ -11,12 +11,14 @@ import time
 if sys.version_info < (3, 11):
     sys.exit("Ahenk Python 3.11 veya üzerini gerektirir (asyncio.TaskGroup).")
 
-from config import load as load_config, resolve_api_key
+from pathlib import Path
+
+from config import load as load_config, parse_glossary, resolve_api_key
 from devices import default_microphone, default_speaker, list_devices, pick_loopback, pick_speaker
 from languages import LANGS, dest_code, source_code
-from gui.app import format_user_error
 from loop import SystemAudioLoop
 from meta import APP_TITLE, __version__
+from reconnect import clone_loop_for_retry, format_user_error, run_with_retries
 
 
 def _configure_stdio() -> None:
@@ -40,9 +42,13 @@ def main(argv: list[str] | None = None) -> int:
         cfg = load_config()
         default_src = source_code(cfg.src_lang) or "auto"
         default_dst = dest_code(cfg.dst_lang, default="tr")
+        default_vol = getattr(cfg, "translation_volume", 1.0)
+        default_glossary = getattr(cfg, "glossary", "")
     except Exception:
         default_src = "auto"
         default_dst = "tr"
+        default_vol = 1.0
+        default_glossary = ""
 
     parser = argparse.ArgumentParser(description=f"{APP_TITLE} - PC sistem sesini veya mikrofonu canlı çevir")
     parser.add_argument("--version", action="version", version=f"{APP_TITLE} {__version__}")
@@ -58,7 +64,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="satır satır JSON akışı üret (betikleme için)")
     parser.add_argument("--log", default=None, metavar="FILE", help="tüm çıktıyı belirtilen log dosyasına kaydet")
     parser.add_argument("--vad", type=float, default=0.0, help="sessizlik kapısı RMS eşiği (örn: 0.01)")
-    parser.add_argument("--volume", type=float, default=1.0, help="çeviri ses seviyesi (0.0 - 2.0)")
+    parser.add_argument("--volume", type=float, default=default_vol, help="çeviri ses seviyesi (0.0 - 2.0)")
+    parser.add_argument("--glossary", default=None, help="özel sözlük terimleri (satır/noktalı virgül ayrılmış veya @dosya.txt)")
+    parser.add_argument("--prompt", default=None, help="ek çeviri talimatı (system instruction)")
     parser.add_argument("--api-key", default=None, help="Gemini API anahtarı")
     parser.add_argument("--model", default=None, help="Gemini Live model adı")
     args = parser.parse_args(argv)
@@ -167,31 +175,66 @@ def main(argv: list[str] | None = None) -> int:
                     log_file.write(msg)
                 log_file.flush()
 
+    raw_glossary = default_glossary
+    if args.glossary is not None:
+        g_arg = args.glossary.strip()
+        if g_arg.startswith("@"):
+            g_path = Path(g_arg[1:])
+            try:
+                raw_glossary = g_path.read_text(encoding="utf-8")
+            except OSError as e:
+                print(f"Hata: Sözlük dosyası okunamadı ({g_path}): {e}", file=sys.stderr)
+                sys.exit(1)
+        else:
+            raw_glossary = g_arg.replace(";", "\n")
+    glossary_items = parse_glossary(raw_glossary)
+
+    extra_kwargs: dict = {}
+    if glossary_items:
+        extra_kwargs["glossary"] = glossary_items
+    if args.prompt and args.prompt.strip():
+        extra_kwargs["system_instruction"] = args.prompt.strip()
+
+    loop_kwargs = {
+        "output_speaker": speaker,
+        "model": args.model,
+        "console_input": not args.no_interactive,
+        "on_text": cli_emit,
+        "vad_threshold": args.vad,
+        "volume": args.volume,
+        **extra_kwargs,
+    }
     loop = SystemAudioLoop(
         src,
         dst_clean,
         source,
         api_key,
-        output_speaker=speaker,
-        model=args.model,
-        console_input=not args.no_interactive,
-        on_text=cli_emit,
-        vad_threshold=args.vad,
-        volume=args.volume,
+        **loop_kwargs,
     )
     loop_holder[0] = loop
+    retry_base_kwargs = {
+        "src": src,
+        "dst": dst_clean,
+        "source_mic": source,
+        "api_key": api_key,
+        **loop_kwargs,
+    }
+
+    def _rebuild_cli_loop() -> None:
+        loop_holder[0] = clone_loop_for_retry(
+            loop_holder[0], retry_base_kwargs, lambda **kw: SystemAudioLoop(**kw)
+        )
+
     try:
-        asyncio.run(loop.run())
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        info("\nDurduruldu.")
-    except BaseException as e:
-        root: BaseException = e
-        while hasattr(root, "exceptions") and getattr(root, "exceptions"):
-            root = getattr(root, "exceptions")[0]
-        if isinstance(root, (KeyboardInterrupt, asyncio.CancelledError)):
+        outcome = run_with_retries(
+            lambda: loop_holder[0],
+            rebuild_loop=_rebuild_cli_loop,
+            on_reconnecting=lambda n, total: info(f"[bilgi] Yeniden bağlanılıyor ({n}/{total})..."),
+        )
+        if isinstance(outcome, (KeyboardInterrupt, asyncio.CancelledError)):
             info("\nDurduruldu.")
-        else:
-            print(f"\nHata: {format_user_error(root)}", file=sys.stderr)
+        elif outcome is not None:
+            print(f"\nHata: {format_user_error(outcome)}", file=sys.stderr)
             return 1
     finally:
         if log_file:

@@ -125,6 +125,25 @@ class Settings:
     dub_background: bool = False
     # 1/6 ≈ −15.6 dB: duyulan orijinalin katı. source_mute.DUB_BACKGROUND ile aynı.
     dub_background_gain: float = 1.0 / 6.0
+    dub_ducking: bool = True
+    translation_volume: float = 1.0
+    glossary: str = ""
+
+
+def parse_glossary(raw: str | None) -> list[str] | None:
+    """Çok satırlı sözlük metnini temiz terim listesine çevirir."""
+    if not raw or not str(raw).strip():
+        return None
+    items: list[str] = []
+    for line in str(raw).splitlines():
+        cleaned = line.strip()
+        if not cleaned or cleaned.startswith("#"):
+            continue
+        if cleaned.startswith(("- ", "* ", "• ")):
+            cleaned = cleaned[2:].strip()
+        if cleaned:
+            items.append(cleaned)
+    return items or None
 
 def config_dir() -> Path:
     if os.name == "nt":
@@ -230,6 +249,8 @@ def _clamp_unit(val, default: float) -> float:
 def _safe_float(val, default: float, min_val: float | None = None, max_val: float | None = None) -> float:
     try:
         res = float(val)
+        if res != res:
+            return default
         if min_val is not None and res < min_val:
             return default
         if max_val is not None and res > max_val:
@@ -255,8 +276,15 @@ def load() -> Settings:
     if dub_mute_source and dub_background:
         dub_background = False
     dub_background_gain = _clamp_unit(raw.get("dub_background_gain"), default=1.0 / 6.0)
+    raw_ducking = raw.get("dub_ducking", True)
+    dub_ducking = bool(raw_ducking) if isinstance(raw_ducking, (bool, int)) else True
+    translation_volume = _safe_float(raw.get("translation_volume"), default=1.0, min_val=0.0, max_val=2.0)
+    raw_glossary = raw.get("glossary")
+    glossary = str(raw_glossary) if isinstance(raw_glossary, str) else ""
     overlay_font_size = _safe_int(raw.get("overlay_font_size"), default=13, min_val=8, max_val=72)
     overlay_alpha = _safe_float(raw.get("overlay_alpha"), default=0.92, min_val=0.1, max_val=1.0)
+    raw_save_hist = raw.get("save_history", True)
+    save_history = bool(raw_save_hist) if isinstance(raw_save_hist, (bool, int)) else True
 
     return Settings(
         api_key=_decrypt_key(raw_key),
@@ -273,12 +301,15 @@ def load() -> Settings:
         overlay_alpha=overlay_alpha,
         overlay_click_through=overlay_click_through,
         ui_lang=ui_lang,
-        save_history=bool(raw.get("save_history", True)),
+        save_history=save_history,
         mute_shortcut=str(raw.get("mute_shortcut") or "Ctrl+Shift+M"),
         start_stop_shortcut=str(raw.get("start_stop_shortcut") or "Ctrl+Shift+Space"),
         dub_mute_source=dub_mute_source,
         dub_background=dub_background,
         dub_background_gain=dub_background_gain,
+        dub_ducking=dub_ducking,
+        translation_volume=translation_volume,
+        glossary=glossary,
     )
 def save(settings: Settings) -> Path:
     raw = _read_raw()
@@ -302,6 +333,9 @@ def save(settings: Settings) -> Path:
     raw["dub_mute_source"] = settings.dub_mute_source
     raw["dub_background"] = settings.dub_background
     raw["dub_background_gain"] = settings.dub_background_gain
+    raw["dub_ducking"] = settings.dub_ducking
+    raw["translation_volume"] = settings.translation_volume
+    raw["glossary"] = settings.glossary
     return _write_raw(raw)
 
 def save_api_key(key: str) -> Path:
@@ -342,6 +376,9 @@ def save_preferences(
     dub_mute_source: bool | None = None,
     dub_background: bool | None = None,
     dub_background_gain: float | None = None,
+    dub_ducking: bool | None = None,
+    translation_volume: float | None = None,
+    glossary: str | None = None,
 ) -> Path:
     raw = _read_raw()
     if input_device is not None:
@@ -365,7 +402,7 @@ def save_preferences(
     if overlay_font_size is not None:
         raw["overlay_font_size"] = overlay_font_size
     if overlay_alpha is not None:
-        raw["overlay_alpha"] = overlay_alpha
+        raw["overlay_alpha"] = max(0.1, min(1.0, float(overlay_alpha)))
     if overlay_click_through is not None:
         raw["overlay_click_through"] = overlay_click_through
     if ui_lang is not None:
@@ -382,6 +419,12 @@ def save_preferences(
         raw["dub_background"] = dub_background
     if dub_background_gain is not None:
         raw["dub_background_gain"] = max(0.0, min(1.0, float(dub_background_gain)))
+    if dub_ducking is not None:
+        raw["dub_ducking"] = bool(dub_ducking)
+    if translation_volume is not None:
+        raw["translation_volume"] = max(0.0, min(2.0, float(translation_volume)))
+    if glossary is not None:
+        raw["glossary"] = str(glossary)
     return _write_raw(raw)
 
 

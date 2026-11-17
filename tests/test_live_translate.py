@@ -1526,3 +1526,89 @@ def test_device_label_helpers():
     assert device_key(None) == (None, None, None)
     assert device_key(loop_dev) != device_key(mic_dev)
     assert device_key(app_dev) != device_key(mic_dev)
+
+
+def test_capture_falls_back_to_44100_and_mono_when_48k_fails():
+    """48 kHz veya stereo açılmayan mikrofonda 44.1 kHz / mono geri-düşüşü çalışmalı."""
+    attempts: list[tuple[int, int | None]] = []
+
+    class Mic44kMono:
+        name = "USB Podcast Mic"
+        isloopback = False
+        channels = 2
+
+        def recorder(self, *, samplerate, blocksize=None, channels=None, **kwargs):
+            ch = channels[0] if isinstance(channels, list) else channels
+            attempts.append((samplerate, ch))
+            if samplerate != 44100 or ch != 1:
+                raise AssertionError("unsupported mix format")
+            return self._Rec(samplerate)
+
+        class _Rec:
+            def __init__(self, rate: int):
+                self._rate = rate
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def record(self, numframes: int):
+                t_arr = np.arange(numframes) / self._rate
+                tone = (0.25 * np.sin(2 * np.pi * 440 * t_arr)).astype(np.float32)
+                return tone.reshape(-1, 1)
+
+    emitted: list = []
+    posted: list = []
+    loop_obj = SystemAudioLoop(
+        "en",
+        "tr",
+        Mic44kMono(),
+        "dummy-key",
+        output_speaker=FakeSpeaker(),
+        on_text=emitted.append,
+        console_input=False,
+    )
+    loop_obj._post = lambda msg: posted.append(msg)
+    worker = threading.Thread(target=loop_obj._capture_thread, daemon=True)
+    worker.start()
+    deadline = time.time() + 3.0
+    while len(posted) < 4 and time.time() < deadline:
+        time.sleep(0.01)
+    loop_obj._cap_stop.set()
+    worker.join(timeout=2.0)
+
+    assert not worker.is_alive()
+    assert (48000, 2) in attempts
+    assert (44100, 1) in attempts
+    assert len(posted) >= 4
+    # Her 20 ms 16 kHz mono int16 çerçevesi tam 640 bayt olmalı
+    assert all(len(pkt["data"]) == 640 for pkt in posted)
+    info_logs = [m[1] for m in emitted if isinstance(m, tuple) and m[0] == "log" and "44100" in m[1]]
+    assert len(info_logs) == 1
+
+
+def test_playback_active_emits_ducking_transitions_with_holdoff():
+    """Oynatma aktifliği ve susturma/ses sıfırlama geçişleri playback_active yaymalı."""
+    events: list = []
+    loop_obj = SystemAudioLoop(
+        "en",
+        "tr",
+        FakeMic(),
+        "dummy-key",
+        output_speaker=FakeSpeaker(),
+        on_text=events.append,
+        console_input=False,
+    )
+    assert loop_obj.is_playing_audio() is False
+    loop_obj._playback_until = time.monotonic() + 0.25
+    loop_obj._set_duck_active(True)
+    loop_obj._set_duck_active(True)  # yinelenen bildirim gönderilmemeli
+    assert loop_obj.is_playing_audio(hold_s=0.1) is True
+    assert events.count(("playback_active", True)) == 1
+
+    # Çeviri susturulunca anında playback_active=False bildirilmeli
+    loop_obj.set_muted(True)
+    assert loop_obj.is_playing_audio() is False
+    assert events[-1] == ("playback_active", False)

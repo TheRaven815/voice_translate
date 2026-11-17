@@ -321,3 +321,99 @@ def test_h20_h21_batch_launcher_preserves_exit_code_and_arguments():
     )
     assert res.returncode == 2
     assert "--test-arg-11" in res.stderr
+
+
+def test_cli_does_not_import_tkinter_or_gui():
+    """CLI modülü gui.app veya tkinter bağımlılığı yüklememeli."""
+    import subprocess
+
+    res = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys, cli; assert 'tkinter' not in sys.modules and 'gui.app' not in sys.modules",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0, res.stderr
+
+
+def test_cli_glossary_inline_and_file_and_prompt(tmp_path, monkeypatch):
+    terms_file = tmp_path / "terms.txt"
+    terms_file.write_text("FastAPI: FastAPI\nRAG = Erişim Destekli Üretim\n", encoding="utf-8")
+
+    fake_source = MagicMock(name="FakeMic")
+    fake_source.name = "FakeMic"
+    monkeypatch.setattr("cli.default_microphone", lambda: fake_source)
+
+    mock_loop_cls = MagicMock()
+    monkeypatch.setattr("cli.SystemAudioLoop", mock_loop_cls)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cli.py",
+            "--api-key",
+            "test_key",
+            "--mic",
+            "--text-only",
+            "--glossary",
+            f"@{terms_file}",
+            "--prompt",
+            "Tıp konferansı simültane çeviri",
+        ],
+    )
+    with patch("asyncio.run"):
+        assert cli.main() == 0
+    kwargs = mock_loop_cls.call_args.kwargs
+    assert kwargs["glossary"] == [
+        "FastAPI: FastAPI",
+        "RAG = Erişim Destekli Üretim",
+    ]
+    assert kwargs["system_instruction"] == "Tıp konferansı simültane çeviri"
+
+
+def test_cli_retries_transient_connection_error(monkeypatch, capsys):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["cli.py", "--api-key", "test_key", "--mic", "--text-only"],
+    )
+    fake_source = MagicMock(name="FakeMic")
+    fake_source.name = "FakeMic"
+    monkeypatch.setattr("cli.default_microphone", lambda: fake_source)
+    monkeypatch.setattr("reconnect.time.sleep", lambda _s: None)
+
+    created_loops = []
+
+    def make_loop(*args, **kwargs):
+        inst = MagicMock()
+        inst._resume_handle = "handle-1"
+        inst.muted = False
+        inst.volume = 1.0
+        inst.source_mic = fake_source
+        inst.output_speaker = None
+        created_loops.append(inst)
+        return inst
+
+    monkeypatch.setattr("cli.SystemAudioLoop", make_loop)
+
+    calls = {"n": 0}
+
+    def fake_asyncio_run(_coro):
+        _coro.close()
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ConnectionError("WebSocket closed unexpectedly")
+        return None
+
+    with patch("asyncio.run", side_effect=fake_asyncio_run):
+        rc = cli.main()
+
+    assert rc == 0
+    assert calls["n"] == 2
+    assert len(created_loops) == 2
+    captured = capsys.readouterr()
+    assert "Yeniden bağlanılıyor" in (captured.out + captured.err)

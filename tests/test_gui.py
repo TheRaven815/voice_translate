@@ -2060,3 +2060,247 @@ def test_reset_settings_restores_defaults_and_keeps_api_key(monkeypatch):
         from i18n import set_ui_lang
         set_ui_lang("tr")
         app.destroy()
+
+
+def test_settings_tabs_volume_opacity_glossary_and_overlay_wheel(monkeypatch):
+    from types import SimpleNamespace
+
+    captured_kwargs = {}
+
+    class DummyLoop:
+        def __init__(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            self.volumes = []
+
+        def set_volume(self, val):
+            self.volumes.append(val)
+
+        def request_stop(self):
+            pass
+
+    app = App()
+    try:
+        app._open_settings()
+        assert set(app._settings_tab_btns) == {"general", "translation"}
+        app._switch_settings_tab("translation")
+        app.update()
+        assert app._settings_active_tab == "translation"
+        assert app._settings_tab_frames["translation"].winfo_manager() == "pack"
+        assert app._settings_tab_frames["general"].winfo_manager() == ""
+
+        live_loop = DummyLoop()
+        app.loop_obj = live_loop
+        app._volume_var.set(145)
+        app._on_volume_slider("145")
+        if app._volume_timer is not None:
+            app.after_cancel(app._volume_timer)
+            app._volume_timer = None
+        app._commit_volume()
+        assert app.translation_volume == pytest.approx(1.45)
+        assert app._volume_pct_lbl.cget("text") == "145%"
+        assert live_loop.volumes[-1] == pytest.approx(1.45)
+        assert config.load().translation_volume == pytest.approx(1.45)
+        app.loop_obj = None
+
+        app.toggle_overlay()
+        app._overlay_alpha_var.set(65)
+        app._on_overlay_alpha_slider("65")
+        if app._overlay_alpha_timer is not None:
+            app.after_cancel(app._overlay_alpha_timer)
+            app._overlay_alpha_timer = None
+        app._commit_overlay_alpha()
+        assert app.overlay_alpha == pytest.approx(0.65)
+        assert app._overlay_alpha_pct_lbl.cget("text") == "65%"
+        assert config.load().overlay_alpha == pytest.approx(0.65)
+
+        # Ctrl+Tekerlek opaklık adımı
+        app._adjust_overlay_alpha(0.10)
+        assert app.overlay_alpha == pytest.approx(0.75)
+        assert app._overlay_alpha_pct_lbl.cget("text") == "75%"
+
+        # Özel sözlük kaydı ve SystemAudioLoop'a aktarımı
+        monkeypatch.setattr(app, "_register_global_hotkeys", lambda: None)
+        app.key_var.set("sk-glossary")
+        app._glossary_text.delete("1.0", tk.END)
+        app._glossary_text.insert("1.0", "Ahenk: Ahenk\nCUDA: CUDA")
+        app._save_settings()
+        assert config.load().glossary == "Ahenk: Ahenk\nCUDA: CUDA"
+
+        mic = SimpleNamespace(id="m1", name="Mic 1", isloopback=False)
+        app.inputs = [mic]
+        app.in_box["values"] = ["[Mikrofon] Mic 1"]
+        app.in_var.set("[Mikrofon] Mic 1")
+        app.out_var.set(NONE_OUTPUT)
+        monkeypatch.setattr("gui.app.SystemAudioLoop", lambda **kw: DummyLoop(**kw))
+        monkeypatch.setattr("gui.app.threading.Thread", lambda **kw: SimpleNamespace(start=lambda: None, is_alive=lambda: False))
+        app.start()
+        assert captured_kwargs["volume"] == pytest.approx(1.45)
+        assert captured_kwargs["glossary"] == ["Ahenk: Ahenk", "CUDA: CUDA"]
+    finally:
+        app.destroy()
+
+
+def test_history_pairing_viewer_toggle_and_clear(tmp_path, monkeypatch):
+    import logger
+
+    monkeypatch.setattr(logger, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr("gui.app.messagebox.askyesno", lambda *_a, **_k: True)
+
+    app = App()
+    try:
+        # Ardışık 2 cümle: her heard_end kendi trans_end'i ile doğru eşleşmeli
+        app.log_queue.put(("heard", "First English sentence"))
+        app.log_queue.put(("heard_end",))
+        app.log_queue.put(("trans", "İlk Türkçe cümle"))
+        app.log_queue.put(("trans_end",))
+
+        app.log_queue.put(("heard", "Second English sentence"))
+        app.log_queue.put(("heard_end",))
+        app.log_queue.put(("trans", "İkinci Türkçe cümle"))
+        app.log_queue.put(("trans_end",))
+        app._pump_log()
+        app._history_write_q.join()
+
+        records = logger.load_recent_history(limit=10)
+        assert len(records) == 2
+        assert records[0]["heard"] == "First English sentence"
+        assert records[0]["trans"] == "İlk Türkçe cümle"
+        assert records[1]["heard"] == "Second English sentence"
+        assert records[1]["trans"] == "İkinci Türkçe cümle"
+
+        app._open_settings()
+        app._switch_settings_tab("translation")
+        app._open_history()
+        app.update()
+        shown = app._history_text.get("1.0", "end")
+        assert "First English sentence" in shown
+        assert "İkinci Türkçe cümle" in shown
+
+        # Kaydı kapatınca yeni cümleler yazılmamalı
+        app._save_history_toggle.invoke()
+        assert app.save_history is False
+        app.log_queue.put(("heard", "Ignored sentence"))
+        app.log_queue.put(("heard_end",))
+        app.log_queue.put(("trans", "Kaydedilmeyecek çeviri"))
+        app.log_queue.put(("trans_end",))
+        app._pump_log()
+        app._history_write_q.join()
+        assert len(logger.load_recent_history(limit=10)) == 2
+
+        # Geçmişi temizle hem dosyayı siler hem açık pencereyi yeniler
+        app._clear_history_action()
+        assert logger.load_recent_history(limit=10) == []
+        assert "Henüz kayıtlı" in app._history_text.get("1.0", "end")
+    finally:
+        app.destroy()
+
+
+def test_dynamic_dub_ducking_attenuates_only_while_speaking():
+    from types import SimpleNamespace
+
+    from devices import display_input_label
+    from source_mute import SESSION_MUTE_FLOOR, DubPlan
+
+    events = []
+
+    class FakeDub:
+        def preview(self, source, output, *, enabled, gain=None):
+            if not enabled:
+                return DubPlan("idle")
+            return DubPlan("mute_other_sessions", root_pid=1)
+
+        def engage(self, plan):
+            events.append(("engage", plan.action))
+
+        def release(self):
+            events.append(("release",))
+
+    app = App()
+    try:
+        app._source_dub = FakeDub()
+        app.dub_mute_source = True
+        app.dub_ducking = True
+        same_spk = SimpleNamespace(name="Hoparlör", id="spk")
+        same_loop = SimpleNamespace(name="Hoparlör", id="spk", isloopback=True, is_application=False)
+        app.outputs = [same_spk]
+        app.inputs = [same_loop]
+        app.out_box["values"] = (NONE_OUTPUT, "Hoparlör")
+
+        excluded = []
+        gains = []
+        state = {"playing": False}
+
+        class DynamicLoop:
+            def swap_output(self, dev):
+                return True
+
+            def swap_input(self, dev):
+                return True
+
+            def set_dub_exclude(self, enabled):
+                excluded.append(enabled)
+
+            def set_capture_gain(self, gain):
+                gains.append(gain)
+
+            def is_playing_audio(self):
+                return state["playing"]
+
+        app.loop_obj = DynamicLoop()
+        app.worker = type("Worker", (), {"is_alive": lambda self: True})()
+        app._stopping.clear()
+        app.in_var.set(display_input_label(same_loop))
+        app.out_var.set("Hoparlör")
+
+        events.clear()
+        excluded.clear()
+        gains.clear()
+        app._sync_source_dub()
+        # Konuşma yokken exclude açık tutulur ama kaynak ses kısılmaz (idle)
+        assert excluded == [True]
+        assert events[-1] == ("engage", "idle")
+        assert gains[-1] == pytest.approx(1.0)
+
+        # Çeviri konuşmaya başladığında kaynak kısılır, log spami olmaz
+        log_before = app.log.get("1.0", "end")
+        state["playing"] = True
+        app.log_queue.put(("playback_active", True))
+        app._pump_log()
+        assert events[-1] == ("engage", "mute_other_sessions")
+        assert gains[-1] == pytest.approx(1.0 / SESSION_MUTE_FLOOR)
+        assert app.log.get("1.0", "end") == log_before
+
+        # Cümle bitince kaynak ses hemen eski haline döner, exclude bozulmaz
+        state["playing"] = False
+        app.log_queue.put(("playback_active", False))
+        app._pump_log()
+        assert events[-1] == ("engage", "idle")
+        assert gains[-1] == pytest.approx(1.0)
+        assert False not in excluded
+    finally:
+        app.destroy()
+
+
+def test_srt_export_real_durations_no_overlap_and_en_errors():
+    from export import TranscriptItem, export_srt, export_txt
+    from gui.app import format_user_error
+    from i18n import set_ui_lang
+
+    items = [
+        TranscriptItem(timestamp=100.0, stream="trans", text="First cue", duration_s=5.0),
+        TranscriptItem(timestamp=102.0, stream="trans", text="Second cue", duration_s=2.5),
+    ]
+    srt = export_srt(items, session_start=100.0)
+    lines = srt.splitlines()
+    # İlk altyazı 105.0 yerine ikinci altyazının başlangıcı (102.0) öncesinde kesilmeli
+    assert lines[1] == "00:00:00,000 --> 00:00:01,960"
+    assert lines[5] == "00:00:02,000 --> 00:00:04,500"
+
+    try:
+        set_ui_lang("en")
+        txt = export_txt([TranscriptItem(timestamp=100.0, stream="heard", text="Hello")])
+        assert "Heard: Hello" in txt
+        msg = format_user_error(ConnectionError("API_KEY_INVALID"))
+        assert "Invalid API key" in msg
+    finally:
+        set_ui_lang("tr")

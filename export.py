@@ -25,10 +25,14 @@ def format_srt_time(seconds: float) -> str:
 
 
 def export_txt(items: list[TranscriptItem]) -> str:
+    from i18n import t
+
+    heard_label = t("heard", "Duyulan")
+    trans_label = t("trans", "Çeviri")
     lines = []
     for item in items:
         dt = datetime.datetime.fromtimestamp(item.timestamp).strftime("%H:%M:%S")
-        label = "Duyulan" if item.stream == "heard" else "Çeviri"
+        label = heard_label if item.stream == "heard" else trans_label
         lines.append(f"[{dt}] {label}: {item.text.strip()}")
     return "\n".join(lines)
 
@@ -43,7 +47,11 @@ def export_srt(items: list[TranscriptItem], session_start: float | None = None) 
     blocks = []
     for i, it in enumerate(trans_items, 1):
         rel_start = max(0.0, it.timestamp - start_base)
-        rel_end = rel_start + max(1.5, it.duration_s)
+        rel_end = rel_start + max(1.2, it.duration_s)
+        if i < len(trans_items):
+            next_start = max(0.0, trans_items[i].timestamp - start_base)
+            if next_start > rel_start and rel_end > next_start:
+                rel_end = max(rel_start + 0.2, next_start - 0.04)
         time_str = f"{format_srt_time(rel_start)} --> {format_srt_time(rel_end)}"
         blocks.append(f"{i}\n{time_str}\n{it.text.strip()}\n")
     return "\n".join(blocks)
