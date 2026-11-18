@@ -54,6 +54,30 @@ jobs:
         run: |
           dist\Ahenk-cli.exe --version
           dist\Ahenk-cli.exe --list-langs
+      - name: Sign executables (optional Authenticode)
+        if: env.WINDOWS_CERT_PFX_BASE64 != ''
+        shell: pwsh
+        env:
+          WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP "codesign.pfx"
+          try {
+            [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_BASE64))
+            $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Filter "signtool.exe" -Recurse |
+              Where-Object { $_.FullName -match '\\x64\\' } |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1 -ExpandProperty FullName
+            if (-not $signtool) {
+              throw "signtool.exe not found in Windows Kits 10 bin"
+            }
+            & $signtool sign /f $pfxPath /p $env:WINDOWS_CERT_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 dist\Ahenk.exe dist\Ahenk-cli.exe
+            if ($LASTEXITCODE -ne 0) {
+              throw "signtool failed with exit code $LASTEXITCODE"
+            }
+          } finally {
+            Remove-Item $pfxPath -Force -ErrorAction SilentlyContinue
+          }
       - name: Create SHA-256 checksums
         shell: python
         run: |

@@ -903,7 +903,7 @@ class SystemAudioLoop:
                             self.last_level = 0.0
                             continue
                         arr = np.asarray(frame, dtype=np.float32)
-                        mono = arr.mean(axis=1) if arr.ndim > 1 else arr
+                        mono = arr.mean(axis=1, dtype=np.float32) if arr.ndim > 1 else arr
                         gain = getattr(self, "_capture_gain", 1.0)
                         if gain and gain > 1.0:
                             mono = np.clip(mono * gain, -1.0, 1.0)

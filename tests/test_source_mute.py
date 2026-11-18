@@ -272,3 +272,57 @@ def test_windows_endpoint_mute_restores_the_previous_bit():
     restored = control.endpoint_level(endpoint)
     assert restored.muted is before.muted
     assert abs(restored.volume - before.volume) < 0.05
+
+
+def test_r10_source_dub_skips_frequent_endpoint_refresh_and_caches_process_tree(monkeypatch):
+    import time
+
+    backend = _Backend()
+    dub = SourceDub(
+        backend,
+        own_pid=7,
+        tree=lambda pid: frozenset({pid}),
+        exclude_supported=lambda: True,
+        watch_interval=0.02,
+        endpoint_refresh_interval=0.25,
+    )
+    try:
+        dub.engage(DubPlan("mute_endpoint", endpoint_id="spk"))
+        time.sleep(0.08)
+        assert backend.refreshed == 0
+
+        dub.engage(DubPlan("mute_process", root_pid=42))
+        deadline = time.monotonic() + 0.5
+        while backend.refreshed < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert backend.refreshed >= 2
+    finally:
+        dub.release()
+
+    calls = 0
+
+    def counting_tree(root: int) -> frozenset[int]:
+        nonlocal calls
+        calls += 1
+        return frozenset({root, root + 1})
+
+    now = [100.0]
+    monkeypatch.setattr(source_mute.time, "monotonic", lambda: now[0])
+    ctl = WindowsRenderMute(tree=counting_tree, tree_ttl=10.0)
+    plan = DubPlan("mute_process", root_pid=42)
+
+    assert ctl._tree_of(plan) == {42, 43}
+    assert calls == 1
+
+    now[0] = 105.0
+    assert ctl._tree_of(plan) == {42, 43}
+    assert calls == 1
+
+    now[0] = 111.0
+    assert ctl._tree_of(plan) == {42, 43}
+    assert calls == 2
+
+    ctl.restore(None)
+    assert ctl._tree_of(plan) == {42, 43}
+    assert calls == 3
+

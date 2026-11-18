@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import math
 import time
 import tkinter as tk
@@ -1564,3 +1565,356 @@ class TranscriptSearchBar(tk.Frame):
         self.close_btn.configure(bg=C.panel)
         for w in self._targets():
             self.style_text_tags(w)
+
+
+class AppPickerList(tk.Frame):
+    """Uygulama seçici için 16x16 ikon destekli, tema uyumlu ve Listbox API'siyle uyumlu liste."""
+
+    def __init__(
+        self,
+        master,
+        *,
+        height: int = 6,
+        font=None,
+        bg: str | None = None,
+        fg: str | None = None,
+        selectbackground: str | None = None,
+        selectforeground: str | None = None,
+        cursor: str = "hand2",
+        **_unused,
+    ):
+        self._bg = bg or C.panel
+        self._fg = fg or C.text
+        self._select_bg = selectbackground or C.select
+        self._select_fg = selectforeground or C.text
+        self._font = font or ("Segoe UI", 10)
+        self._visible_rows = max(1, int(height))
+        self._state = tk.NORMAL
+        self._items: list[tuple[str, tk.PhotoImage | None]] = []
+        self._icon_refs: list[tk.PhotoImage] = []
+        self._selected: int = -1
+        self._active: int = 0
+        self._hover: int = -1
+
+        super().__init__(master, bg=self._bg, bd=0, highlightthickness=0, takefocus=1)
+        f_obj = tkfont.Font(self, font=self._font)
+        self._row_h = max(26, int(f_obj.metrics("linespace")) + 10)
+
+        self._canvas = tk.Canvas(
+            self,
+            bg=self._bg,
+            bd=0,
+            highlightthickness=0,
+            width=340,
+            height=self._visible_rows * self._row_h,
+            cursor=cursor,
+            takefocus=1,
+        )
+        self._scroll = tk.Scrollbar(
+            self,
+            orient=tk.VERTICAL,
+            command=self._canvas.yview,
+            width=10,
+            bg=self._bg,
+            troughcolor=C.rail,
+            activebackground=C.hover,
+            bd=0,
+            highlightthickness=0,
+            relief="flat",
+        )
+        self._canvas.configure(yscrollcommand=self._scroll.set)
+        self._canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self._canvas.bind("<Configure>", lambda _e: self._redraw())
+        self._canvas.bind("<Button-1>", self._on_click)
+        self._canvas.bind("<Double-Button-1>", self._on_double_click)
+        self._canvas.bind("<Motion>", self._on_motion)
+        self._canvas.bind("<Leave>", self._on_leave)
+        self._canvas.bind("<MouseWheel>", self._on_wheel)
+        for seq, handler in (
+            ("<Up>", lambda _e: self._move_selection(-1)),
+            ("<Down>", lambda _e: self._move_selection(1)),
+            ("<Home>", lambda _e: self._set_selection_from_user(0)),
+            ("<End>", lambda _e: self._set_selection_from_user(max(0, len(self._items) - 1))),
+            ("<Return>", self._on_return),
+            ("<KP_Enter>", self._on_return),
+        ):
+            self.bind(seq, handler)
+            self._canvas.bind(seq, handler)
+
+    def focus_set(self) -> None:
+        self._canvas.focus_set()
+
+    def _resolve_index(self, index) -> int:
+        if index == tk.END or str(index) == "end":
+            return len(self._items)
+        try:
+            idx = int(index)
+        except (TypeError, ValueError):
+            return 0
+        if idx < 0:
+            idx = max(0, len(self._items) + idx)
+        return idx
+
+    def size(self) -> int:
+        return len(self._items)
+
+    def icon_count(self) -> int:
+        return sum(1 for _label, img in self._items if img is not None)
+
+    def insert(self, index, *elements, icon: tk.PhotoImage | None = None) -> None:
+        pos = min(len(self._items), max(0, self._resolve_index(index)))
+        if icon is not None:
+            self._icon_refs.append(icon)
+        for offset, elem in enumerate(elements):
+            self._items.insert(pos + offset, (str(elem), icon if offset == 0 else None))
+        self._sync_height_and_scroll()
+        self._redraw()
+
+    def insert_with_icon(self, text: str, png_bytes: bytes | None = None) -> None:
+        icon_img: tk.PhotoImage | None = None
+        if png_bytes:
+            try:
+                encoded = base64.b64encode(png_bytes).decode("ascii")
+                icon_img = tk.PhotoImage(master=self, data=encoded)
+            except tk.TclError:
+                icon_img = None
+        self.insert(tk.END, text, icon=icon_img)
+
+    def delete(self, first, last=None) -> None:
+        if not self._items:
+            return
+        start = max(0, self._resolve_index(first))
+        if last is None:
+            if start < len(self._items):
+                self._items.pop(start)
+        else:
+            end = len(self._items) if (last == tk.END or str(last) == "end") else self._resolve_index(last) + 1
+            del self._items[start:max(start, end)]
+        if not self._items:
+            self._icon_refs.clear()
+            self._selected = -1
+            self._hover = -1
+            self._active = 0
+        elif self._selected >= len(self._items):
+            self._selected = len(self._items) - 1
+        self._sync_height_and_scroll()
+        self._redraw()
+
+    def get(self, first, last=None):
+        start = max(0, self._resolve_index(first))
+        if last is None:
+            return self._items[start][0] if 0 <= start < len(self._items) else ""
+        if last == tk.END or str(last) == "end":
+            end = len(self._items)
+        else:
+            end = min(len(self._items), self._resolve_index(last) + 1)
+        return tuple(label for label, _img in self._items[start:max(start, end)])
+
+    def curselection(self) -> tuple[int, ...]:
+        if self._state != tk.DISABLED and 0 <= self._selected < len(self._items):
+            return (self._selected,)
+        return ()
+
+    def selection_clear(self, first=0, last=None) -> None:
+        if self._selected < 0:
+            return
+        start = self._resolve_index(first)
+        end = len(self._items) if (last in (None, tk.END) or str(last) == "end") else self._resolve_index(last)
+        if start <= self._selected <= end:
+            self._selected = -1
+            self._redraw()
+
+    def selection_set(self, first, last=None) -> None:
+        if not self._items or self._state == tk.DISABLED:
+            return
+        idx = self._resolve_index(first)
+        if 0 <= idx < len(self._items):
+            self._selected = idx
+            self._active = idx
+            self._redraw()
+
+    def activate(self, index) -> None:
+        idx = self._resolve_index(index)
+        if 0 <= idx < len(self._items):
+            self._active = idx
+
+    def see(self, index) -> None:
+        if not self._items:
+            return
+        idx = min(len(self._items) - 1, max(0, self._resolve_index(index)))
+        total_h = max(1, len(self._items) * self._row_h)
+        view_h = self._visible_rows * self._row_h
+        if total_h <= view_h:
+            self._canvas.yview_moveto(0.0)
+            return
+        first_frac, last_frac = self._canvas.yview()
+        row_top = (idx * self._row_h) / total_h
+        row_bot = ((idx + 1) * self._row_h) / total_h
+        if row_top < first_frac:
+            self._canvas.yview_moveto(row_top)
+        elif row_bot > last_frac:
+            self._canvas.yview_moveto(max(0.0, row_bot - (view_h / total_h)))
+
+    def _sync_height_and_scroll(self) -> None:
+        rows = min(8, max(4, len(self._items) or self._visible_rows))
+        self._visible_rows = rows
+        f_obj = tkfont.Font(self, font=self._font)
+        has_any_icon = any(img is not None for _lbl, img in self._items)
+        pad_x = 40 if has_any_icon else 24
+        max_w = max((f_obj.measure(lbl) + pad_x for lbl, _img in self._items), default=320)
+        req_w = max(340, min(520, max_w))
+        total_h = max(1, len(self._items)) * self._row_h
+        view_h = self._visible_rows * self._row_h
+        self._canvas.configure(
+            width=req_w,
+            height=view_h,
+            scrollregion=(0, 0, req_w, total_h),
+        )
+        if len(self._items) > self._visible_rows:
+            if self._scroll.winfo_manager() != "pack":
+                self._scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        elif self._scroll.winfo_manager() == "pack":
+            self._scroll.pack_forget()
+
+    def _redraw(self) -> None:
+        self._canvas.delete("all")
+        if not self._items:
+            return
+        w = max(int(self._canvas.winfo_width()), int(self._canvas.cget("width")), 320)
+        total_h = len(self._items) * self._row_h
+        self._canvas.configure(scrollregion=(0, 0, w, total_h))
+        has_any_icon = any(img is not None for _lbl, img in self._items)
+        text_x = 34 if has_any_icon else 12
+        for idx, (label, icon) in enumerate(self._items):
+            y0 = idx * self._row_h
+            y1 = y0 + self._row_h
+            selected = self._state != tk.DISABLED and idx == self._selected
+            hovered = self._state != tk.DISABLED and idx == self._hover
+            row_bg = self._select_bg if selected else (C.hover if hovered else self._bg)
+            row_fg = self._select_fg if selected else (C.dim if self._state == tk.DISABLED else self._fg)
+            self._canvas.create_rectangle(0, y0, w, y1, fill=row_bg, outline="")
+            cy = (y0 + y1) // 2
+            if icon is not None:
+                self._canvas.create_image(17, cy, image=icon, anchor="center")
+            self._canvas.create_text(
+                text_x,
+                cy,
+                text=label,
+                fill=row_fg,
+                font=self._font,
+                anchor="w",
+            )
+
+    def _row_at_event(self, event) -> int:
+        cy = self._canvas.canvasy(event.y)
+        idx = int(cy // self._row_h)
+        return idx if 0 <= idx < len(self._items) else -1
+
+    def _set_selection_from_user(self, idx: int) -> str:
+        if self._state == tk.DISABLED or not (0 <= idx < len(self._items)):
+            return "break"
+        self._selected = idx
+        self._active = idx
+        self.see(idx)
+        self._redraw()
+        self.event_generate("<<ListboxSelect>>")
+        return "break"
+
+    def _move_selection(self, delta: int) -> str:
+        if self._state == tk.DISABLED or not self._items:
+            return "break"
+        base = self._selected if self._selected >= 0 else 0
+        nxt = max(0, min(len(self._items) - 1, base + delta))
+        return self._set_selection_from_user(nxt)
+
+    def _on_click(self, event) -> None:
+        self._canvas.focus_set()
+        idx = self._row_at_event(event)
+        if idx >= 0:
+            self._set_selection_from_user(idx)
+
+    def _on_double_click(self, event):
+        if self._state == tk.DISABLED:
+            return "break"
+        idx = self._row_at_event(event)
+        if idx >= 0:
+            self._selected = idx
+            self._active = idx
+            self._redraw()
+            self.event_generate("<<ListboxSelect>>")
+            if self._double_cb is not None:
+                self._double_cb(event)
+        return "break"
+
+    def _on_return(self, event):
+        if self._state == tk.DISABLED:
+            return "break"
+        if self._return_cb is not None and 0 <= self._selected < len(self._items):
+            self._return_cb(event)
+        return "break"
+
+    def _on_motion(self, event) -> None:
+        if self._state == tk.DISABLED:
+            return
+        idx = self._row_at_event(event)
+        if idx != self._hover:
+            self._hover = idx
+            self._redraw()
+
+    def _on_leave(self, _event) -> None:
+        if self._hover != -1:
+            self._hover = -1
+            self._redraw()
+
+    def _on_wheel(self, event):
+        if len(self._items) > self._visible_rows:
+            self._canvas.yview_scroll(int(-event.delta / 120), "units")
+        return "break"
+
+    _double_cb = None
+    _return_cb = None
+
+    def bind(self, sequence=None, func=None, add=None):
+        if sequence == "<Double-Button-1>":
+            self._double_cb = func
+            return ""
+        if sequence in ("<Return>", "<KP_Enter>"):
+            self._return_cb = func
+            return ""
+        return super().bind(sequence, func, add)
+
+    def configure(self, cnf=None, **kw):
+        opts = dict(cnf or {}, **kw)
+        if "state" in opts:
+            self._state = opts.pop("state")
+            self._canvas.configure(cursor="arrow" if self._state == tk.DISABLED else "hand2")
+        if "bg" in opts:
+            self._bg = opts.pop("bg")
+            super().configure(bg=self._bg)
+            self._canvas.configure(bg=self._bg)
+            self._scroll.configure(bg=self._bg, troughcolor=C.rail, activebackground=C.hover)
+        if "fg" in opts:
+            self._fg = opts.pop("fg")
+        if "selectbackground" in opts:
+            self._select_bg = opts.pop("selectbackground")
+        if "selectforeground" in opts:
+            self._select_fg = opts.pop("selectforeground")
+        if "height" in opts:
+            self._visible_rows = max(1, int(opts.pop("height")))
+            self._sync_height_and_scroll()
+        if "cursor" in opts:
+            self._canvas.configure(cursor=opts.pop("cursor"))
+        if opts:
+            super().configure(**opts)
+        self._redraw()
+
+    config = configure
+
+    def update_theme(self) -> None:
+        self.configure(
+            bg=C.panel,
+            fg=C.dim if self._state == tk.DISABLED else C.text,
+            selectbackground=C.select,
+            selectforeground=C.text,
+        )

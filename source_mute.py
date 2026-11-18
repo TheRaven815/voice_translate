@@ -17,6 +17,7 @@ import ctypes as ct
 import os
 import sys
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 
@@ -27,6 +28,10 @@ from process_audio import process_audio_supported
 # Doğrusal 1/6 ≈ −15.6 dB: duyulan orijinalin bu katı. Mutlak tavan değil;
 # hoparlör zaten bu düzeyin altındaysa tavan hiç fark ettirmez.
 DUB_BACKGROUND = 1 / 6
+
+SESSION_WATCH_INTERVAL = 0.5
+ENDPOINT_WATCH_INTERVAL = 5.0
+PROCESS_TREE_TTL = 1.5
 
 # WASAPI oturum düzeyi döngü yakalamasından ÖNCE uygulanır. Kaynağı tam 0'a
 # indirmek yakalanan sesi de sıfırlar ve çeviri duyduğu sesi kaybeder. Bu
@@ -145,11 +150,23 @@ class MuteHold:
 class SourceDub:
     """Planı uygular, yeni oturumları izler, bırakınca yalnızca kendi değişikliğini geri alır."""
 
-    def __init__(self, backend=None, *, own_pid: int | None = None, tree=None, exclude_supported=None):
+    def __init__(
+        self,
+        backend=None,
+        *,
+        own_pid: int | None = None,
+        tree=None,
+        exclude_supported=None,
+        watch_interval: float = SESSION_WATCH_INTERVAL,
+        endpoint_refresh_interval: float = ENDPOINT_WATCH_INTERVAL,
+    ):
         self._backend = backend
         self._own_pid = os.getpid() if own_pid is None else int(own_pid)
         self._tree = process_tree_pids if tree is None else tree
         self._exclude_supported = process_audio_supported if exclude_supported is None else exclude_supported
+        self._watch_interval = max(0.01, float(watch_interval))
+        self._endpoint_refresh_interval = max(0.0, float(endpoint_refresh_interval))
+        self._last_endpoint_refresh = 0.0
         self._lock = threading.Lock()
         self._active = DubPlan()
         self._token: MuteHold | None = None
@@ -171,6 +188,8 @@ class SourceDub:
                 self._active = plan
                 if plan.action != "idle" and self._token is not None and self._backend is not None:
                     self._backend.refresh(self._token)
+                    if plan.action == "mute_endpoint":
+                        self._last_endpoint_refresh = time.monotonic()
                 return
             # Aynı hedef, yalnız düzey: eski sesi geri basıp patlatma.
             if (
@@ -183,6 +202,8 @@ class SourceDub:
                 self._token.plan = plan
                 self._active = plan
                 self._backend.refresh(self._token)
+                if plan.action == "mute_endpoint":
+                    self._last_endpoint_refresh = time.monotonic()
                 return
             self._restore_locked()
             self._active = DubPlan()
@@ -192,6 +213,8 @@ class SourceDub:
             backend = self._backend_get()
             self._token = backend.apply(plan)
             self._active = plan
+            if plan.action == "mute_endpoint":
+                self._last_endpoint_refresh = time.monotonic()
             self._ensure_watch_locked()
             self._ensure_atexit()
 
@@ -230,9 +253,15 @@ class SourceDub:
         atexit.register(self.release)
 
     def _watch(self) -> None:
-        while not self._watch_stop.wait(0.5):
+        while not self._watch_stop.wait(self._watch_interval):
+            now = time.monotonic()
             with self._lock:
                 if self._watch_stop.is_set() or self._token is None or self._active.action == "idle":
+                    continue
+                if (
+                    self._active.action == "mute_endpoint"
+                    and (now - self._last_endpoint_refresh) < self._endpoint_refresh_interval
+                ):
                     continue
                 backend = self._backend
                 token = self._token
@@ -242,6 +271,8 @@ class SourceDub:
                 with self._lock:
                     if token is self._token and not self._watch_stop.is_set():
                         backend.refresh(token)
+                        if self._active.action == "mute_endpoint":
+                            self._last_endpoint_refresh = time.monotonic()
             except Exception:
                 pass
 
@@ -450,8 +481,10 @@ def _qi(pointer, iid: str):
 class WindowsRenderMute:
     """Render uçlarını ve oturumlarını önceki bitlerine dönecek şekilde susturur."""
 
-    def __init__(self, tree=None):
+    def __init__(self, tree=None, *, tree_ttl: float = PROCESS_TREE_TTL):
         self._tree = process_tree_pids if tree is None else tree
+        self._tree_ttl = max(0.0, float(tree_ttl))
+        self._tree_cache: dict[int, tuple[float, frozenset[int]]] = {}
 
     def endpoint_level(self, endpoint_id: str) -> PriorLevel:
         with _Com() as com:
@@ -549,6 +582,7 @@ class WindowsRenderMute:
             if hold is not None:
                 hold.endpoints.clear()
                 hold.sessions.clear()
+            self._tree_cache.clear()
             return
         try:
             with _Com() as com:
@@ -589,13 +623,22 @@ class WindowsRenderMute:
         finally:
             hold.endpoints.clear()
             hold.sessions.clear()
+            self._tree_cache.clear()
 
     def _tree_of(self, plan: DubPlan) -> set[int]:
+        root = int(plan.root_pid)
+        now = time.monotonic()
+        if self._tree_ttl > 0.0:
+            cached = self._tree_cache.get(root)
+            if cached is not None and (now - cached[0]) < self._tree_ttl:
+                return set(cached[1])
         try:
-            tree = set(self._tree(plan.root_pid))
+            tree = {int(pid) for pid in self._tree(root)}
         except Exception:
             tree = set()
-        tree.add(int(plan.root_pid))
+        tree.add(root)
+        if self._tree_ttl > 0.0:
+            self._tree_cache[root] = (now, frozenset(tree))
         return tree
 
     def _device(self, enumerator, endpoint_id: str):

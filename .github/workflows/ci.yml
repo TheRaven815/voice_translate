@@ -11,7 +11,7 @@ jobs:
     runs-on: windows-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.11", "3.12", "3.13"]
 
     steps:
       - uses: actions/checkout@v4
@@ -23,7 +23,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest
+          pip install pytest ruff
+      - name: Lint with ruff
+        run: |
+          ruff check .
       - name: Run pytest
         run: |
           pytest -v -m "not device"
@@ -34,5 +37,6 @@ jobs:
           python -m build --wheel
           $whl = (Get-Item dist/*.whl).FullName
           pip install $whl
+          python -c "import sys, cli; assert 'tkinter' not in sys.modules and 'gui.app' not in sys.modules"
           ahenk-cli --version
           ahenk-cli --list-langs

@@ -50,3 +50,11 @@ pythonpath = ["."]
 markers = [
     "device: fiziki ses aygıtı gerektiren testler",
 ]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82"]
+

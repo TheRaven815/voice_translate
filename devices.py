@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ntpath
 import soundcard as sc
 
 
@@ -123,21 +124,41 @@ def _strip_input_prefix(text: str) -> str:
 
 
 def find_input_by_label(devices, label: str | None):
-    """Görünen ada göre giriş aygıtını bulur (önekli ya da çıplak ad)."""
+    """Görünen ada göre giriş aygıtını bulur (önekli, dost adlı ya da çıplak exe adı)."""
     if not label or not devices:
         return None
     text = str(label).strip()
     bare = _strip_input_prefix(text)
     application_prefixes = _all_label_values("label_application", "[Uygulama]")
     if any(text.startswith(prefix + " ") for prefix in application_prefixes):
-        return next((dev for dev in devices if getattr(dev, "is_application", False)
-                     and str(getattr(dev, "name", "")) == bare), None)
+        exact = next(
+            (
+                dev for dev in devices
+                if getattr(dev, "is_application", False) and str(getattr(dev, "name", "")) == bare
+            ),
+            None,
+        )
+        if exact is not None:
+            return exact
+        exe_matches = [
+            dev for dev in devices
+            if getattr(dev, "is_application", False)
+            and ntpath.basename(str(getattr(dev, "executable", ""))).casefold() == bare.casefold()
+        ]
+        return exe_matches[0] if len(exe_matches) == 1 else None
     for dev in devices:
         if text == display_input_label(dev) or text == str(getattr(dev, "name", "")):
             return dev
     for dev in devices:
         if str(getattr(dev, "name", "")) == bare:
             return dev
+    exe_matches = [
+        dev for dev in devices
+        if getattr(dev, "is_application", False)
+        and ntpath.basename(str(getattr(dev, "executable", ""))).casefold() == bare.casefold()
+    ]
+    if len(exe_matches) == 1:
+        return exe_matches[0]
     return None
 
 

@@ -28,12 +28,12 @@ For context, the first wave of high-priority improvements has already been imple
 | **R05** | Output Voice Character (`voice_name`) Selection | Product Feature | Medium-High | Low-Medium | Pending | `loop.py`, `config.py`, `cli.py`, `gui/app.py` |
 | **R06** | Bilingual Subtitles (`.srt`) & WebVTT (`.vtt`) Export | Product Feature | Medium | Low | ✅ Completed | `export.py`, `gui/app.py`, `i18n.py` |
 | **R07** | CLI Feature Parity (`--app`, `--dub`) & Two-Way Meeting Mode | Product Feature | High | Medium-High | Pending | `cli.py`, `applications.py`, `source_mute.py`, `loop.py` |
-| **R08** | Friendly App Names (`FileDescription`) & Icons in Picker | UX Polish | Medium | Medium | Pending | `applications.py`, `gui/app.py` |
-| **R09** | Event-Driven Overlay Hover (Conditional `50 ms` Polling) | Performance | Low-Medium | Low | Pending | `gui/app.py` |
-| **R10** | `SourceDub` Background Watcher Optimization | Performance | Medium | Low-Medium | Pending | `source_mute.py` |
-| **R11** | Bounded Transcript Buffers & Zero-Copy `AudioConverter` | Performance & Memory | Medium | Medium | Pending | `gui/app.py`, `audio.py`, `loop.py` |
-| **R12** | Modularize `gui/app.py` into Focused Submodules | Architecture | High | Medium-High | Pending | `gui/app.py`, `gui/settings.py`, `gui/overlay.py`, `gui/dialogs.py` |
-| **R13** | Documentation Sync (`README`), CI Matrix & Release Signing | Docs, CI & Packaging | Medium | Low | Pending | `README.md`, `README.en.md`, `.github/workflows/ci.yml`, `.github/workflows/release.yml` |
+| **R08** | Friendly App Names (`FileDescription`) & Icons in Picker | UX Polish | Medium | Medium | ✅ Completed | `applications.py`, `devices.py`, `gui/widgets.py`, `gui/win32.py`, `gui/dialogs.py` |
+| **R09** | Event-Driven Overlay Hover (Conditional `50 ms` Polling) | Performance | Low-Medium | Low | Pending | `gui/overlay.py` |
+| **R10** | `SourceDub` Background Watcher Optimization | Performance | Medium | Low-Medium | ✅ Completed | `source_mute.py` |
+| **R11** | Bounded Transcript Buffers & Zero-Copy `AudioConverter` | Performance & Memory | Medium | Medium | ✅ Completed | `gui/app.py`, `audio.py`, `loop.py` |
+| **R12** | Modularize `gui/app.py` into Focused Submodules | Architecture | High | Medium-High | ✅ Completed | `gui/app.py`, `gui/win32.py`, `gui/preview.py`, `gui/overlay.py`, `gui/dialogs.py`, `gui/settings_dialog.py` |
+| **R13** | Documentation Sync (`README`), CI Matrix & Release Signing | Docs, CI & Packaging | Medium | Low | ✅ Completed | `README.md`, `README.en.md`, `pyproject.toml`, `.github/workflows/ci.yml`, `.github/workflows/release.yml` |
 
 ---
 
@@ -317,7 +317,7 @@ Split `gui/app.py` incrementally into cohesive modules under `gui/` while keepin
 ## Suggested Implementation Order (Next Waves)
 
 1. **Wave 2A — Fast High-Value Polish (Low Effort):**
-   - **R13** (Sync `README.md` / `README.en.md` + CI zero-Tkinter & Python 3.13 check)
+   - ✅ **R13** (Sync `README.md` / `README.en.md` + CI zero-Tkinter, ruff & Python 3.13 check + optional Authenticode signing)
    - ✅ **R04** (Transcript Auto-Scroll Lock + `Ctrl+F` Search)
    - ✅ **R01** (Live Pause / Resume button & hotkey + Push-to-Talk)
    - ✅ **R06** (Bilingual `.srt` & `.vtt` export)
@@ -325,9 +325,9 @@ Split `gui/app.py` incrementally into cohesive modules under `gui/` while keepin
    - **R02** (`vad_threshold` & `system_instruction` in GUI Settings)
    - **R05** (Output `voice_name` selection in GUI & CLI)
    - **R03** (System Tray mode & right-click quick actions)
-   - **R08** (`FileDescription` product names & icons in App Picker)
+   - ✅ **R08** (`FileDescription` product names & icons in App Picker)
 3. **Wave 2C — Engine Efficiency, CLI Parity & Modular Architecture:**
-   - **R09** & **R10** (Conditional overlay pointer polling + `SourceDub` watcher throttling)
-   - **R11** (Bounded transcript panes + fast-path `3:1` integer decimation in `AudioConverter`)
+   - **R09** & ✅ **R10** (Conditional overlay pointer polling + `SourceDub` watcher throttling)
+   - ✅ **R11** (Bounded transcript panes + fast-path `3:1` integer decimation in `AudioConverter`)
    - **R07** (CLI `--app` / `--dub` parity + Two-Way Meeting Mode)
-   - **R12** (Modularizing `gui/app.py` into focused `gui/*` submodules)
+   - ✅ **R12** (Modularizing `gui/app.py` into focused `gui/*` submodules)

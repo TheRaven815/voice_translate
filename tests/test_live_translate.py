@@ -1612,3 +1612,48 @@ def test_playback_active_emits_ducking_transitions_with_holdoff():
     loop_obj.set_muted(True)
     assert loop_obj.is_playing_audio() is False
     assert events[-1] == ("playback_active", False)
+
+
+def test_r11_audio_converter_fast_path_decimation_fidelity_and_continuity():
+    from audio import AudioConverter
+
+    duration_s = 0.5
+    chunk_sizes = [137, 960, 419, 500, 1024, 333]
+    for in_rate in (48000, 32000):
+        n_samples = int(in_rate * duration_s)
+        t_arr = np.arange(n_samples, dtype=np.float64) / in_rate
+        mono = (0.5 * np.sin(2.0 * np.pi * 1000.0 * t_arr)).astype(np.float32)
+        stereo = np.column_stack([mono, mono])
+
+        single = AudioConverter(in_rate=in_rate, out_rate=16000)
+        single_i16 = np.frombuffer(single.process(stereo), dtype=np.int16)
+
+        chunked = AudioConverter(in_rate=in_rate, out_rate=16000)
+        parts: list[bytes] = []
+        pos = 0
+        idx = 0
+        while pos < n_samples:
+            step = chunk_sizes[idx % len(chunk_sizes)]
+            idx += 1
+            raw = chunked.process(stereo[pos:pos + step])
+            if raw:
+                parts.append(raw)
+            pos += step
+        chunked_i16 = np.frombuffer(b"".join(parts), dtype=np.int16)
+
+        assert chunked_i16.size == single_i16.size
+        assert int(np.max(np.abs(chunked_i16.astype(np.int32) - single_i16.astype(np.int32)))) <= 1
+
+        # Steady-state SNR (skipping initial FIR transient) vs ideal 16 kHz 1 kHz sine
+        # Estimate phase/amplitude via quadrature projection to ignore constant FIR group delay.
+        tail = single_i16[200:].astype(np.float64)
+        tt = np.arange(tail.size, dtype=np.float64) / 16000.0
+        cos_ref = np.cos(2.0 * np.pi * 1000.0 * tt)
+        sin_ref = np.sin(2.0 * np.pi * 1000.0 * tt)
+        a_cos = 2.0 * np.mean(tail * cos_ref)
+        a_sin = 2.0 * np.mean(tail * sin_ref)
+        fitted = a_cos * cos_ref + a_sin * sin_ref
+        err = tail - fitted
+        snr_db = 10.0 * np.log10(np.sum(fitted ** 2) / max(np.sum(err ** 2), 1e-12))
+        assert snr_db > 60.0
+

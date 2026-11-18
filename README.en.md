@@ -49,15 +49,15 @@ System audio · Microphone · Single-app audio → **text + spoken translation**
 
 | | |
 |---|---|
-| 🎧 **3 input sources** | System audio (WASAPI loopback), microphone, or a single desktop app's audio (process-tree capture) |
+| 🎧 **3 input sources** | System audio (WASAPI loopback), microphone, or a single desktop app's audio (process-tree capture with friendly `FileDescription` names and 16×16 icons) |
 | 🔄 **Seamless hot-swap** | Switch input/output devices without killing the running translation session |
-| 📺 **Subtitle overlay** | Always-on-top, draggable, optionally click-through live subtitle window |
-| ⌨️ **Global shortcuts** | Mute/unmute translation audio and start/stop translation while the app is in the background; configurable in Settings |
+| 📺 **Subtitle overlay** | Always-on-top, draggable, opacity (`20%–100%`) and font-size adjustable, optionally click-through live subtitle window |
+| ⌨️ **Global shortcuts & Push-to-Talk** | Mute/unmute audio, start/stop, and **pause/resume** (`Ctrl+P`) while in the background + Push-to-Talk mode |
 | 🌗 **Dual theme + dual UI language** | Dark / light theme; Turkish / English interface |
-| 📝 **Export** | Save transcripts as **TXT**, **SRT** (subtitles), and **JSONL** + session history (`history.jsonl`) |
-| 🔇 **Echo guard** | On a shared speaker, equal-duration silence is injected while translation plays, keeping the stream alive |
-| 🔁 **Smart reconnect** | Up to 3 reconnection attempts, 2 seconds apart, on transient network/API disconnects; a Windows notification if all three fail. No pointless retries on permanent errors (key/quota) |
-| 📦 **Single-file distribution** | Installer-free `Ahenk.exe` + console `Ahenk-cli.exe`; SHA-256-verified auto-updates |
+| 📝 **Export & search** | Save transcripts as **TXT**, **SRT**, **Bilingual SRT** (`.bilingual.srt`), **WebVTT** (`.vtt`), and **JSONL**; in-pane **`Ctrl+F` search** and smart auto-scroll lock |
+| 🔇 **Dynamic dubbing & echo guard** | Automatically attenuates the source app/endpoint while translation speaks (ducking) and injects equal-duration silence on shared speakers |
+| 🔁 **Smart reconnect** | Automatic reconnection on transient network/API drops in both GUI and CLI (`reconnect.py`); no pointless retries on permanent key/quota errors |
+| 📦 **Single-file distribution** | Installer-free `Ahenk.exe` + zero-Tkinter console `Ahenk-cli.exe`; SHA-256-verified auto-updates |
 
 ---
 
@@ -66,36 +66,40 @@ System audio · Microphone · Single-app audio → **text + spoken translation**
 ### Audio capture & playback
 
 - **System audio (loopback):** everything playing on the PC via the default speaker's `[Sistem]` (System) record
-- **Microphone:** `[Mikrofon]` (Microphone) inputs, for speech translation
-- **Single app:** **Choose desktop app…** captures only that program + its child processes (e.g. all tabs in the same Chrome tree). Requires Windows build 20348+
+- **Microphone:** automatic sample-rate and channel fallback (`48000 → 44100 → 32000 → 24000 → 16000 Hz`, stereo → mono) for `[Mikrofon]` inputs
+- **Single app:** **Choose desktop app…** lists static PE `FileDescription` names and 16×16 app icons and captures only that program + its child processes (Windows build 20348+)
+- **Dynamic dubbing (Audio Ducking):** automatically mutes or ducks source audio only while translation speech plays
 - **Output:** speaker selection or **Hiçbiri** (None = text-only mode)
 - **Live VU meter:** an independent preview monitor feeds levels from the selected input even before the session starts
-- **Audio controls:** output gain (`--volume 0.0–2.0`), silence gate (`--vad`, e.g. `0.01`)
+- **Audio controls:** live translation volume (`0%–200%` / `--volume`), silence gate (`--vad`, e.g. `0.01`)
 
 ### Translation experience
 
 - **Source language:** `Otomatik` (Auto — detected by the model) or a fixed BCP-47 code
 - **Target language:** 20 languages (table below)
-- **Two panes:** **Duyulan** (Heard — source transcript) and **Çeviri** (Translation — target transcript + audio)
-- Per-pane **Kopyala** (Copy), **Temizle** (Clear), **Dışa Aktar** (Export)
+- **Live Pause / Resume & Push-to-Talk:** pause/resume audio sending without closing the session (`Ctrl+P` / global hotkey) or use Push-to-Talk mode
+- **Custom Glossary:** define terminology hints in two-tab Settings or via `--glossary` for proper names and domain terms
+- **Two panes:** **Duyulan** (Heard) and **Çeviri** (Translation) — scrolling up locks auto-scroll with a **Jump to live** pill, and **`Ctrl+F`** searches both live panes and session history
+- Per-pane **Copy**, **Clear**, **Export** (`TXT`, `SRT`, `Bilingual SRT`, `WebVTT`, `JSONL`) with disk-spilled full-session export on long runs
 - Arrow button swaps source ↔ target (disabled while source is Auto)
 - Latency reporting: speech→translation time (ms) on the first translated chunk
 
 ### Interface & comfort
 
-- 960×580 dark/light window: left control rail + two transcript panes + bottom status strip
-- Status dot: Ready / Connecting / Running / Stopped
-- **Subtitle window:** last translation line, adjustable font size, opacity, and click-through mode, ✕ to close
+- 960×580 dark/light modular window: left control rail + bounded transcript panes + bottom status strip
+- Status dot: Ready / Connecting / Running / Paused / Stopped
+- **Subtitle window:** last translation line, adjustable font size and opacity (`20%–100%` / `Ctrl+Scroll`), click-through mode, ✕ to close
+- **Two-tab Settings & Conversation History:** *General* and *Audio, Glossary & History* tabs, off-thread history persistence + searchable viewer (`history.jsonl`, auto-rotated at 2 MB)
 - Turkish / English UI language; window and overlay geometry are remembered
-- **Yenile** (Refresh) for the device list, Turkish-guided messages for connection and device errors
-- Session history (`history.jsonl`, auto-rotated at 2 MB) and rotating file log (`logs/ahenk.log`)
+- **Yenile** (Refresh) for the device list, localized guidance for connection and device errors
+- Rotating file log (`logs/ahenk.log`)
 
 ---
 
 ## ⚙️ How it works
 
 ```
-Input device ── 48 kHz stereo, 20 ms blocks ──► mono + 16 kHz PCM16
+Input device ── 48→16 kHz auto-rate, 20 ms ────► mono + 16 kHz PCM16 (3:1/2:1 FIR)
                                                         │
                                                         ▼
                                           Gemini Live (v1beta)
@@ -107,7 +111,8 @@ Input device ── 48 kHz stereo, 20 ms blocks ──► mono + 16 kHz PCM16
         preroll + 8 ms cosine fade)              (delta + cumulative merge)
 ```
 
-- **Capture lives on a single daemon thread:** `soundcard` COM objects must not be shared across threads; hot-swap decisions are applied inside the audio thread.
+- **Capture lives on a single daemon thread:** `soundcard` COM objects must not be shared across threads; `open_capture_recorder` sample-rate/channel fallback and hot-swap decisions run inside the audio thread.
+- **Bounded memory & pre-allocated DSP:** `AudioConverter` uses pre-allocated buffers and fast-path integer decimation (`48000→16000` `3:1`, `32000→16000` `2:1`); UI text panes and log buffers stay bounded while long-session exports spill seamlessly to temp `.jsonl`.
 - **Queues absorb lag:** the send queue (50) and playback queue (200) drop the oldest chunk when full. The playback queue is **not** cleared at turn end (that would chop the audio).
 - **Transcript merging:** the model sends deltas and cumulative pieces; `merge_transcript` joins both correctly.
 - **Echo guard:** when input and output share the same endpoint, silence of equal duration is sent instead of captured input while audible translation plays; the stream stays connected. Silent output chunks do not extend this guard.
@@ -120,13 +125,13 @@ Input device ── 48 kHz stereo, 20 ms blocks ──► mono + 16 kHz PCM16
 | Layer | Technology | Notes |
 |---|---|---|
 | 🐍 **Language** | Python 3.11+ (`asyncio.TaskGroup`) | Concurrent capture / send / receive / play pipeline |
-| 🖥️ **UI** | `tkinter` (standard library) | Main window, subtitle overlay, app picker, settings |
+| 🖥️ **UI** | `tkinter` (standard library) | Modular UI (`gui/app.py`, `overlay.py`, `dialogs.py`, `settings_dialog.py`, `preview.py`, `win32.py`) |
 | 🔊 **Audio I/O** | `soundcard` ≥ 0.4.3 (WASAPI) | Loopback + microphone + speaker enumeration and streaming |
-| ➗ **DSP** | `numpy` ≥ 1.26, < 3.0 | 48 kHz → 16 kHz FIR + linear resampling, RMS/VU, 24 kHz PCM16 ↔ float, cosine fades |
-| 🤖 **Translation engine** | `google-genai` ≥ 2.0, < 3.0 (`v1beta` Live API) | Live audio + dual transcript streams, glossary/terminology support (`SystemAudioLoop(glossary=…)`) |
+| ➗ **DSP** | `numpy` ≥ 1.26, < 3.0 | Pre-allocated FIR + `3:1`/`2:1` fast-path / linear resampling, RMS/VU, 24 kHz PCM16 ↔ float |
+| 🤖 **Translation engine** | `google-genai` ≥ 2.0, < 3.0 (`v1beta` Live API) | Live audio + dual transcript streams, glossary & custom prompt support |
 | 🔑 **Configuration** | `python-dotenv` ≥ 1.0 | `.env` / environment → `GEMINI_API_KEY` loading |
-| 🧪 **Testing** | `pytest` ≥ 8 | Network-free fake-session tests (Windows CI on 3.11 + 3.12) |
-| 📦 **Distribution** | `pyinstaller` ≥ 6.10 + `Ahenk.spec` | Onefile `Ahenk.exe` (windowed) + `Ahenk-cli.exe` (console), sidecar SHA-256 file |
+| 🧪 **Testing & Lint** | `pytest` ≥ 8 + `ruff` ≥ 0.8 | Network-free mock tests + zero-Tkinter CLI check (Windows CI on 3.11, 3.12, 3.13) |
+| 📦 **Distribution** | `pyinstaller` ≥ 6.10 + `Ahenk.spec` | Onefile `Ahenk.exe` (windowed) + zero-Tkinter `Ahenk-cli.exe` (console), SHA-256 + optional Authenticode |
 | 🔄 **Updates** | Standard library (`urllib`) | GitHub Releases check, size + SHA-256 verification, atomic exe swap + rollback |
 
 > Pinned ranges live in `requirements.txt` / `requirements-dev.txt`. The model name can be overridden via the `GEMINI_LIVE_MODEL` environment variable or the `--model` flag (default: `models/gemini-3.5-live-translate-preview`).
@@ -192,14 +197,14 @@ python3 -m venv .venv
 3. **Giriş / Çıkış** (Input / Output) — `[Sistem]` loopback, `[Mikrofon]` microphone, or **Choose desktop app…**; **Hiçbiri** on output = text-only
 4. **Dil** (Language) — source (Auto + 20 languages) → target; arrow button swaps
 5. **API anahtarı** (API key) — masked with `•`; written on **Kaydet** (Save, with a verifying **Test** button) or at Start
-6. **Başlat / Durdur** (Start / Stop) — devices, languages, and key fields lock while running; device changes apply via hot-swap
-7. **Settings → Global Shortcuts** — captures and registers mute/unmute and start/stop key combinations across Windows
+6. **Start / Stop / Pause (`Ctrl+P`)** — devices, languages, and key fields lock while running; device changes apply via hot-swap, and **Pause** holds audio sending without dropping the session
+7. **Two-tab Settings:** *General* (UI language, API key, Dynamic Dubbing / Ducking level, Global Shortcuts + Push-to-Talk) and *Audio, Glossary & History* (translation volume `0%–200%`, subtitle opacity `20%–100%`, Custom Glossary, Conversation History Viewer)
 
-**Panes:** Heard | Translation — Copy / Clear / Export (TXT, SRT, JSONL) on each. Bottom strip shows the `[bilgi]` / `[uyarı]` / `[hata]` (info/warning/error) log.
+**Panes:** Heard | Translation — Copy / Clear / Export (`TXT`, `SRT`, `Bilingual SRT`, `WebVTT`, `JSONL`) on each; auto-scroll locks when scrolled up (**Jump to live**) with **`Ctrl+F`** search. Bottom strip shows the `[bilgi]` / `[uyarı]` / `[hata]` log.
 
-**Subtitle window:** small, always on top, and draggable; font-size, click-through, close, and bottom-right resize controls appear on hover. It shows the latest subtitle lines that fit its height; opacity is adjustable.
+**Subtitle window:** small, always on top, and draggable; font-size (`Ctrl+Scroll` for opacity), click-through, close, and bottom-right resize controls appear on hover. It shows the latest subtitle lines that fit its height.
 
-**Single-app audio:** open the target program first → pick **Choose desktop app…** from the input list → choose the program in the small window. Only that process tree is captured (selecting Chrome includes every tab in the same Chrome process tree). If the app exits or restarts, Ahenk never falls back to system audio silently; select it again. Background-only processes without a visible window are not listed.
+**Single-app audio:** open the target program first → pick **Choose desktop app…** from the input list → choose the program with friendly `FileDescription` labels and 16×16 icons. Only that process tree is captured. If the app exits or restarts, Ahenk never falls back to system audio silently; select it again. Background-only processes and window titles are never read.
 
 > **Tip — echo prevention:** when capturing system audio, route translation playback to a separate device (such as headphones) or select **Hiçbiri** (text-only). On the same speaker, Ahenk fills the input with silence while translation plays; overlapping source speech is suppressed too. Use a separate output for uninterrupted source capture.
 
@@ -231,10 +236,12 @@ python3 -m venv .venv
 | `--log` | none | Log all console output to the given file |
 | `--vad` | `0.0` | RMS silence-gate threshold (e.g. `0.01`); below-threshold audio is replaced with silence without dropping packets |
 | `--volume` | `1.0` | Translation audio gain (`0.0`–`2.0`) |
+| `--glossary` | none | Custom glossary entries (newline / `;` separated or `@file.txt`) |
+| `--prompt` | none | Extra system instruction for translation style |
 | `--model` | default | Gemini Live model name |
 | `--api-key` | none | Lands in shell history; prefer `.env` or the UI |
 
-Stop with `q` + Enter or Ctrl+C (direct Ctrl+C in `--no-interactive` mode). In `--json` mode, `heard / trans / latency / detected_src / log` lines are emitted.
+Stop with `q` + Enter or Ctrl+C (direct Ctrl+C in `--no-interactive` mode). `cli.py` / `Ahenk-cli.exe` imports zero `tkinter` or `gui` modules and automatically reconnects on transient network drops. In `--json` mode, `heard / trans / latency / detected_src / log` lines are emitted.
 
 ---
 
@@ -293,7 +300,7 @@ Same folder: `logs/ahenk.log` (rotating log, 1 MB × 2 backups) and `history.jso
 | Topic | Behavior |
 |---|---|
 | 🔒 **Key storage** | Encrypted with Windows DPAPI (`CryptProtectData`, user-tied) on Windows; `0600` file permissions on Unix |
-| 🧾 **Stored fields** | `api_key`, `input_device`, `input_application`, `output_device`, `src_lang`, `dst_lang`, `theme`, `ui_lang`, window/overlay geometry, overlay appearance, `save_history` |
+| 🧾 **Stored fields** | `api_key`, `input_device`, `input_application`, `output_device`, `src_lang`, `dst_lang`, `theme`, `ui_lang`, window/overlay geometry, `translation_volume`, `overlay_alpha`, `glossary`, `dub_mute_source`, `dub_background`, `dub_ducking`, shortcuts + `push_to_talk`, `save_history` |
 | 🛡️ **Corrupt file** | A `.json.bak` copy is taken and recoverable fields are restored; unknown fields are preserved |
 
 ---
@@ -312,27 +319,37 @@ Same folder: `logs/ahenk.log` (rotating log, 1 MB × 2 backups) and `history.jso
 ## 🗂️ Layout
 
 ```
-main.py            desktop entry (update helper + Tk loop)
-cli.py             console UI (arguments, JSONL stream, log file)
-ahenk.bat          venv + menu + build launcher
-build.bat          PyInstaller onefile build script
-config.py          settings file, DPAPI encryption, key priority
-loop.py            Gemini session: capture → send → receive → play (+ hot-swap, echo guard, VAD)
-audio.py           48k→16k resampling, PCM16 ↔ float, cosine fades
-devices.py         soundcard listing, loopback/speaker/microphone selection
-applications.py    visible desktop apps, stable process identity
-process_audio.py   Windows application process-tree audio capture
-languages.py       UI name → BCP-47, RTL support
-i18n.py            UI localization (tr/en)
-export.py          transcript export (TXT, SRT, JSONL)
-logger.py          file logging + session history
-meta.py            version, title, author
-updater.py         GitHub Release check, SHA-256 verification, atomic exe replacement
-gui/app.py         main window, overlay, reconnect, hot-swap
-gui/theme.py       dark/light palette, icon, AppUserModelID
-gui/widgets.py     custom Select / button widgets
-assets/            ahenk.ico, ahenk.png
-tests/             pytest (no network; device test may skip)
+main.py               desktop entry (update helper + Tk loop)
+cli.py                console UI (zero-Tkinter, JSONL stream, reconnect)
+ahenk.bat             venv + menu + build launcher
+build.bat             PyInstaller onefile build script
+config.py             settings file, DPAPI encryption, key priority
+loop.py               Gemini session: capture → send → receive → play (+ hot-swap, echo guard, VAD, pause)
+reconnect.py          shared reconnection backoff policy (GUI + CLI)
+audio.py              pre-allocated FIR + 3:1/2:1/linear resampling, PCM16 ↔ float, cosine fades
+devices.py            soundcard listing, auto sample-rate/channel fallback, device matching
+applications.py       visible desktop apps, PE FileDescription labels, stable process identity
+process_audio.py      Windows application process-tree audio capture
+source_mute.py        dynamic dubbing / ducking + TTL-cached WASAPI session muting
+hotkeys.py            global hotkeys and Push-to-Talk listener
+notifications.py      Windows toast notifications
+single_instance.py    single-instance IPC lock and foreground raise
+languages.py          UI name → BCP-47, RTL support
+i18n.py               UI localization (tr/en)
+export.py             transcript export (TXT, SRT, Bilingual SRT, WebVTT, JSONL)
+logger.py             file logging + background session history (history.jsonl)
+meta.py               version, title, author
+updater.py            GitHub Release check, SHA-256 verification, atomic exe replacement
+gui/app.py            main window shell, session lifecycle, bounded panes, theming
+gui/win32.py          Win32 helpers, PE icon extraction (.png), multi-monitor clamping
+gui/preview.py        independent live VU meter preview monitor
+gui/overlay.py        subtitle overlay controller and click-through mode
+gui/dialogs.py        app picker (with icons), conversation history, about & update dialogs
+gui/settings_dialog.py two-tab Settings dialog, shortcut capture, API key verification
+gui/theme.py          dark/light palette, icon, AppUserModelID
+gui/widgets.py        custom Select, Slider, search bar, and AppPickerList widgets
+assets/               ahenk.ico, ahenk.png
+tests/                pytest (no network; device test may skip)
 ```
 
 ---
@@ -362,13 +379,13 @@ Automatic updates run only in the Windows onefile `Ahenk.exe` distribution. The 
 The repository must be **public** because clients call the GitHub API without credentials. To publish, set the same version in `meta.py`, `pyproject.toml`, and `version_info.txt`, then push a `vMAJOR.MINOR.PATCH` tag:
 
 ```bat
-git tag v0.7.1
-git push origin v0.7.1
+git tag v0.7.6
+git push origin v0.7.6
 ```
 
-`.github/workflows/release.yml` runs tests, builds the onefile exe, creates its SHA-256 file, and uploads both to a GitHub Release. Drafts and prereleases are not offered to clients.
+`.github/workflows/release.yml` runs tests, builds the onefile exes, optionally signs them with `signtool` when `WINDOWS_CERT_PFX_BASE64` is configured, creates SHA-256 files, and uploads artifacts to a GitHub Release. Drafts and prereleases are not offered to clients.
 
-> SHA-256 prevents transfer corruption and unexpected files. Add Windows Authenticode signing when a code-signing certificate is available.
+> SHA-256 prevents transfer corruption and unexpected files. Adding the `WINDOWS_CERT_PFX_BASE64` and `WINDOWS_CERT_PASSWORD` repository secrets enables automatic Windows Authenticode signing.
 
 ---
 
@@ -378,16 +395,19 @@ No network — the client is faked.
 
 ```bat
 .venv\Scripts\python -m pytest
+.venv\Scripts\python -m ruff check .
 ```
 
 | File | Coverage |
 |---|---|
 | `tests/test_config.py` | Save, key priority, corrupt-JSON recovery |
-| `tests/test_gui.py` | Start, panes, overlay, preferences |
-| `tests/test_cli.py` | Console flags and flows |
-| `tests/test_logger_i18n.py` | Logging, history, localization |
+| `tests/test_gui.py` | Start, panes, pause/resume, search, export, app icons, bounded memory |
+| `tests/test_cli.py` | Console flags, JSONL streams, zero-Tkinter & auto-reconnect |
+| `tests/test_logger_i18n.py` | Logging, history, localization parity |
 | `tests/test_updater.py` | Version selection, SHA-256, atomic replacement, rollback |
-| `tests/test_live_translate.py` | Resampling, transcript merging, fake session |
+| `tests/test_live_translate.py` | Resampling/FIR fidelity, transcript merging, rate fallback, fake session |
+| `tests/test_source_mute.py` | Dynamic dubbing, ducking, process-tree caching |
+| `tests/test_connection_recovery.py` | Smart reconnection backoff and notification thresholds |
 
 `test_duplex_with_real_devices_stays_alive` needs real devices; it skips otherwise (`-m "not device"` skips it in CI).
 
@@ -403,7 +423,7 @@ No network — the client is faked.
 | Selected app exited | Reopen it and select it again through **Choose desktop app…** |
 | Choppy / delayed audio | Set output to **Hiçbiri** (None) and watch the text; check network and API quota |
 | Heard but no translation | Check the target language and model access (`gemini-3.5-live-translate-preview`) |
-| Microphone won't open (`AssertionError`) | Windows Sound → Recording → Microphone → Properties → Advanced → set Default Format to **48000 Hz** |
+| Microphone won't open at 48 kHz | Ahenk automatically tries `48000 → 44100 → 32000 → 24000 → 16000 Hz` and stereo → mono fallback; if all fail, check driver/format in Windows Recording settings |
 | Short-drop warning | Common on wireless devices, the stream continues; review device/drivers if it persists |
 | Python not found | [python.org](https://www.python.org/downloads/) — tick PATH in the installer |
 | No Tk window | `python main.py` — tkinter is bundled with the official Windows installer |
@@ -417,6 +437,6 @@ This project is licensed under the [MIT License](LICENSE).
 
 <div align="center">
 
-**Ahenk 0.7.1** · Enes Eliağır · [Report an issue](https://github.com/TheRaven815/voice_translate/issues) · [Releases](https://github.com/TheRaven815/voice_translate/releases)
+**Ahenk 0.7.6** · Enes Eliağır · [Report an issue](https://github.com/TheRaven815/voice_translate/issues) · [Releases](https://github.com/TheRaven815/voice_translate/releases)
 
 </div>

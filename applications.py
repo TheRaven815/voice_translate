@@ -6,6 +6,7 @@ from collections import Counter
 from dataclasses import dataclass
 import ctypes
 from ctypes import wintypes
+import functools
 import ntpath
 import os
 import sys
@@ -45,6 +46,107 @@ def _error(operation: str) -> OSError:
 
 def _path_key(path: str) -> str:
     return ntpath.normcase(ntpath.normpath(path))
+
+
+@functools.lru_cache(maxsize=1)
+def _version_dll():
+    dll = ctypes.WinDLL("version", use_last_error=True)
+    dll.GetFileVersionInfoSizeW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD)]
+    dll.GetFileVersionInfoSizeW.restype = wintypes.DWORD
+    dll.GetFileVersionInfoW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+    ]
+    dll.GetFileVersionInfoW.restype = wintypes.BOOL
+    dll.VerQueryValueW.argtypes = [
+        wintypes.LPCVOID,
+        wintypes.LPCWSTR,
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.UINT),
+    ]
+    dll.VerQueryValueW.restype = wintypes.BOOL
+    return dll
+
+
+@functools.lru_cache(maxsize=128)
+def _cached_pe_description(_norm_key: str, raw_path: str) -> str:
+    if sys.platform != "win32" or not raw_path:
+        return ""
+    try:
+        ver = _version_dll()
+        dummy = wintypes.DWORD(0)
+        size = int(ver.GetFileVersionInfoSizeW(raw_path, ctypes.byref(dummy)))
+        if size <= 0:
+            return ""
+        buf = ctypes.create_string_buffer(size)
+        if not ver.GetFileVersionInfoW(raw_path, 0, size, buf):
+            return ""
+
+        candidates: list[str] = []
+        trans_ptr = wintypes.LPVOID()
+        trans_len = wintypes.UINT(0)
+        if (
+            ver.VerQueryValueW(buf, r"\VarFileInfo\Translation", ctypes.byref(trans_ptr), ctypes.byref(trans_len))
+            and trans_ptr.value
+            and trans_len.value >= 4
+        ):
+            count = int(trans_len.value) // 4
+            words = (wintypes.WORD * (count * 2)).from_address(trans_ptr.value)
+            for idx in range(count):
+                lang = int(words[idx * 2])
+                codepage = int(words[idx * 2 + 1])
+                pair = f"{lang:04x}{codepage:04x}"
+                if pair not in candidates:
+                    candidates.append(pair)
+
+        for fallback in ("040904b0", "040904e4", "041f04b0", "000004b0", "04090000"):
+            if fallback not in candidates:
+                candidates.append(fallback)
+
+        for field_name in ("FileDescription", "ProductName"):
+            for lang_cp in candidates:
+                val_ptr = wintypes.LPVOID()
+                val_len = wintypes.UINT(0)
+                sub_block = rf"\StringFileInfo\{lang_cp}\{field_name}"
+                if (
+                    ver.VerQueryValueW(buf, sub_block, ctypes.byref(val_ptr), ctypes.byref(val_len))
+                    and val_ptr.value
+                    and val_len.value > 0
+                ):
+                    raw = ctypes.wstring_at(val_ptr.value, int(val_len.value)).split("\x00", 1)[0]
+                    cleaned = " ".join(raw.split()).strip()
+                    if cleaned:
+                        return cleaned
+    except Exception:
+        return ""
+    return ""
+
+
+def executable_description(executable: str) -> str:
+    """Statik PE sürüm bilgisinden (FileDescription / ProductName) açıklama döner.
+
+    Gizlilik için pencere başlıkları (GetWindowTextW) asla okunmaz.
+    """
+    if not executable:
+        return ""
+    return _cached_pe_description(_path_key(executable), str(executable))
+
+
+def format_application_name(executable: str, *, pid: int | None = None) -> str:
+    """PE açıklaması varsa 'Ad (app.exe)', yoksa 'app.exe' biçiminde etiket üretir."""
+    exe_name = ntpath.basename(executable or "")
+    if not exe_name:
+        return ""
+    desc = executable_description(executable)
+    if desc and desc.casefold() != exe_name.casefold():
+        label = f"{desc} ({exe_name})"
+    else:
+        label = exe_name
+    if pid is not None:
+        label = f"{label} (PID {int(pid)})"
+    return label
 
 
 class _WindowsProcesses:
@@ -253,11 +355,15 @@ def application_inputs() -> list[ApplicationAudioSource]:
             pid, identity = parent, parent_identity
         roots[pid] = identity
 
-    names = Counter(ntpath.basename(identity[0]).casefold() for identity in roots.values())
+    base_names = {
+        pid: format_application_name(executable)
+        for pid, (executable, _creation_time) in roots.items()
+    }
+    names = Counter(name.casefold() for name in base_names.values())
     sources = []
     for pid, (executable, creation_time) in roots.items():
-        name = ntpath.basename(executable)
+        name = base_names[pid]
         if names[name.casefold()] > 1:
             name = f"{name} (PID {pid})"
         sources.append(ApplicationAudioSource(pid, name, executable, creation_time))
-    return sorted(sources, key=lambda source: (ntpath.basename(source.executable).casefold(), source.pid))
+    return sorted(sources, key=lambda source: (source.name.casefold(), source.pid))

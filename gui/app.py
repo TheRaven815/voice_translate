@@ -2,24 +2,19 @@
 
 from __future__ import annotations
 
-import asyncio
-import functools
+import json
 import os
 import queue
-import re
 import sys
+import tempfile
 import threading
 import time
 import tkinter as tk
 import tkinter.font as tkfont
 from pathlib import Path
 from tkinter import messagebox
-from types import SimpleNamespace
-import webbrowser
 
-import numpy as np
-
-from applications import application_inputs
+from applications import application_inputs, format_application_name
 from process_audio import process_audio_supported
 from config import (
     load as load_config,
@@ -65,8 +60,8 @@ from languages import (
     src_code_to_name,
 )
 from i18n import get_ui_lang, set_ui_lang, t
-from hotkeys import GlobalHotkeys, ShortcutError, parse_shortcut, shortcut_from_tk_event
-from logger import append_history, clear_history, get_logger, load_recent_history, log_exception, setup_logging
+from hotkeys import GlobalHotkeys
+from logger import append_history, get_logger, log_exception, setup_logging
 from loop import SystemAudioLoop, open_capture_recorder, validate_live_api_key
 from reconnect import (
     _PERMANENT_LIVE_ERRORS,
@@ -79,281 +74,39 @@ from reconnect import (
     run_with_retries,
 )
 from source_mute import DUB_BACKGROUND, DubPlan, SourceDub, source_capture_gain
-from meta import APP_AUTHOR, APP_TITLE, __version__
+from meta import APP_TITLE, __version__
 from notifications import WindowsNotifier
-from updater import (
-    UpdateError,
-    UpdateInfo,
-    can_self_update,
-    check_for_update,
-    consume_update_error,
-    download_update,
-    launch_update_helper,
-)
-from .theme import ABOUT_LOGO_PNG, C, ICON_PNG, apply_icon, dark_titlebar, pick_fonts, prepare_app_id
+from updater import UpdateInfo, can_self_update, consume_update_error
+from .dialogs import DialogsMixin
+from .overlay import OverlayMixin
+from .preview import _InputPreviewMonitor
+from .settings_dialog import SettingsDialogMixin
+from .theme import C, apply_icon, dark_titlebar, pick_fonts, prepare_app_id
 from .widgets import CheckToggle, IconButton, LevelSlider, Select, ThemeSwitch, TranscriptSearchBar
+from .win32 import (
+    SingleInstanceMixin,
+    _GEOMETRY_RE,
+    _clamp_to_bounds,
+    _monitor_work_area,
+    _parse_geometry,
+    _virtual_screen_bounds,
+    _win32_gui_apis,
+    extract_exe_icon_png,
+)
 
 
-class _InputPreviewMonitor:
-    """Oturum kapalıyken seçili girişten VU seviyesi üretir.
+class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, tk.Tk):
+    MAX_LOG_LINES = 500
+    LOG_TRIM_BATCH = 100
+    MAX_PANE_LINES = 2000
+    PANE_TRIM_BATCH = 200
+    MAX_TRANSCRIPT_ITEMS = 5000
+    TRANSCRIPT_SPILL_BATCH = 1000
 
-    Kendi daemon thread'inde kısa bloklarla okur; asıl yakalama/çeviri
-    hattına dokunmaz. Oturum çalışırken aygıt boşaltılır (set_device(None)),
-    böylece ses aygıtı çakışması ve yan etki olmaz. Hatalar sessizce
-    yutulur: seviye 0'a düşer, arayüz asla bozulmaz.
-    """
+    @staticmethod
+    def _deps():
+        return sys.modules[__name__]
 
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._level: float = 0.0
-        self._current = None
-        self._pending = None
-        self._has_pending: bool = False
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
-
-    def start(self) -> None:
-        if self._thread is not None and self._thread.is_alive():
-            return
-        self._stop.clear()
-        self._thread = threading.Thread(
-            target=self._run, name="input-preview", daemon=True
-        )
-        self._thread.start()
-
-    def shutdown(self) -> None:
-        self._stop.set()
-
-    def set_device(self, dev) -> None:
-        with self._lock:
-            if device_key(dev) == device_key(self._current) and not self._has_pending:
-                return
-            self._pending = dev
-            self._has_pending = True
-
-    def get_level(self) -> float:
-        with self._lock:
-            return float(self._level)
-
-    def _set_level(self, val: float) -> None:
-        with self._lock:
-            try:
-                v = float(val)
-            except (TypeError, ValueError):
-                v = 0.0
-            self._level = max(0.0, min(1.0, v))
-
-    def _take_pending(self):
-        with self._lock:
-            if not self._has_pending:
-                return None, False
-            dev = self._pending
-            self._pending = None
-            self._has_pending = False
-            self._current = dev
-            return dev, True
-
-    def _run(self) -> None:
-        from audio import CAPTURE_RATE
-        from loop import CAPTURE_BUFFER_BLOCKS
-
-        delay = 0.25
-        while not self._stop.is_set():
-            dev, changed = self._take_pending()
-            if not changed:
-                with self._lock:
-                    dev = self._current
-                if dev is None:
-                    self._set_level(0.0)
-                    if self._stop.wait(0.1):
-                        break
-                    continue
-            elif dev is None:
-                self._set_level(0.0)
-                delay = 0.25
-                continue
-            try:
-                self._inner(dev, CAPTURE_RATE, CAPTURE_BUFFER_BLOCKS)
-                delay = 0.25
-            except Exception:
-                self._set_level(0.0)
-                if self._stop.wait(min(delay, 2.0)):
-                    break
-                delay = min(delay * 2.0, 2.0)
-                continue
-            if self._stop.is_set():
-                break
-
-    def _inner(self, dev, samplerate: int, buffer_blocks: int) -> None:
-        from loop import ensure_discontinuity_suppressed
-
-        # Tek seferlik global susturma (soundcard 'always' filtresinin önüne geçer).
-        try:
-            ensure_discontinuity_suppressed()
-        except Exception:
-            pass
-        with open_capture_recorder(dev, exclude=False) as (
-            mic,
-            _active_rate,
-            block_frames,
-            _active_ch,
-            _used_fallback,
-        ):
-            # Oturum-seviyesi susturma: recorder ömrü boyunca BİR kez kurulur.
-            import warnings
-
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", message=".*data discontinuity.*")
-                while not self._stop.is_set():
-                    with self._lock:
-                        if self._has_pending:
-                            return
-                    try:
-                        frame = mic.record(numframes=block_frames)
-                    except Exception:
-                        raise
-                    if frame is None or len(frame) == 0:
-                        self._set_level(0.0)
-                        continue
-                    try:
-                        arr = np.asarray(frame, dtype=np.float32)
-                        mono = arr.mean(axis=1) if arr.ndim > 1 else arr
-                        if len(mono) == 0:
-                            self._set_level(0.0)
-                            continue
-                        rms = float(np.sqrt(np.dot(mono, mono) / len(mono)))
-                        self._set_level(SystemAudioLoop._rms_to_level(rms))
-                    except Exception:
-                        self._set_level(0.0)
-
-
-@functools.lru_cache(maxsize=1)
-def _win32_gui_apis():
-    """Win32 user32 arayüz imzalarını süreç başına bir kez hazırlar."""
-    import ctypes
-    from ctypes import wintypes
-
-    class _RECT(ctypes.Structure):
-        _fields_ = [
-            ("left", wintypes.LONG),
-            ("top", wintypes.LONG),
-            ("right", wintypes.LONG),
-            ("bottom", wintypes.LONG),
-        ]
-
-    class _MONITORINFO(ctypes.Structure):
-        _fields_ = [
-            ("cbSize", wintypes.DWORD),
-            ("rcMonitor", _RECT),
-            ("rcWork", _RECT),
-            ("dwFlags", wintypes.DWORD),
-        ]
-
-    user32 = ctypes.WinDLL("user32", use_last_error=True)
-    user32.GetSystemMetrics.argtypes = [ctypes.c_int]
-    user32.GetSystemMetrics.restype = ctypes.c_int
-    user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
-    user32.MonitorFromPoint.restype = wintypes.HANDLE
-    user32.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_MONITORINFO)]
-    user32.GetMonitorInfoW.restype = wintypes.BOOL
-    user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
-    user32.GetAncestor.restype = wintypes.HWND
-    user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
-    user32.GetWindowLongW.restype = wintypes.LONG
-    user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.LONG]
-    user32.SetWindowLongW.restype = wintypes.LONG
-    user32.SetWindowPos.argtypes = [
-        wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
-        ctypes.c_int, ctypes.c_int, wintypes.UINT,
-    ]
-    user32.SetWindowPos.restype = wintypes.BOOL
-    user32.PeekMessageW.argtypes = [
-        ctypes.POINTER(wintypes.MSG), wintypes.HWND,
-        wintypes.UINT, wintypes.UINT, wintypes.UINT,
-    ]
-    user32.PeekMessageW.restype = wintypes.BOOL
-    return SimpleNamespace(
-        ctypes=ctypes,
-        wintypes=wintypes,
-        user32=user32,
-        MONITORINFO=_MONITORINFO,
-    )
-
-
-def _virtual_screen_bounds(widget) -> tuple[int, int, int, int]:
-    """Tüm monitörleri kapsayan sanal ekranın (x, y, genişlik, yükseklik) sınırları.
-
-    Tk'nin winfo_screenwidth/height yalnızca birincil monitörü verir; ikinci
-    ekrana taşınan altyazı bu yüzden birinci ekrana geri sıçrıyordu.
-    """
-    if os.name == "nt":
-        try:
-            metrics = _win32_gui_apis().user32.GetSystemMetrics
-            x, y = int(metrics(76)), int(metrics(77))  # SM_X/YVIRTUALSCREEN
-            width, height = int(metrics(78)), int(metrics(79))  # SM_CX/CYVIRTUALSCREEN
-            if width > 0 and height > 0:
-                return x, y, width, height
-        except Exception:
-            pass
-    try:
-        return 0, 0, int(widget.winfo_screenwidth()), int(widget.winfo_screenheight())
-    except (AttributeError, tk.TclError):
-        return 0, 0, 1920, 1080
-
-
-def _monitor_work_area(x: int, y: int) -> tuple[int, int, int, int] | None:
-    """Noktayı içeren (yoksa en yakın) monitörün görev çubuğu hariç alanı."""
-    if os.name != "nt":
-        return None
-    try:
-        api = _win32_gui_apis()
-        monitor = api.user32.MonitorFromPoint(api.wintypes.POINT(int(x), int(y)), 2)  # NEAREST
-        if not monitor:
-            return None
-        info = api.MONITORINFO()
-        info.cbSize = api.ctypes.sizeof(api.MONITORINFO)
-        if not api.user32.GetMonitorInfoW(monitor, api.ctypes.byref(info)):
-            return None
-        work = info.rcWork
-        width, height = work.right - work.left, work.bottom - work.top
-        if width <= 0 or height <= 0:
-            return None
-        return int(work.left), int(work.top), int(width), int(height)
-    except Exception:
-        return None
-
-
-_GEOMETRY_RE = re.compile(r"^=?(\d+)x(\d+)([+-]\d+)([+-]\d+)$")
-
-
-def _parse_geometry(
-    g: str, screen_width: int, screen_height: int
-) -> tuple[int, int, int, int] | None:
-    """Tk geometri dizgesini gerçek (sanal masaüstü) koordinatlara çözer.
-
-    Tk'de ``-N`` sağ/alt kenardan ölçülür; bu yüzden negatif konumlar ekran
-    genişliği üzerinden geri hesaplanır.
-    """
-    match = _GEOMETRY_RE.match((g or "").strip())
-    if not match:
-        return None
-    width, height = int(match.group(1)), int(match.group(2))
-    x_token, y_token = match.group(3), match.group(4)
-    x = int(x_token[1:]) if x_token[0] == "+" else screen_width - width - int(x_token[1:])
-    y = int(y_token[1:]) if y_token[0] == "+" else screen_height - height - int(y_token[1:])
-    return x, y, width, height
-
-
-def _clamp_to_bounds(
-    x: int, y: int, width: int, height: int, bounds: tuple[int, int, int, int]
-) -> tuple[int, int]:
-    bx, by, bw, bh = bounds
-    x = min(max(bx, int(x)), max(bx, bx + bw - int(width)))
-    y = min(max(by, int(y)), max(by, by + bh - int(height)))
-    return x, y
-
-
-class App(tk.Tk):
     def __init__(self, activate_slot=None):
         prepare_app_id()
         cfg = load_config()
@@ -492,6 +245,7 @@ class App(tk.Tk):
         self._overlay_font_cache: tuple[tuple, tkfont.Font] | None = None
         self._overlay_text = ""
         self.transcript_items: list[TranscriptItem] = []
+        self._transcript_spill_path: Path | None = None
         self.session_start_time: float | None = None
         self._timeline_start_time: float | None = None
         self._curr_heard_buf = ""
@@ -848,181 +602,6 @@ class App(tk.Tk):
                 self._loop_kwargs["source_mic"] = dev
         elif getattr(self, "_preview", None) is not None:
             self._preview.set_device(dev)
-
-    def _drain_window_events(self) -> None:
-        """Ebeveyn penceredeki bekleyen Unmap/Map olaylarını transient öncesinde boşaltır."""
-        try:
-            import _tkinter
-
-            flags = _tkinter.DONT_WAIT | _tkinter.WINDOW_EVENTS
-            while self.tk.dooneevent(flags):
-                pass
-        except Exception:
-            pass
-
-    def _open_application_picker(self) -> None:
-        if self._application_picker is not None and self._application_picker.winfo_exists():
-            self._application_picker.deiconify()
-            self._application_picker.lift()
-            self._application_picker.focus_set()
-            return
-        self._drain_window_events()
-        pop = tk.Toplevel(self)
-        pop.withdraw()
-        self._application_picker = pop
-        pop.title(t("application_picker_title"))
-        pop.configure(bg=C.panel)
-        pop.resizable(False, False)
-        pop.transient(self)
-        apply_icon(pop)
-        dark_titlebar(pop, dark=(self._theme != "light"))
-        pop.protocol("WM_DELETE_WINDOW", self._close_application_picker)
-        pop.bind("<Escape>", lambda _e: self._close_application_picker())
-
-        main = tk.Frame(pop, bg=C.panel, padx=18, pady=16)
-        main.pack(fill=tk.BOTH, expand=True)
-        tk.Label(
-            main, text=t("application_picker_title"),
-            font=(self.font_ui[0], self.font_ui[1] + 1, "bold"),
-            fg=C.text, bg=C.panel, anchor="w",
-        ).pack(fill=tk.X)
-        tk.Label(
-            main, text=t("application_picker_description"), font=self.font_ui,
-            fg=C.dim, bg=C.panel, anchor="w", justify=tk.LEFT,
-        ).pack(fill=tk.X, pady=(4, 10))
-
-        list_edge = tk.Frame(main, bg=C.line, bd=0, highlightthickness=0)
-        list_edge.pack(fill=tk.BOTH, expand=True)
-        self._application_list = tk.Listbox(
-            list_edge, height=min(8, max(4, len(self._applications))),
-            font=self.font_ui, bg=C.panel, fg=C.text,
-            selectbackground=C.select, selectforeground=C.text,
-            activestyle="none", relief="flat", bd=0, highlightthickness=0,
-            exportselection=False, cursor="hand2",
-        )
-        self._application_list.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
-        self._application_list.bind("<Double-Button-1>", lambda _e: self._select_application())
-        self._application_list.bind("<Return>", lambda _e: self._select_application())
-        self._application_list.bind("<<ListboxSelect>>", lambda _e: self._update_application_select_state())
-        self._fill_application_picker(self._applications)
-
-        actions = tk.Frame(main, bg=C.panel)
-        actions.pack(fill=tk.X, pady=(12, 0))
-        refresh = tk.Button(
-            actions, text=t("refresh"), command=self._refresh_application_picker,
-            font=self.font_ui, bg=C.panel, fg=C.text,
-            activebackground=C.hover, activeforeground=C.text,
-            relief="flat", bd=0, highlightthickness=0, padx=8, pady=5,
-            cursor="hand2", takefocus=1,
-        )
-        refresh.pack(side=tk.LEFT)
-        cancel = tk.Button(
-            actions, text=t("cancel"), command=self._close_application_picker,
-            font=self.font_ui, bg=C.panel, fg=C.text,
-            activebackground=C.hover, activeforeground=C.text,
-            relief="flat", bd=0, highlightthickness=0, padx=12, pady=5,
-            cursor="hand2", takefocus=1,
-        )
-        cancel.pack(side=tk.RIGHT, padx=(8, 0))
-        self._application_select_btn = tk.Button(
-            actions, text=t("application_picker_select"), command=self._select_application,
-            font=self.font_ui, bg=C.disabled_bg, fg=C.dim,
-            activebackground=C.disabled_bg, activeforeground=C.dim,
-            disabledforeground=C.dim, relief="flat", bd=0, highlightthickness=0,
-            padx=14, pady=5, cursor="arrow", takefocus=1, state=tk.DISABLED,
-        )
-        self._application_select_btn.pack(side=tk.RIGHT)
-
-        pop.update_idletasks()
-        w, h = max(360, pop.winfo_reqwidth()), pop.winfo_reqheight()
-        x = self.winfo_rootx() + (self.winfo_width() - w) // 2
-        y = self.winfo_rooty() + (self.winfo_height() - h) // 2
-        pop.geometry(f"{w}x{h}+{x}+{y}")
-        pop.deiconify()
-        try:
-            pop.grab_set()
-        except tk.TclError:
-            pass
-        if self._application_list.size():
-            current = self._resolve_input_device()
-            index = next(
-                (i for i, source in enumerate(self._application_picker_sources)
-                 if device_key(source) == device_key(current)), 0,
-            )
-            self._application_list.selection_set(index)
-            self._application_list.activate(index)
-            self._application_list.see(index)
-            self._update_application_select_state()
-            self._application_list.focus_set()
-        else:
-            cancel.focus_set()
-
-    def _fill_application_picker(self, sources) -> None:
-        if self._application_list is None:
-            return
-        self._application_picker_sources = list(sources)
-        self._application_list.delete(0, tk.END)
-        if not self._application_picker_sources:
-            self._application_list.insert(tk.END, t("application_picker_empty"))
-            self._application_list.configure(state=tk.DISABLED, fg=C.dim)
-            self._update_application_select_state()
-            return
-        self._application_list.configure(state=tk.NORMAL, fg=C.text)
-        for source in self._application_picker_sources:
-            self._application_list.insert(tk.END, source.name)
-
-    def _refresh_application_picker(self) -> None:
-        try:
-            self._applications = application_inputs()
-            physical = [source for source in self.inputs if not getattr(source, "is_application", False)]
-            self.inputs = physical + self._applications
-            self._fill_application_picker(self._applications)
-            if self._application_list is not None and self._applications:
-                self._application_list.selection_set(0)
-                self._application_list.activate(0)
-        except OSError as err:
-            self._append(f"[hata] {format_user_error(err)}\n")
-        self._update_application_select_state()
-
-    def _update_application_select_state(self) -> None:
-        if self._application_select_btn is None:
-            return
-        selected = bool(self._application_list is not None and self._application_list.curselection() and self._application_picker_sources)
-        self._application_select_btn.configure(
-            state=tk.NORMAL if selected else tk.DISABLED,
-            bg=C.fill if selected else C.disabled_bg,
-            fg=C.fill_fg if selected else C.dim,
-            activebackground=C.fill_hover if selected else C.disabled_bg,
-            activeforeground=C.fill_fg if selected else C.dim,
-            cursor="hand2" if selected else "arrow",
-        )
-
-    def _select_application(self) -> None:
-        if self._application_list is None or not self._application_list.curselection():
-            return
-        index = self._application_list.curselection()[0]
-        if index >= len(self._application_picker_sources):
-            return
-        source = self._application_picker_sources[index]
-        self.in_box["values"] = self._visible_input_values(source)
-        self.in_var.set(display_input_label(source))
-        self._close_application_picker()
-
-    def _close_application_picker(self) -> None:
-        pop, self._application_picker = self._application_picker, None
-        self._application_list = None
-        self._application_select_btn = None
-        self._application_picker_sources = []
-        if pop is None:
-            return
-        try:
-            pop.grab_release()
-        except tk.TclError:
-            pass
-        try:
-            pop.destroy()
-        except tk.TclError:
-            pass
 
     def _on_output_selected(self) -> None:
         if getattr(self, "_translating_ui", False):
@@ -1570,6 +1149,13 @@ class App(tk.Tk):
         else:
             tag = "body"
         self.log.insert(tk.END, text, (tag,))
+        try:
+            line_count = int(self.log.index("end-1c").split(".")[0])
+            if line_count > self.MAX_LOG_LINES:
+                trim = max(1, line_count - self.MAX_LOG_LINES + self.LOG_TRIM_BATCH)
+                self.log.delete("1.0", f"{trim + 1}.0")
+        except Exception:
+            pass
         self.log.see(tk.END)
 
     def _enqueue_history_write(self, heard: str, trans: str, *, src: str, dst: str) -> None:
@@ -1785,40 +1371,6 @@ class App(tk.Tk):
         if hasattr(self, "log"):
             self._append(f"[uyarı] {t('dub_failed')}: {exc}\n")
 
-    def _on_dub_toggle(self) -> None:
-        if self._dub_var is None:
-            return
-        if self._dub_var.get() and self._dub_bg_var is not None:
-            self._dub_bg_var.set(False)
-        self._commit_dub()
-
-    def _on_dub_background(self) -> None:
-        if self._dub_bg_var is None:
-            return
-        if self._dub_bg_var.get() and self._dub_var is not None:
-            self._dub_var.set(False)
-        self._commit_dub()
-
-    def _commit_dub(self) -> None:
-        self.dub_mute_source = bool(self._dub_var.get()) if self._dub_var is not None else False
-        self.dub_background = bool(self._dub_bg_var.get()) if self._dub_bg_var is not None else False
-        if self.dub_mute_source:
-            self.dub_background = False
-            if self._dub_bg_var is not None:
-                self._dub_bg_var.set(False)
-        self._sync_dub_gain_controls()
-        try:
-            save_preferences(
-                dub_mute_source=self.dub_mute_source,
-                dub_background=self.dub_background,
-                dub_background_gain=self._clamp_bed_gain(
-                    getattr(self, "dub_background_gain", DUB_BACKGROUND)
-                ),
-            )
-        except OSError as exc:
-            self._append(f"[uyarı] {t('dub_failed')}: {exc}\n")
-        self._sync_source_dub()
-
     @staticmethod
     def _clamp_bed_gain(value) -> float:
         try:
@@ -1849,407 +1401,6 @@ class App(tk.Tk):
             return 0.92
         return max(0.2, min(1.0, alpha))
 
-    def _on_dub_ducking_toggle(self) -> None:
-        if self._dub_ducking_var is None:
-            return
-        self.dub_ducking = bool(self._dub_ducking_var.get())
-        try:
-            save_preferences(dub_ducking=self.dub_ducking)
-        except OSError as exc:
-            self._append(f"[uyarı] {exc}\n")
-        self._sync_source_dub()
-
-    def _refresh_volume_label(self) -> None:
-        lbl = getattr(self, "_volume_pct_lbl", None)
-        if lbl is None:
-            return
-        try:
-            if lbl.winfo_exists():
-                pct = int(round(self._clamp_volume(getattr(self, "translation_volume", 1.0)) * 100))
-                lbl.configure(text=f"{pct}%")
-        except tk.TclError:
-            pass
-
-    def _on_volume_slider(self, value=None) -> None:
-        if not getattr(self, "_volume_ui", False):
-            return
-        if value is None and self._volume_var is not None:
-            value = self._volume_var.get()
-        try:
-            pct = max(0, min(200, int(round(float(value)))))
-        except (TypeError, ValueError):
-            pct = 100
-        self.translation_volume = pct / 100.0
-        self._refresh_volume_label()
-        if self.loop_obj is not None and hasattr(self.loop_obj, "set_volume"):
-            try:
-                self.loop_obj.set_volume(self.translation_volume)
-            except Exception:
-                pass
-        if hasattr(self, "_loop_kwargs"):
-            self._loop_kwargs["volume"] = self.translation_volume
-        timer = getattr(self, "_volume_timer", None)
-        if timer is not None:
-            try:
-                self.after_cancel(timer)
-            except tk.TclError:
-                pass
-        try:
-            self._volume_timer = self.after(120, self._commit_volume)
-        except tk.TclError:
-            self._commit_volume()
-
-    def _commit_volume(self) -> None:
-        self._volume_timer = None
-        vol = self._clamp_volume(getattr(self, "translation_volume", 1.0))
-        self.translation_volume = vol
-        try:
-            save_preferences(translation_volume=vol)
-        except OSError:
-            pass
-
-    def _refresh_overlay_alpha_label(self) -> None:
-        lbl = getattr(self, "_overlay_alpha_pct_lbl", None)
-        if lbl is None:
-            return
-        try:
-            if lbl.winfo_exists():
-                pct = int(round(self._clamp_overlay_alpha(getattr(self, "overlay_alpha", 0.92)) * 100))
-                lbl.configure(text=f"{pct}%")
-        except tk.TclError:
-            pass
-
-    def _apply_overlay_alpha_live(self) -> None:
-        if self._overlay is not None and self._overlay.winfo_exists():
-            try:
-                self._overlay.attributes("-alpha", self.overlay_alpha)
-            except tk.TclError:
-                pass
-
-    def _on_overlay_alpha_slider(self, value=None) -> None:
-        if not getattr(self, "_overlay_alpha_ui", False):
-            return
-        if value is None and self._overlay_alpha_var is not None:
-            value = self._overlay_alpha_var.get()
-        try:
-            pct = max(20, min(100, int(round(float(value)))))
-        except (TypeError, ValueError):
-            pct = 92
-        self.overlay_alpha = pct / 100.0
-        self._refresh_overlay_alpha_label()
-        self._apply_overlay_alpha_live()
-        timer = getattr(self, "_overlay_alpha_timer", None)
-        if timer is not None:
-            try:
-                self.after_cancel(timer)
-            except tk.TclError:
-                pass
-        try:
-            self._overlay_alpha_timer = self.after(120, self._commit_overlay_alpha)
-        except tk.TclError:
-            self._commit_overlay_alpha()
-
-    def _commit_overlay_alpha(self) -> None:
-        self._overlay_alpha_timer = None
-        alpha = self._clamp_overlay_alpha(getattr(self, "overlay_alpha", 0.92))
-        self.overlay_alpha = alpha
-        try:
-            save_preferences(overlay_alpha=alpha)
-        except OSError:
-            pass
-
-    def _adjust_overlay_alpha(self, delta: float) -> None:
-        self.overlay_alpha = self._clamp_overlay_alpha(getattr(self, "overlay_alpha", 0.92) + delta)
-        if self._overlay_alpha_var is not None:
-            self._overlay_alpha_ui = False
-            self._overlay_alpha_var.set(int(round(self.overlay_alpha * 100)))
-            self._overlay_alpha_ui = True
-        self._refresh_overlay_alpha_label()
-        self._apply_overlay_alpha_live()
-        self._save_user_prefs()
-
-    def _on_save_history_toggle(self) -> None:
-        if self._save_history_var is None:
-            return
-        self.save_history = bool(self._save_history_var.get())
-        try:
-            save_preferences(save_history=self.save_history)
-        except OSError as exc:
-            self._append(f"[uyarı] {exc}\n")
-
-    def _clear_history_action(self) -> None:
-        parent = self._settings if self._settings is not None and self._settings.winfo_exists() else self
-        if not messagebox.askyesno(t("clear_history"), t("history_clear_confirm"), parent=parent):
-            return
-        if clear_history():
-            if self._history_status is not None and self._history_status.winfo_exists():
-                self._history_status.configure(text=t("history_cleared"), fg=C.live)
-            if self._history_win is not None and self._history_win.winfo_exists():
-                self._populate_history_window()
-
-    def _refresh_dub_gain_label(self) -> None:
-        label = getattr(self, "_dub_bg_pct_lbl", None)
-        if label is None:
-            return
-        try:
-            if not label.winfo_exists():
-                return
-        except tk.TclError:
-            return
-        percent = int(round(self._clamp_bed_gain(getattr(self, "dub_background_gain", DUB_BACKGROUND)) * 100))
-        label.configure(text=f"{percent}%")
-
-    def _sync_dub_gain_controls(self) -> None:
-        enabled = bool(getattr(self, "dub_background", False)) and not bool(
-            getattr(self, "dub_mute_source", False)
-        )
-        scale = getattr(self, "_dub_bg_scale", None)
-        if scale is not None:
-            try:
-                if scale.winfo_exists():
-                    scale.configure(state=tk.NORMAL if enabled else tk.DISABLED)
-            except tk.TclError:
-                pass
-        name = getattr(self, "_dub_bg_gain_lbl", None)
-        if name is not None:
-            try:
-                if name.winfo_exists():
-                    name.configure(fg=C.muted if enabled else C.dim)
-            except tk.TclError:
-                pass
-        pct = getattr(self, "_dub_bg_pct_lbl", None)
-        if pct is not None:
-            try:
-                if pct.winfo_exists():
-                    pct.configure(fg=C.text if enabled else C.dim)
-            except tk.TclError:
-                pass
-
-    def _style_dub_scale(self) -> None:
-        scale = getattr(self, "_dub_bg_scale", None)
-        if scale is None:
-            return
-        try:
-            if not scale.winfo_exists():
-                return
-            scale.configure(bg=C.panel)
-        except tk.TclError:
-            pass
-
-    def _on_dub_background_gain(self, value=None) -> None:
-        if not getattr(self, "_dub_gain_ui", False):
-            return
-        if value is None and self._dub_bg_gain_var is not None:
-            value = self._dub_bg_gain_var.get()
-        try:
-            percent = int(round(float(value)))
-        except (TypeError, ValueError):
-            percent = int(round(DUB_BACKGROUND * 100))
-        percent = max(0, min(100, percent))
-        self.dub_background_gain = percent / 100.0
-        self._refresh_dub_gain_label()
-        timer = getattr(self, "_dub_gain_timer", None)
-        if timer is not None:
-            try:
-                self.after_cancel(timer)
-            except tk.TclError:
-                pass
-        try:
-            self._dub_gain_timer = self.after(80, self._commit_dub_gain)
-        except tk.TclError:
-            self._commit_dub_gain()
-
-    def _commit_dub_gain(self) -> None:
-        self._dub_gain_timer = None
-        gain = self._clamp_bed_gain(getattr(self, "dub_background_gain", DUB_BACKGROUND))
-        self.dub_background_gain = gain
-        try:
-            save_preferences(dub_background_gain=gain)
-        except OSError as exc:
-            self._append(f"[uyarı] {t('dub_failed')}: {exc}\n")
-        if getattr(self, "dub_background", False) and not getattr(self, "dub_mute_source", False):
-            self._sync_source_dub()
-
-    def _suspend_global_hotkeys(self) -> None:
-        """Kısayol kaydederken mevcut global kayıtlar tuşu yutmasın."""
-        if self._hotkeys is None or self._hotkeys_suspended:
-            return
-        self._hotkeys_suspended = True
-        self._hotkeys.replace({})
-
-    def _resume_global_hotkeys(self) -> None:
-        if self._hotkeys is None or not self._hotkeys_suspended:
-            return
-        self._hotkeys_suspended = False
-        error = self._register_global_hotkeys()
-        if error and sys.platform == "win32":
-            self._append(f"[uyarı] Genel kısayollar etkinleştirilemedi: {error}\n")
-
-    def _on_push_to_talk_toggle(self) -> None:
-        if self._push_to_talk_var is None:
-            return
-        self.push_to_talk = bool(self._push_to_talk_var.get())
-        if self._hotkeys is not None and hasattr(self._hotkeys, "set_push_to_talk"):
-            self._hotkeys.set_push_to_talk(self.push_to_talk)
-        try:
-            save_preferences(push_to_talk=self.push_to_talk)
-        except OSError as exc:
-            self._append(f"[uyarı] {exc}\n")
-        if (
-            self.push_to_talk
-            and getattr(self, "pause_shortcut", "").strip()
-            and self._worker_alive()
-            and not self._stopping.is_set()
-            and not self._paused
-        ):
-            self.pause_translation(quiet_log=True)
-
-    def _capture_shortcut(self, event, variable: tk.StringVar):
-        if event.keysym == "Escape":
-            return "break"
-        if event.keysym in {"BackSpace", "Delete"}:
-            variable.set("")
-            self._set_shortcut_status(t("shortcut_cleared"), C.dim)
-            return "break"
-        try:
-            shortcut = shortcut_from_tk_event(event)
-        except ShortcutError as exc:
-            self._set_shortcut_status(str(exc), C.warn)
-            return "break"
-        if not shortcut:
-            # Yalnızca değiştirici tuşa basıldı: birleşimin geri kalanını bekle.
-            return "break"
-        variable.set(shortcut)
-        all_vars = (
-            self._mute_shortcut_var,
-            self._start_stop_shortcut_var,
-            self._pause_shortcut_var,
-        )
-        duplicate = any(
-            other is not None and other is not variable and other.get().strip() == shortcut
-            for other in all_vars
-        )
-        if duplicate:
-            self._set_shortcut_status(t("shortcut_duplicate"), C.warn)
-        else:
-            self._set_shortcut_status(
-                t("shortcut_captured").format(shortcut=shortcut), C.live
-            )
-        return "break"
-
-    def _save_shortcuts(self, *, report_success: bool = True) -> bool:
-        if self._mute_shortcut_var is None or self._start_stop_shortcut_var is None:
-            return True
-        raw_pause = self._pause_shortcut_var.get() if self._pause_shortcut_var is not None else getattr(self, "pause_shortcut", "")
-        try:
-            mute = parse_shortcut(self._mute_shortcut_var.get())[0] if self._mute_shortcut_var.get().strip() else ""
-            start_stop = parse_shortcut(self._start_stop_shortcut_var.get())[0] if self._start_stop_shortcut_var.get().strip() else ""
-            pause = parse_shortcut(raw_pause)[0] if raw_pause.strip() else ""
-        except ShortcutError as exc:
-            self._set_shortcut_status(str(exc), C.warn)
-            return False
-        non_empty = [sc for sc in (mute, start_stop, pause) if sc]
-        if len(non_empty) != len(set(non_empty)):
-            self._set_shortcut_status(t("shortcut_duplicate"), C.warn)
-            return False
-        previous = (self.mute_shortcut, self.start_stop_shortcut, getattr(self, "pause_shortcut", ""))
-        self.mute_shortcut, self.start_stop_shortcut, self.pause_shortcut = mute, start_stop, pause
-        self._hotkeys_suspended = False
-        error = self._register_global_hotkeys()
-        if error:
-            self.mute_shortcut, self.start_stop_shortcut, self.pause_shortcut = previous
-            self._set_shortcut_status(error, C.warn)
-            return False
-        try:
-            save_preferences(
-                mute_shortcut=mute,
-                start_stop_shortcut=start_stop,
-                pause_shortcut=pause,
-            )
-        except OSError as exc:
-            self.mute_shortcut, self.start_stop_shortcut, self.pause_shortcut = previous
-            self._register_global_hotkeys()
-            self._set_shortcut_status(
-                t("shortcut_save_failed").format(error=exc), C.warn
-            )
-            return False
-        self._mute_shortcut_var.set(mute)
-        self._start_stop_shortcut_var.set(start_stop)
-        if self._pause_shortcut_var is not None:
-            self._pause_shortcut_var.set(pause)
-        if report_success:
-            self._set_shortcut_status(t("shortcuts_saved"), C.live)
-        return True
-
-    def _set_shortcut_status(self, text: str, color: str) -> None:
-        status = getattr(self, "_shortcut_status", None)
-        if status is not None and status.winfo_exists():
-            status.configure(text=text, fg=color)
-
-
-    def _get_overlay_font(self) -> tkfont.Font:
-        spec = (self.font_brand[0], getattr(self, "overlay_font_size", 13), "bold")
-        cached = getattr(self, "_overlay_font_cache", None)
-        if cached is not None and cached[0] == spec:
-            return cached[1]
-        font_obj = tkfont.Font(root=self, font=spec)
-        self._overlay_font_cache = (spec, font_obj)
-        return font_obj
-
-    def _overlay_line_capacity(self) -> int:
-        """Geçerli pencere yüksekliğine sığan altyazı satırı sayısı."""
-        pop = self._overlay
-        label = getattr(self, "overlay_label", None)
-        if pop is None or label is None or not pop.winfo_exists():
-            return 1
-        font = self._get_overlay_font()
-        line_height = max(1, font.metrics("linespace"))
-        pad_y = int(float(label.cget("pady")))
-        available = pop.winfo_height() - 2 * pad_y - 2
-        return max(1, available // line_height)
-
-    def _overlay_tail(self, full_text: str) -> str:
-        """Pencere yüksekliğine sığan son görsel satırları döndürür."""
-        text = full_text.strip()
-        if not text:
-            return ""
-        max_lines = self._overlay_line_capacity()
-        font = self._get_overlay_font()
-        avail = 520
-        if getattr(self, "overlay_label", None) is not None and self.overlay_label.winfo_exists():
-            avail = max(120, int(str(self.overlay_label.cget("wraplength"))))
-        lines: list[str] = []
-        cur = ""
-        for word in text.split():
-            cand = f"{cur} {word}".strip()
-            if cur and font.measure(cand) > avail:
-                lines.append(cur)
-                cur = word
-            else:
-                cur = cand
-        if cur:
-            lines.append(cur)
-        if len(lines) <= max_lines:
-            return text
-        return "\n".join(lines[-max_lines:])
-
-    def _overlay_text_layout(self) -> tuple[str, str]:
-        """Akışta okuma kenarı sabit kalsın: LTR sol üst, RTL sağ üst."""
-        if is_rtl(self.dst_var.get()):
-            return "ne", tk.RIGHT
-        return "nw", tk.LEFT
-
-    def _update_overlay(self, full_text: str) -> None:
-        if self._overlay is None or not self._overlay.winfo_exists():
-            return
-        self._overlay_text = full_text.strip()
-        tail = self._overlay_tail(full_text)
-        if not tail:
-            return
-        anchor, justify = self._overlay_text_layout()
-        self.overlay_label.configure(text=tail, anchor=anchor, justify=justify)
-        # Metin güncellemesi pencereyi yeniden konumlandırmaz; konum kullanıcıya ait.
-
     def _write_pane(self, widget, text: str):
         pinned = self._is_pane_pinned(widget)
         # Akış en alttayken eski seçim gri blok gibi görünmesin diye kaldır;
@@ -2259,6 +1410,18 @@ class App(tk.Tk):
         lang = self.src_var.get() if widget is self.heard else self.dst_var.get()
         tag = "rtl" if is_rtl(lang) else "ltr"
         widget.insert(tk.END, text, ("body", tag))
+        try:
+            line_count = int(widget.index("end-1c").split(".")[0])
+            if line_count > self.MAX_PANE_LINES:
+                trim = max(1, line_count - self.MAX_PANE_LINES + self.PANE_TRIM_BATCH)
+                if not pinned:
+                    top_line = int(widget.index("@0,0").split(".")[0])
+                    widget.delete("1.0", f"{trim + 1}.0")
+                    widget.yview(f"{max(1, top_line - trim)}.0")
+                else:
+                    widget.delete("1.0", f"{trim + 1}.0")
+        except Exception:
+            pass
         if pinned:
             widget.see(tk.END)
             self._hide_jump_pill(widget)
@@ -2278,25 +1441,115 @@ class App(tk.Tk):
             if last:
                 self._update_overlay(last)
 
+    def _append_transcript_item(self, item: TranscriptItem) -> None:
+        self.transcript_items.append(item)
+        if len(self.transcript_items) <= self.MAX_TRANSCRIPT_ITEMS:
+            return
+        batch = min(self.TRANSCRIPT_SPILL_BATCH, max(1, self.MAX_TRANSCRIPT_ITEMS // 2))
+        spill_count = max(1, len(self.transcript_items) - self.MAX_TRANSCRIPT_ITEMS + batch)
+        spill_count = min(spill_count, len(self.transcript_items))
+        to_spill = self.transcript_items[:spill_count]
+        del self.transcript_items[:spill_count]
+        spill_path = getattr(self, "_transcript_spill_path", None)
+        if spill_path is None:
+            tmp = tempfile.NamedTemporaryFile(
+                prefix="ahenk_spill_", suffix=".jsonl", delete=False
+            )
+            tmp.close()
+            spill_path = Path(tmp.name)
+            self._transcript_spill_path = spill_path
+        with spill_path.open("a", encoding="utf-8") as fh:
+            for it in to_spill:
+                fh.write(
+                    json.dumps(
+                        {
+                            "timestamp": it.timestamp,
+                            "stream": it.stream,
+                            "text": it.text,
+                            "duration_s": it.duration_s,
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+
+    def _load_spilled_transcript_items(self) -> list[TranscriptItem]:
+        spill_path = getattr(self, "_transcript_spill_path", None)
+        if spill_path is None or not spill_path.is_file():
+            return []
+        loaded: list[TranscriptItem] = []
+        try:
+            with spill_path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    raw = line.strip()
+                    if not raw:
+                        continue
+                    data = json.loads(raw)
+                    loaded.append(
+                        TranscriptItem(
+                            timestamp=float(data["timestamp"]),
+                            stream=str(data["stream"]),
+                            text=str(data["text"]),
+                            duration_s=float(data.get("duration_s", 0.0)),
+                        )
+                    )
+        except Exception:
+            pass
+        return loaded
+
     def _clear_pane(self, widget):
         widget.delete("1.0", tk.END)
         self._hide_jump_pill(widget)
+        target_stream = None
         if widget is self.heard:
+            target_stream = "heard"
             self.detected_lbl.configure(text="")
             self._curr_heard_buf = ""
             self._curr_heard_start = None
             self._last_heard_completed = ""
             self.transcript_items = [it for it in self.transcript_items if it.stream != "heard"]
         elif widget is self.trans:
+            target_stream = "trans"
             self._curr_trans_buf = ""
             self._curr_trans_start = None
             if self._overlay is not None and self._overlay.winfo_exists():
                 self._overlay_text = ""
                 self.overlay_label.configure(text="...")
             self.transcript_items = [it for it in self.transcript_items if it.stream != "trans"]
+        spill_path = getattr(self, "_transcript_spill_path", None)
+        if target_stream is not None and spill_path is not None and spill_path.is_file():
+            kept = [
+                it for it in self._load_spilled_transcript_items()
+                if it.stream != target_stream
+            ]
+            if kept:
+                with spill_path.open("w", encoding="utf-8") as fh:
+                    for it in kept:
+                        fh.write(
+                            json.dumps(
+                                {
+                                    "timestamp": it.timestamp,
+                                    "stream": it.stream,
+                                    "text": it.text,
+                                    "duration_s": it.duration_s,
+                                },
+                                ensure_ascii=False,
+                            )
+                            + "\n"
+                        )
+            else:
+                try:
+                    spill_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                self._transcript_spill_path = None
         if self._find_bar is not None and self._find_bar.is_open:
             self._find_bar.refresh(scroll=False)
-        if not self.transcript_items and (self.worker is None or not self.worker.is_alive()):
+        if (
+            not self.transcript_items
+            and not self._load_spilled_transcript_items()
+            and (self.worker is None or not self.worker.is_alive())
+        ):
             self._timeline_start_time = None
     def _copy_pane(self, pane: tk.Text):
         content = pane.get("1.0", "end-1c").strip()
@@ -2322,43 +1575,6 @@ class App(tk.Tk):
         notice.configure(text=t("api_key_missing"), fg=C.warn, bg=C.rail)
         if notice.winfo_manager() != "grid":
             notice.grid()
-
-    def _show_update_chip(self, version: str) -> None:
-        chip = getattr(self, "_update_chip", None)
-        if chip is None:
-            return
-        chip.configure(text=t("update_available").format(version=version), fg=C.live, bg=C.rail)
-        if chip.winfo_manager() != "pack":
-            chip.pack(anchor="w", fill=tk.X, pady=(6, 0), before=self._rail_actions)
-
-    def _on_update_chip(self) -> None:
-        info = self._update_info
-        if info is None or self._update_installing:
-            return
-        install = messagebox.askyesno(
-            t("update_dialog_title"),
-            t("update_prompt").format(version=info.version),
-            parent=self,
-        )
-        if install:
-            self._download_and_install_update(info)
-
-    def _paint_download_progress(self, fraction: float) -> None:
-        frac = max(0.0, min(1.0, fraction))
-        self._download_fraction = frac
-        pct = int(round(frac * 100))
-        if hasattr(self, "timer_lbl"):
-            self.timer_lbl.configure(text=f"{pct}%")
-        self._update_meter(frac, fill=C.warn)
-
-    def _clear_download_progress(self) -> None:
-        self._download_fraction = None
-        if hasattr(self, "timer_lbl") and not (
-            self.worker is not None and self.worker.is_alive() and self.session_start_time
-        ):
-            self.timer_lbl.configure(text="")
-        if hasattr(self, "meter"):
-            self.meter.itemconfigure(self._meter_bar, fill=C.live)
 
     def _save_user_prefs(self):
         if getattr(self, "_save_prefs_timer", None) is not None:
@@ -2419,48 +1635,8 @@ class App(tk.Tk):
             self.pin_btn.set_accent(self.always_on_top)
         self._save_user_prefs()
 
-    def _toggle_key_mask(self) -> None:
-        if self.key_entry is None or not self.key_entry.winfo_exists():
-            return
-        if self.key_entry.cget("show") == "•":
-            self.key_entry.configure(show="")
-            if self.mask_btn is not None and self.mask_btn.winfo_exists():
-                self.mask_btn.kind = "eye_off"
-                self.mask_btn.redraw()
-                self.mask_btn.set_tooltip(t("hide_key", "Gizle"))
-        else:
-            self.key_entry.configure(show="•")
-            if self.mask_btn is not None and self.mask_btn.winfo_exists():
-                self.mask_btn.kind = "eye"
-                self.mask_btn.redraw()
-                self.mask_btn.set_tooltip(t("show_key", "Göster"))
-
-    def _test_api_key(self) -> None:
-        key = self.key_var.get().strip()
-        if not key:
-            message = t("test_key_empty")
-            self._append(f"[hata] {message}\n")
-            if self._settings_status is not None and self._settings_status.winfo_exists():
-                self._settings_status.configure(text=message, fg=C.warn)
-            return
-        self._append(f"[bilgi] {t('testing_key')}\n")
-        if self._settings_status is not None and self._settings_status.winfo_exists():
-            self._settings_status.configure(text=t("testing_key"), fg=C.dim)
-        def _bg():
-            try:
-                asyncio.run(validate_live_api_key(key))
-                self.log_queue.put(f"[bilgi] {t('key_valid')}\n")
-                self.log_queue.put(("key_test_result", True, t("key_valid"), C.live))
-            except Exception as e:
-                err_msg = format_user_error(e)
-                self.log_queue.put(f"[hata] {t('key_test_failed_log').format(error=err_msg)}\n")
-                self.log_queue.put(
-                    ("key_test_result", False, t("key_invalid").format(error=err_msg), C.warn)
-                )
-        threading.Thread(target=_bg, daemon=True).start()
-
     def _get_export_items(self) -> list[TranscriptItem]:
-        items = list(getattr(self, "transcript_items", []))
+        items = self._load_spilled_transcript_items() + list(getattr(self, "transcript_items", []))
         now = time.time()
         heard_buf = getattr(self, "_curr_heard_buf", "").strip()
         trans_buf = getattr(self, "_curr_trans_buf", "").strip()
@@ -2564,66 +1740,6 @@ class App(tk.Tk):
         self.font_body = (family, new_size)
         self.heard.configure(font=self.font_body)
         self.trans.configure(font=self.font_body)
-
-    def _adjust_overlay_font(self, delta: int) -> None:
-        self.overlay_font_size = max(10, min(32, getattr(self, "overlay_font_size", 13) + delta))
-        if hasattr(self, "overlay_label") and self.overlay_label.winfo_exists():
-            self.overlay_label.configure(
-                font=(self.font_brand[0], self.overlay_font_size, "bold"),
-                text=self._overlay_tail(self._overlay_text) or "...",
-            )
-            self._fit_overlay()
-        self._save_user_prefs()
-
-    def _apply_overlay_click_through(self) -> bool:
-        if os.name != "nt" or self._overlay is None or not self._overlay.winfo_exists():
-            return True
-        api = _win32_gui_apis()
-        ctypes = api.ctypes
-        user32 = api.user32
-        child_hwnd = self._overlay.winfo_id()
-        GA_ROOT = 2
-        hwnd = user32.GetAncestor(child_hwnd, GA_ROOT) or child_hwnd
-        GWL_EXSTYLE = -20
-        WS_EX_TRANSPARENT = 0x00000020
-        try:
-            if self._overlay_click_style is None:
-                self._overlay_click_style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-            base_style = self._overlay_click_style
-            click_through = self.overlay_click_through and not self._overlay_controls_interactive
-            target_style = base_style | WS_EX_TRANSPARENT if click_through else base_style
-            ctypes.set_last_error(0)
-            previous = user32.SetWindowLongW(hwnd, GWL_EXSTYLE, target_style)
-            if previous == 0 and ctypes.get_last_error():
-                raise ctypes.WinError(ctypes.get_last_error())
-            # Stil değişikliğini yeni Tk penceresi kurmadan uygula. Toplevel'i
-            # yeniden kurmak, layered pencerenin yüzeyini siyaha düşürüyordu.
-            SWP_NOSIZE = 0x0001
-            SWP_NOMOVE = 0x0002
-            SWP_NOZORDER = 0x0004
-            SWP_NOACTIVATE = 0x0010
-            SWP_FRAMECHANGED = 0x0020
-            if not user32.SetWindowPos(
-                hwnd, None, 0, 0, 0, 0,
-                SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
-            ):
-                raise ctypes.WinError()
-            return True
-        except Exception as exc:
-            self._append(f"[uyarı] Altyazı tıklama modu değiştirilemedi: {exc}\n")
-            return False
-
-    def _toggle_overlay_click_through(self) -> None:
-        if self._overlay is None or not self._overlay.winfo_exists():
-            return
-        previous = getattr(self, "overlay_click_through", False)
-        self.overlay_click_through = not previous
-        if not self._apply_overlay_click_through():
-            self.overlay_click_through = previous
-            return
-        self._overlay_thru_btn.kind = "target" if self.overlay_click_through else "cursor"
-        self._overlay_thru_btn.redraw()
-        self._save_user_prefs()
 
     def restart(self) -> None:
         """Çalışırken ayarları nazikçe yeniden başlatarak uygular."""
@@ -2905,9 +2021,12 @@ class App(tk.Tk):
             for child in self._application_picker.winfo_children():
                 self._retint_frame(child, bg=C.panel)
             if self._application_list is not None and self._application_list.winfo_exists():
-                self._application_list.configure(
-                    bg=C.panel, fg=C.text, selectbackground=C.select, selectforeground=C.text
-                )
+                if hasattr(self._application_list, "update_theme"):
+                    self._application_list.update_theme()
+                else:
+                    self._application_list.configure(
+                        bg=C.panel, fg=C.text, selectbackground=C.select, selectforeground=C.text
+                    )
             self._update_application_select_state()
         if self._about is not None and self._about.winfo_exists():
             self._about.configure(bg=C.panel)
@@ -2945,6 +2064,7 @@ class App(tk.Tk):
                 getattr(self, "_glossary_text", None),
                 getattr(self, "_history_text", None),
                 getattr(self, "_history_find_bar", None),
+                getattr(self, "_application_list", None),
             ):
                 continue
             if isinstance(child, (tk.Frame, tk.Canvas)):
@@ -2984,7 +2104,7 @@ class App(tk.Tk):
                         if getattr(self, "_curr_heard_buf", "").strip():
                             now_ts = time.time()
                             h_start = getattr(self, "_curr_heard_start", None) or now_ts
-                            self.transcript_items.append(
+                            self._append_transcript_item(
                                 TranscriptItem(
                                     timestamp=h_start,
                                     stream="heard",
@@ -2997,7 +2117,7 @@ class App(tk.Tk):
                         if getattr(self, "_curr_trans_buf", "").strip():
                             now_ts = time.time()
                             t_start = getattr(self, "_curr_trans_start", None) or now_ts
-                            self.transcript_items.append(
+                            self._append_transcript_item(
                                 TranscriptItem(
                                     timestamp=t_start,
                                     stream="trans",
@@ -3054,7 +2174,7 @@ class App(tk.Tk):
                                 h_start = self._curr_heard_start or now_ts
                                 text_heard = self._curr_heard_buf.strip()
                                 self._last_heard_completed = text_heard
-                                self.transcript_items.append(
+                                self._append_transcript_item(
                                     TranscriptItem(
                                         timestamp=h_start,
                                         stream="heard",
@@ -3070,7 +2190,7 @@ class App(tk.Tk):
                                 now_ts = time.time()
                                 t_start = self._curr_trans_start or now_ts
                                 text_trans = self._curr_trans_buf.strip()
-                                self.transcript_items.append(
+                                self._append_transcript_item(
                                     TranscriptItem(
                                         timestamp=t_start,
                                         stream="trans",
@@ -3190,165 +2310,6 @@ class App(tk.Tk):
                 self._pump_after_id = self.after(120, self._pump_log)
             except tk.TclError:
                 self._pump_after_id = None
-
-    def _check_for_updates(self, manual: bool = False) -> None:
-        if self._update_check_running or self._update_installing:
-            if manual:
-                messagebox.showinfo(t("update_title_short"), t("update_already_running"), parent=self)
-            return
-        if not can_self_update():
-            if manual:
-                messagebox.showinfo(
-                    t("update_title_short"),
-                    t("update_onefile_only"),
-                    parent=self,
-                )
-            return
-        self._update_check_running = True
-        if manual and not (self.worker is not None and self.worker.is_alive()):
-            self._set_status("Güncelleme denetleniyor", C.warn)
-
-        def check() -> None:
-            try:
-                self.log_queue.put(("update_result", check_for_update(), manual))
-            except UpdateError as exc:
-                self.log_queue.put(("update_error", str(exc), manual))
-            except Exception as exc:
-                log_exception(exc, "Update check error")
-                self.log_queue.put(("update_error", "Beklenmeyen güncelleme denetimi hatası.", manual))
-
-        threading.Thread(target=check, name="update-check", daemon=True).start()
-
-    def _handle_update_result(self, info: UpdateInfo | None, *, manual: bool) -> None:
-        self._update_check_running = False
-        self._update_info = info
-        if info is None:
-            if manual:
-                messagebox.showinfo(
-                    t("update_title_short"),
-                    t("update_up_to_date").format(version=__version__),
-                    parent=self,
-                )
-            if not (self.worker is not None and self.worker.is_alive()):
-                self._set_status("Hazır", C.dim)
-            return
-        self.version_lbl.configure(text=f"v{__version__}", fg=C.dim)
-        self._show_update_chip(info.version)
-        if hasattr(self, "about_update_status") and self.about_update_status.winfo_exists():
-            self.about_update_status.configure(
-                text=t("update_ready_status").format(version=info.version), fg=C.live
-            )
-        install = messagebox.askyesno(
-            t("update_dialog_title"),
-            t("update_prompt").format(version=info.version),
-            parent=self,
-        )
-        if install:
-            self._download_and_install_update(info)
-        elif not (self.worker is not None and self.worker.is_alive()):
-            self._set_status("Hazır", C.dim)
-
-    def _handle_update_error(self, error: str, *, manual: bool) -> None:
-        self._update_check_running = False
-        self._update_installing = False
-        self._clear_download_progress()
-        self._append(f"[hata] {t('update_title_short')}: {error}\n")
-        if not (self.worker is not None and self.worker.is_alive()):
-            self._set_status("Hazır", C.dim)
-        if manual:
-            messagebox.showerror(t("update_check_failed_title"), error, parent=self)
-
-    def _download_and_install_update(self, info: UpdateInfo) -> None:
-        if self._update_installing:
-            return
-        self._update_installing = True
-        self._paint_download_progress(0.0)
-        self._set_status("Güncelleme indiriliyor", C.warn)
-        self._append(f"[bilgi] {t('update_downloading_log').format(version=info.version)}\n")
-
-        def on_progress(got: int, total: int) -> None:
-            frac = 0.0 if total <= 0 else min(1.0, got / total)
-            self.log_queue.put(("update_progress", frac, total))
-
-        def download() -> None:
-            try:
-                staged = download_update(info, on_progress=on_progress)
-                self.log_queue.put(("update_ready", staged, info))
-            except UpdateError as exc:
-                self.log_queue.put(("update_error", str(exc), True))
-            except Exception as exc:
-                log_exception(exc, "Update download error")
-                self.log_queue.put(("update_error", "Beklenmeyen güncelleme indirme hatası.", True))
-
-        threading.Thread(target=download, name="update-download", daemon=True).start()
-
-    def _apply_downloaded_update(self, staged: Path, info: UpdateInfo) -> None:
-        try:
-            launch_update_helper(staged, info)
-        except UpdateError as exc:
-            self._handle_update_error(str(exc), manual=True)
-            return
-        self._paint_download_progress(1.0)
-        self._append(f"[bilgi] {t('update_verified_restarting')}\n")
-        self._set_status("Güncelleme kuruluyor", C.warn)
-        self.after(100, self._on_close)
-
-    def save_key(self, *, report_success: bool = True) -> bool:
-        key = self.key_var.get().strip()
-        try:
-            save_api_key(key)
-        except OSError as e:
-            self._append(f"[hata] Anahtar kaydedilemedi: {e}\n")
-            if self._settings_status is not None and self._settings_status.winfo_exists():
-                self._settings_status.configure(
-                    text=t("key_save_failed").format(error=e), fg=C.warn
-                )
-            return False
-        if report_success:
-            if key:
-                self._append("[bilgi] API anahtarı kaydedildi.\n")
-                if self._settings_status is not None and self._settings_status.winfo_exists():
-                    self._settings_status.configure(text=t("key_saved"), fg=C.live)
-            else:
-                self._append("[bilgi] Kayıtlı anahtar silindi.\n")
-                if self._settings_status is not None and self._settings_status.winfo_exists():
-                    self._settings_status.configure(text=t("key_deleted"), fg=C.dim)
-        if self.key_entry is not None and self.key_entry.winfo_exists():
-            self.key_entry.selection_clear()
-        if self._settings is not None and self._settings.winfo_exists():
-            self._settings.focus_set()
-        else:
-            self.focus_set()
-        self._refresh_key_notice()
-        return True
-
-    def _show_save_status(self, key: str | None) -> None:
-        self._save_status_key = key or None
-        label = getattr(self, "_save_status", None)
-        if label is None or not label.winfo_exists():
-            return
-        label.configure(text=t(key) if key else "", fg=C.live)
-
-    def _save_settings(self) -> None:
-        self._show_save_status(None)
-        if not self._save_shortcuts(report_success=False):
-            return
-        if not self.save_key(report_success=False):
-            return
-        glossary_changed = False
-        if self._glossary_text is not None and self._glossary_text.winfo_exists():
-            new_glossary = self._glossary_text.get("1.0", "end-1c").strip()
-            glossary_changed = new_glossary != getattr(self, "glossary", "")
-            self.glossary = new_glossary
-            try:
-                save_preferences(glossary=new_glossary)
-            except OSError as exc:
-                self._append(f"[hata] {exc}\n")
-                return
-        self._show_save_status("settings_saved")
-        if glossary_changed:
-            self._on_runtime_pref_change()
-
 
     def start(self, preserve_transcript: bool = False):
         if self.worker is not None and self.worker.is_alive():
@@ -3513,1004 +2474,6 @@ class App(tk.Tk):
             self._set_status("Yeniden başlatılıyor", C.warn)
         else:
             self._set_status("Durduruluyor", C.warn)
-    def _open_about(self):
-        if self._about is not None and self._about.winfo_exists():
-            self._about.deiconify()
-            self._about.lift()
-            self._about.focus_set()
-            return
-        self._drain_window_events()
-        pop = tk.Toplevel(self)
-        pop.withdraw()
-        self._about = pop
-        pop.title(t("about"))
-        pop.configure(bg=C.panel)
-        pop.resizable(False, False)
-        pop.transient(self)
-        apply_icon(pop)
-        dark_titlebar(pop, dark=(self._theme != "light"))
-        pop.protocol("WM_DELETE_WINDOW", self._close_about)
-        for key in ("<Escape>", "<Return>", "<KP_Enter>", "<space>"):
-            pop.bind(key, lambda _e: self._close_about())
-
-        main = tk.Frame(pop, bg=C.panel, padx=20, pady=16)
-        main.pack(fill=tk.BOTH, expand=True)
-
-        header = tk.Frame(main, bg=C.panel)
-        header.pack(fill=tk.X)
-
-        if ABOUT_LOGO_PNG.is_file():
-            try:
-                logo_img = tk.PhotoImage(file=str(ABOUT_LOGO_PNG))
-                logo = tk.Label(header, image=logo_img, bg=C.panel)
-                logo.image = logo_img
-                logo.pack(side=tk.LEFT, padx=(0, 14), anchor="n")
-            except Exception:
-                pass
-
-        info = tk.Frame(header, bg=C.panel)
-        info.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        title_row = tk.Frame(info, bg=C.panel)
-        title_row.pack(anchor="w")
-
-        self.about_name = tk.Label(
-            title_row,
-            text=APP_TITLE,
-            font=(self.font_brand[0], 12, "bold"),
-            fg=C.text,
-            bg=C.panel,
-        )
-        self.about_name.pack(side=tk.LEFT)
-
-        self.about_version = tk.Label(
-            title_row,
-            text=f"v{__version__}",
-            font=self.font_ui,
-            fg=C.dim,
-            bg=C.panel,
-        )
-        self.about_version.pack(side=tk.LEFT, padx=(6, 0))
-
-        desc = tk.Label(
-            info,
-            text=t("about_tagline"),
-            font=self.font_ui,
-            fg=C.muted,
-            bg=C.panel,
-        )
-        desc.pack(anchor="w", pady=(3, 0))
-        self.about_tagline = desc
-        self.about_update_status = tk.Label(
-            info,
-            text=t("update_auto_status") if can_self_update() else t("source_mode_status"),
-            font=self.font_ui,
-            fg=C.dim,
-            bg=C.panel,
-        )
-        self.about_update_status.pack(anchor="w", pady=(5, 0))
-
-        div = tk.Frame(main, bg=C.line, height=1)
-        div.pack(fill=tk.X, pady=(14, 12))
-
-        bottom = tk.Frame(main, bg=C.panel)
-        bottom.pack(fill=tk.X)
-
-        self.about_author = tk.Label(
-            bottom,
-            text=APP_AUTHOR,
-            font=self.font_ui,
-            fg=C.dim,
-            bg=C.panel,
-        )
-        self.about_author.pack(side=tk.LEFT)
-        self.about_update_btn = tk.Button(
-            bottom,
-            text=t("check_updates"),
-            command=lambda: self._check_for_updates(manual=True),
-            font=self.font_ui,
-            bg=C.panel,
-            fg=C.text,
-            activebackground=C.hover,
-            activeforeground=C.text,
-            relief="flat",
-            bd=0,
-            highlightthickness=0,
-            padx=8,
-            pady=3,
-            cursor="hand2",
-        )
-        self.about_update_btn.pack(side=tk.LEFT, padx=(12, 0))
-
-        btn_wrap = tk.Frame(bottom, bg=C.line, bd=0, highlightthickness=0)
-        btn_wrap.pack(side=tk.RIGHT)
-        btn = tk.Button(
-            btn_wrap,
-            text=t("ok"),
-            font=self.font_ui,
-            bg=C.panel,
-            fg=C.text,
-            activebackground=C.hover,
-            activeforeground=C.text,
-            relief="flat",
-            bd=0,
-            highlightthickness=0,
-            padx=16,
-            pady=3,
-            cursor="hand2",
-            takefocus=0,
-            command=self._close_about,
-        )
-        btn.pack(padx=1, pady=1)
-        self.about_ok_btn = btn
-        btn.bind("<Enter>", lambda _e: btn.configure(bg=C.hover))
-        btn.bind("<Leave>", lambda _e: btn.configure(bg=C.panel))
-
-        pop.update_idletasks()
-        w = max(290, pop.winfo_reqwidth())
-        h = pop.winfo_reqheight()
-        x = self.winfo_rootx() + (self.winfo_width() - w) // 2
-        y = self.winfo_rooty() + (self.winfo_height() - h) // 2
-        pop.geometry(f"{w}x{h}+{x}+{y}")
-        pop.deiconify()
-        try:
-            pop.grab_set()
-        except tk.TclError:
-            pass
-        pop.focus_set()
-    def _close_about(self) -> None:
-        if self._about is None:
-            return
-        try:
-            self._about.grab_release()
-        except tk.TclError:
-            pass
-        self._about.destroy()
-        self._about = None
-
-    def _open_settings(self):
-        if self._settings is not None and self._settings.winfo_exists():
-            self._settings.deiconify()
-            self._settings.lift()
-            self._settings.focus_set()
-            return
-        self._drain_window_events()
-        pop = tk.Toplevel(self)
-        pop.withdraw()
-        self._settings = pop
-        pop.title(t("settings", "Ayarlar"))
-        pop.configure(bg=C.panel)
-        pop.resizable(False, False)
-        pop.transient(self)
-        apply_icon(pop)
-        dark_titlebar(pop, dark=(self._theme != "light"))
-        pop.protocol("WM_DELETE_WINDOW", self._close_settings)
-        pop.bind("<Escape>", lambda _e: self._close_settings())
-
-        footer = tk.Frame(pop, bg=C.panel, padx=22, pady=10)
-        footer.pack(side=tk.BOTTOM, fill=tk.X)
-        host = tk.Frame(pop, bg=C.panel)
-        host.pack(fill=tk.BOTH, expand=True)
-        canvas = tk.Canvas(
-            host, bg=C.panel, highlightthickness=0, bd=0, takefocus=0
-        )
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scroll = tk.Scrollbar(
-            host,
-            orient=tk.VERTICAL,
-            command=canvas.yview,
-            width=10,
-            bg=C.panel,
-            troughcolor=C.rail,
-            activebackground=C.hover,
-            bd=0,
-            highlightthickness=0,
-            relief="flat",
-        )
-        canvas.configure(yscrollcommand=scroll.set)
-        self._settings_canvas = canvas
-        self._settings_scroll = scroll
-        main = tk.Frame(canvas, bg=C.panel, padx=22, pady=8)
-        main_id = canvas.create_window((0, 0), window=main, anchor="nw")
-        main.bind(
-            "<Configure>",
-            lambda _e: canvas.configure(scrollregion=canvas.bbox("all")),
-        )
-        canvas.bind(
-            "<Configure>", lambda event: canvas.itemconfigure(main_id, width=event.width)
-        )
-
-        def _on_settings_wheel(event):
-            if event.widget is getattr(self, "_glossary_text", None):
-                return
-            if canvas.bbox("all") is None:
-                return
-            canvas.yview_scroll(int(-event.delta / 120), "units")
-
-        pop.bind("<MouseWheel>", _on_settings_wheel)
-
-        def _dialog_btn(parent, label: str, command, *, primary: bool = False,
-                          side: str = tk.LEFT, padx: tuple = (0, 0)) -> tk.Button:
-            wrap = tk.Frame(parent, bg=C.fill if primary else C.line, bd=0, highlightthickness=0)
-            wrap.pack(side=side, padx=padx)
-            btn = tk.Button(
-                wrap,
-                text=label,
-                font=self.font_ui,
-                bg=C.fill if primary else C.panel,
-                fg=C.fill_fg if primary else C.text,
-                activebackground=C.fill_hover if primary else C.hover,
-                activeforeground=C.fill_fg if primary else C.text,
-                relief="flat",
-                bd=0,
-                highlightthickness=0,
-                padx=14,
-                pady=4,
-                cursor="hand2",
-                command=command,
-            )
-            btn.pack(padx=1, pady=1)
-            btn._rest_bg = C.fill if primary else C.panel
-            btn._hover_bg = C.fill_hover if primary else C.hover
-            btn._primary = primary
-            btn.bind("<Enter>", lambda _e, b=btn: b.configure(bg=b._hover_bg))
-            btn.bind("<Leave>", lambda _e, b=btn: b.configure(bg=b._rest_bg))
-            return btn
-
-        self._settings_refs = {}
-        self._ui_lang_btns = {}
-        self._settings_tab_btns = {}
-
-        tab_bar = tk.Frame(main, bg=C.panel)
-        tab_bar.pack(fill=tk.X, pady=(0, 6))
-        for tab_key, label_key in (("general", "tab_general"), ("translation", "tab_translation")):
-            t_btn = tk.Button(
-                tab_bar,
-                text=t(label_key),
-                font=self.font_ui,
-                relief="flat",
-                bd=0,
-                highlightthickness=0,
-                padx=12,
-                pady=3,
-                cursor="hand2",
-                command=lambda target=tab_key: self._switch_settings_tab(target),
-            )
-            t_btn.pack(side=tk.LEFT, padx=(0, 6))
-            self._settings_tab_btns[tab_key] = t_btn
-
-        tab_general = tk.Frame(main, bg=C.panel)
-        tab_translation = tk.Frame(main, bg=C.panel)
-        self._settings_tab_frames = {
-            "general": tab_general,
-            "translation": tab_translation,
-        }
-        self._settings_active_tab = "general"
-        tab_general.pack(fill=tk.X)
-        self._style_settings_tabs()
-
-        # -- Sekme 1: Genel ----------------------------------------------
-        lang_row = tk.Frame(tab_general, bg=C.panel)
-        lang_row.pack(fill=tk.X)
-        self._settings_refs["ui_title"] = tk.Label(
-            lang_row,
-            text=t("ui_language"),
-            font=(self.font_ui[0], self.font_ui[1], "bold"),
-            fg=C.text,
-            bg=C.panel,
-            anchor="w",
-        )
-        self._settings_refs["ui_title"].pack(side=tk.LEFT, expand=True, fill=tk.X)
-
-        for code, label in (("tr", "Türkçe"), ("en", "English")):
-            lang_btn = tk.Button(
-                lang_row,
-                text=label,
-                font=self.font_ui,
-                relief="flat",
-                bd=0,
-                highlightthickness=0,
-                padx=14,
-                pady=3,
-                cursor="hand2",
-                command=lambda value=code: self._set_ui_language(value),
-            )
-            lang_btn.pack(side=tk.LEFT, padx=(6, 0))
-            self._ui_lang_btns[code] = lang_btn
-        self._style_lang_buttons()
-
-        tk.Frame(tab_general, bg=C.line, height=1).pack(fill=tk.X, pady=(6, 5))
-
-        # -- API anahtarı ------------------------------------------------
-        sec_h = tk.Frame(tab_general, bg=C.panel)
-        sec_h.pack(fill=tk.X, pady=(1, 0))
-        self._settings_refs["api_title"] = tk.Label(
-            sec_h,
-            text=t("api_key_section"),
-            font=(self.font_ui[0], self.font_ui[1], "bold"),
-            fg=C.text,
-            bg=C.panel,
-        )
-        self._settings_refs["api_title"].pack(side=tk.LEFT)
-
-        link_lbl = tk.Label(
-            sec_h, text=t("get_key"), font=self.font_ui, fg=C.dim, bg=C.panel, cursor="hand2"
-        )
-        link_lbl.pack(side=tk.RIGHT)
-        link_lbl.bind("<Button-1>", lambda _e: webbrowser.open("https://aistudio.google.com/apikey"))
-        link_lbl.bind("<Enter>", lambda _e: link_lbl.configure(fg=C.text))
-        link_lbl.bind("<Leave>", lambda _e: link_lbl.configure(fg=C.dim))
-        self._settings_refs["link"] = link_lbl
-
-        key_row = tk.Frame(tab_general, bg=C.panel)
-        key_row.pack(fill=tk.X, pady=(6, 0))
-        self.key_edge = tk.Frame(key_row, bg=C.line, bd=0, highlightthickness=0)
-        self.key_edge.pack(side=tk.LEFT, fill=tk.X, expand=True)
-
-        self.key_entry = tk.Entry(
-            self.key_edge,
-            textvariable=self.key_var,
-            show="•",
-            font=self.font_ui,
-            bg=C.panel,
-            fg=C.text,
-            insertbackground=C.text,
-            disabledbackground=C.rail,
-            disabledforeground=C.dim,
-            relief="flat",
-            highlightthickness=0,
-            bd=0,
-        )
-        self.key_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(1, 0), pady=1, ipady=4)
-        self.key_entry.bind("<Return>", lambda _e: self.save_key())
-
-        self.mask_btn = IconButton(
-            self.key_edge, "eye", self._toggle_key_mask, bg=C.panel,
-            tooltip=t("show_key", "Göster"),
-        )
-        self.mask_btn.pack(side=tk.RIGHT, fill=tk.Y, pady=1, padx=(0, 1))
-
-        running = self.worker is not None and self.worker.is_alive()
-        if running:
-            self.key_entry.configure(state=tk.DISABLED)
-
-        self._settings_status = tk.Label(
-            tab_general, text="", font=self.font_ui, fg=C.dim, bg=C.panel, anchor="w"
-        )
-        self._settings_status.pack(anchor="w", fill=tk.X, pady=(3, 0))
-        tk.Frame(tab_general, bg=C.line, height=1).pack(fill=tk.X, pady=(5, 5))
-        self._settings_refs["dub_title"] = tk.Label(
-            tab_general, text=t("dub_section"), font=(self.font_ui[0], self.font_ui[1], "bold"),
-            fg=C.text, bg=C.panel, anchor="w",
-        )
-        self._settings_refs["dub_title"].pack(fill=tk.X)
-        self._settings_refs["dub_desc"] = tk.Label(
-            tab_general, text=t("dub_summary"), font=self.font_ui, fg=C.muted, bg=C.panel,
-            anchor="w", justify="left", wraplength=440,
-        )
-        self._settings_refs["dub_desc"].pack(fill=tk.X, pady=(2, 5))
-        self._dub_var = tk.BooleanVar(value=bool(self.dub_mute_source))
-        self._dub_toggle = CheckToggle(
-            tab_general,
-            text=t("dub_toggle"),
-            variable=self._dub_var,
-            command=self._on_dub_toggle,
-            font=self.font_ui,
-            bg=C.panel,
-            fg=C.text,
-        )
-        self._dub_toggle.pack(fill=tk.X)
-        self._dub_bg_var = tk.BooleanVar(value=bool(self.dub_background) and not self.dub_mute_source)
-        self._dub_bg_toggle = CheckToggle(
-            tab_general,
-            text=t("dub_background"),
-            variable=self._dub_bg_var,
-            command=self._on_dub_background,
-            font=self.font_ui,
-            bg=C.panel,
-            fg=C.text,
-        )
-        self._dub_bg_toggle.pack(fill=tk.X, pady=(2, 0))
-        gain_row = tk.Frame(tab_general, bg=C.panel)
-        gain_row.pack(fill=tk.X, pady=(4, 0))
-        self._dub_bg_gain_lbl = tk.Label(
-            gain_row, text=t("dub_background_level"), anchor="w",
-            font=self.font_ui, fg=C.muted, bg=C.panel,
-        )
-        self._dub_bg_gain_lbl.pack(side=tk.LEFT)
-        self._settings_refs["dub_level"] = self._dub_bg_gain_lbl
-        self._dub_bg_pct_lbl = tk.Label(
-            gain_row, text="", width=5, anchor="e",
-            font=self.font_ui, fg=C.text, bg=C.panel,
-        )
-        self._dub_bg_pct_lbl.pack(side=tk.RIGHT)
-        percent = int(round(self._clamp_bed_gain(self.dub_background_gain) * 100))
-        self._dub_bg_gain_var = tk.IntVar(value=max(0, min(100, percent)))
-        self._dub_gain_ui = False
-        self._dub_bg_scale = LevelSlider(
-            gain_row,
-            variable=self._dub_bg_gain_var,
-            command=self._on_dub_background_gain,
-            from_=0,
-            to=100,
-            bg=C.panel,
-        )
-        self._dub_bg_scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(10, 8))
-        self._style_dub_scale()
-        self._refresh_dub_gain_label()
-        self._sync_dub_gain_controls()
-        self._dub_gain_ui = True
-        tk.Frame(tab_general, bg=C.line, height=1).pack(fill=tk.X, pady=(6, 5))
-        self._settings_refs["shortcuts_title"] = tk.Label(
-            tab_general, text=t("shortcuts"), font=(self.font_ui[0], self.font_ui[1], "bold"),
-            fg=C.text, bg=C.panel, anchor="w",
-        )
-        self._settings_refs["shortcuts_title"].pack(fill=tk.X)
-        self._settings_refs["shortcuts_title"].pack_configure(pady=(0, 4))
-
-        self._mute_shortcut_var = tk.StringVar(value=self.mute_shortcut)
-        self._start_stop_shortcut_var = tk.StringVar(value=self.start_stop_shortcut)
-        self._pause_shortcut_var = tk.StringVar(value=getattr(self, "pause_shortcut", ""))
-        self._settings_refs["shortcut_labels"] = []
-
-        def _shortcut_row(label_key: str, variable: tk.StringVar) -> tk.Entry:
-            row = tk.Frame(tab_general, bg=C.panel)
-            row.pack(fill=tk.X, pady=1)
-            label = tk.Label(
-                row, text=t(label_key), width=25, anchor="w", font=self.font_ui, fg=C.muted,
-                bg=C.panel,
-            )
-            label.pack(side=tk.LEFT)
-            self._settings_refs["shortcut_labels"].append((label, label_key))
-            edge = tk.Frame(row, bg=C.line)
-            edge.pack(side=tk.RIGHT, fill=tk.X, expand=True)
-            entry = tk.Entry(
-                edge, textvariable=variable, font=self.font_ui, bg=C.panel, fg=C.text,
-                insertbackground=C.text, justify=tk.CENTER, relief="flat", bd=0,
-                highlightthickness=0, cursor="hand2",
-            )
-            entry.pack(fill=tk.X, padx=1, pady=1, ipady=2)
-            entry.bind("<KeyPress>", lambda event, var=variable: self._capture_shortcut(event, var))
-            # Kayıt sırasında mevcut global kısayollar tuşu yutmasın.
-            entry.bind("<FocusIn>", lambda _e: self._suspend_global_hotkeys())
-            entry.bind("<FocusOut>", lambda _e: self._resume_global_hotkeys())
-            return entry
-
-        self._mute_shortcut_entry = _shortcut_row("mute_shortcut", self._mute_shortcut_var)
-        self._start_stop_shortcut_entry = _shortcut_row("start_stop_shortcut", self._start_stop_shortcut_var)
-        self._pause_shortcut_entry = _shortcut_row("pause_shortcut", self._pause_shortcut_var)
-        self._push_to_talk_var = tk.BooleanVar(value=bool(getattr(self, "push_to_talk", False)))
-        self._push_to_talk_toggle = CheckToggle(
-            tab_general,
-            text=t("push_to_talk_toggle"),
-            variable=self._push_to_talk_var,
-            command=self._on_push_to_talk_toggle,
-            font=self.font_ui,
-            bg=C.panel,
-            fg=C.text,
-        )
-        self._push_to_talk_toggle.pack(fill=tk.X, pady=(3, 0))
-        self._shortcut_status = tk.Label(
-            tab_general, text=t("shortcut_hint"), font=self.font_ui, fg=C.muted, bg=C.panel, anchor="w",
-        )
-        self._shortcut_status.pack(fill=tk.X, pady=(2, 0))
-
-        # -- Sekme 2: Ses, Sözlük & Geçmiş -------------------------------
-        self._settings_refs["audio_overlay_title"] = tk.Label(
-            tab_translation,
-            text=t("audio_overlay_section"),
-            font=(self.font_ui[0], self.font_ui[1], "bold"),
-            fg=C.text,
-            bg=C.panel,
-            anchor="w",
-        )
-        self._settings_refs["audio_overlay_title"].pack(fill=tk.X)
-
-        vol_row = tk.Frame(tab_translation, bg=C.panel)
-        vol_row.pack(fill=tk.X, pady=(6, 0))
-        self._settings_refs["volume_lbl"] = tk.Label(
-            vol_row, text=t("translation_volume"), anchor="w",
-            font=self.font_ui, fg=C.muted, bg=C.panel,
-        )
-        self._settings_refs["volume_lbl"].pack(side=tk.LEFT)
-        self._volume_pct_lbl = tk.Label(
-            vol_row, text="", width=5, anchor="e",
-            font=self.font_ui, fg=C.text, bg=C.panel,
-        )
-        self._volume_pct_lbl.pack(side=tk.RIGHT)
-        vol_pct = max(0, min(200, int(round(self._clamp_volume(getattr(self, "translation_volume", 1.0)) * 100))))
-        self._volume_var = tk.IntVar(value=vol_pct)
-        self._volume_ui = False
-        self._volume_scale = LevelSlider(
-            vol_row,
-            variable=self._volume_var,
-            command=self._on_volume_slider,
-            from_=0,
-            to=200,
-            bg=C.panel,
-        )
-        self._volume_scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(10, 8))
-        self._refresh_volume_label()
-        self._volume_ui = True
-
-        alpha_row = tk.Frame(tab_translation, bg=C.panel)
-        alpha_row.pack(fill=tk.X, pady=(5, 0))
-        self._settings_refs["opacity_lbl"] = tk.Label(
-            alpha_row, text=t("overlay_opacity"), anchor="w",
-            font=self.font_ui, fg=C.muted, bg=C.panel,
-        )
-        self._settings_refs["opacity_lbl"].pack(side=tk.LEFT)
-        self._overlay_alpha_pct_lbl = tk.Label(
-            alpha_row, text="", width=5, anchor="e",
-            font=self.font_ui, fg=C.text, bg=C.panel,
-        )
-        self._overlay_alpha_pct_lbl.pack(side=tk.RIGHT)
-        alpha_pct = max(20, min(100, int(round(self._clamp_overlay_alpha(getattr(self, "overlay_alpha", 0.92)) * 100))))
-        self._overlay_alpha_var = tk.IntVar(value=alpha_pct)
-        self._overlay_alpha_ui = False
-        self._overlay_alpha_scale = LevelSlider(
-            alpha_row,
-            variable=self._overlay_alpha_var,
-            command=self._on_overlay_alpha_slider,
-            from_=20,
-            to=100,
-            bg=C.panel,
-        )
-        self._overlay_alpha_scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(10, 8))
-        self._refresh_overlay_alpha_label()
-        self._overlay_alpha_ui = True
-
-        self._dub_ducking_var = tk.BooleanVar(value=bool(getattr(self, "dub_ducking", True)))
-        self._dub_ducking_toggle = CheckToggle(
-            tab_translation,
-            text=t("dub_ducking_toggle"),
-            variable=self._dub_ducking_var,
-            command=self._on_dub_ducking_toggle,
-            font=self.font_ui,
-            bg=C.panel,
-            fg=C.text,
-        )
-        self._dub_ducking_toggle.pack(fill=tk.X, pady=(6, 0))
-
-        tk.Frame(tab_translation, bg=C.line, height=1).pack(fill=tk.X, pady=(8, 7))
-
-        self._settings_refs["glossary_title"] = tk.Label(
-            tab_translation,
-            text=t("glossary_section"),
-            font=(self.font_ui[0], self.font_ui[1], "bold"),
-            fg=C.text,
-            bg=C.panel,
-            anchor="w",
-        )
-        self._settings_refs["glossary_title"].pack(fill=tk.X)
-        self._settings_refs["glossary_hint"] = tk.Label(
-            tab_translation,
-            text=t("glossary_hint"),
-            font=self.font_ui,
-            fg=C.muted,
-            bg=C.panel,
-            anchor="w",
-            justify="left",
-            wraplength=410,
-        )
-        self._settings_refs["glossary_hint"].pack(fill=tk.X, pady=(2, 5))
-        self._glossary_edge = tk.Frame(tab_translation, bg=C.line, bd=0, highlightthickness=0)
-        self._glossary_edge.pack(fill=tk.X)
-        self._glossary_text = tk.Text(
-            self._glossary_edge,
-            height=4,
-            wrap=tk.WORD,
-            font=self.font_ui,
-            bg=C.panel,
-            fg=C.text,
-            insertbackground=C.text,
-            selectbackground=C.select,
-            selectforeground=C.text,
-            relief="flat",
-            bd=0,
-            highlightthickness=0,
-            padx=6,
-            pady=4,
-            undo=True,
-        )
-        self._glossary_text.pack(fill=tk.X, padx=1, pady=1)
-        if getattr(self, "glossary", ""):
-            self._glossary_text.insert("1.0", self.glossary)
-
-        tk.Frame(tab_translation, bg=C.line, height=1).pack(fill=tk.X, pady=(8, 7))
-
-        self._settings_refs["history_title"] = tk.Label(
-            tab_translation,
-            text=t("history_section"),
-            font=(self.font_ui[0], self.font_ui[1], "bold"),
-            fg=C.text,
-            bg=C.panel,
-            anchor="w",
-        )
-        self._settings_refs["history_title"].pack(fill=tk.X)
-        self._save_history_var = tk.BooleanVar(value=bool(getattr(self, "save_history", True)))
-        self._save_history_toggle = CheckToggle(
-            tab_translation,
-            text=t("save_history_toggle"),
-            variable=self._save_history_var,
-            command=self._on_save_history_toggle,
-            font=self.font_ui,
-            bg=C.panel,
-            fg=C.text,
-        )
-        self._save_history_toggle.pack(fill=tk.X, pady=(4, 0))
-
-        hist_actions = tk.Frame(tab_translation, bg=C.panel)
-        hist_actions.pack(fill=tk.X, pady=(8, 0))
-        self._view_history_btn = _dialog_btn(hist_actions, t("view_history"), self._open_history, side=tk.LEFT)
-        self._clear_history_btn = _dialog_btn(
-            hist_actions, t("clear_history"), self._clear_history_action, side=tk.LEFT, padx=(8, 0)
-        )
-        self._history_status = tk.Label(
-            tab_translation, text="", font=self.font_ui, fg=C.live, bg=C.panel, anchor="w"
-        )
-        self._history_status.pack(fill=tk.X, pady=(4, 0))
-
-        btn_row = footer
-
-        self._reset_btn = _dialog_btn(btn_row, t("reset_settings"), self._reset_settings)
-        self.test_key_btn = _dialog_btn(key_row, t("test"), self._test_api_key, side=tk.RIGHT, padx=(8, 0))
-        self.save_key_btn = _dialog_btn(btn_row, t("save"), self._save_settings, primary=True, side=tk.RIGHT, padx=(8, 0))
-        self._save_status = tk.Label(
-            btn_row, text="", font=self.font_ui, fg=C.live, bg=C.panel, anchor="w"
-        )
-        self._save_status.pack(side=tk.LEFT, padx=(10, 0))
-        self._save_status_key: str | None = None
-        self._settings_close_btn = _dialog_btn(
-            btn_row, t("close"), self._close_settings, side=tk.RIGHT
-        )
-
-        pop.update_idletasks()
-        content_w = max(460, main.winfo_reqwidth() + 2, footer.winfo_reqwidth())
-        content_h = main.winfo_reqheight()
-        footer_h = footer.winfo_reqheight()
-        screen_w = pop.winfo_screenwidth()
-        screen_h = pop.winfo_screenheight()
-        max_h = max(360, screen_h - 140)
-        scrolls = content_h + footer_h > max_h
-        if scrolls:
-            scroll.pack(side=tk.RIGHT, fill=tk.Y)
-            content_w += 12
-        h = min(content_h + footer_h, max_h)
-        w = min(content_w, max(320, screen_w - 40))
-        x = self.winfo_rootx() + (self.winfo_width() - w) // 2
-        y = self.winfo_rooty() + (self.winfo_height() - h) // 2
-        x = max(0, min(x, max(0, screen_w - w)))
-        y = max(0, min(y, max(0, screen_h - h - 48)))
-        pop.geometry(f"{w}x{h}+{x}+{y}")
-        pop.deiconify()
-        pop.update_idletasks()
-        try:
-            pop.grab_set()
-        except tk.TclError:
-            pass
-        self.key_entry.focus_set()
-
-    def _style_settings_tabs(self) -> None:
-        active = getattr(self, "_settings_active_tab", "general")
-        for key, btn in getattr(self, "_settings_tab_btns", {}).items():
-            if not btn.winfo_exists():
-                continue
-            selected = key == active
-            btn._rest_bg = C.fill if selected else C.panel
-            btn._hover_bg = C.fill_hover if selected else C.hover
-            btn.configure(
-                bg=btn._rest_bg,
-                fg=C.fill_fg if selected else C.muted,
-                activebackground=btn._hover_bg,
-                activeforeground=C.fill_fg if selected else C.text,
-            )
-            btn.bind("<Enter>", lambda _e, b=btn: b.configure(bg=b._hover_bg))
-            btn.bind("<Leave>", lambda _e, b=btn: b.configure(bg=b._rest_bg))
-
-    def _switch_settings_tab(self, tab: str) -> None:
-        frames = getattr(self, "_settings_tab_frames", {})
-        if tab not in frames:
-            return
-        self._settings_active_tab = tab
-        for key, frame in frames.items():
-            if key != tab and frame.winfo_exists():
-                frame.pack_forget()
-        target = frames[tab]
-        if target.winfo_exists():
-            target.pack(fill=tk.X)
-        self._style_settings_tabs()
-        pop = self._settings
-        canvas = self._settings_canvas
-        scroll = self._settings_scroll
-        if pop is not None and canvas is not None and pop.winfo_exists():
-            pop.update_idletasks()
-            canvas.configure(scrollregion=canvas.bbox("all"))
-            canvas.yview_moveto(0.0)
-            if scroll is not None and scroll.winfo_exists():
-                bbox = canvas.bbox("all")
-                need_scroll = bool(bbox and (bbox[3] - bbox[1]) > canvas.winfo_height() + 2)
-                if need_scroll and scroll.winfo_manager() != "pack":
-                    scroll.pack(side=tk.RIGHT, fill=tk.Y)
-                elif not need_scroll and scroll.winfo_manager() == "pack":
-                    scroll.pack_forget()
-
-    def _open_history(self) -> None:
-        if self._history_win is not None and self._history_win.winfo_exists():
-            self._populate_history_window()
-            self._history_win.deiconify()
-            self._history_win.lift()
-            self._history_win.focus_set()
-            return
-        self._drain_window_events()
-        parent = self._settings if (self._settings is not None and self._settings.winfo_exists()) else self
-        pop = tk.Toplevel(self)
-        pop.withdraw()
-        self._history_win = pop
-        pop.title(t("history_title"))
-        pop.configure(bg=C.panel)
-        pop.resizable(True, True)
-        pop.transient(parent)
-        apply_icon(pop)
-        dark_titlebar(pop, dark=(self._theme != "light"))
-        pop.protocol("WM_DELETE_WINDOW", self._close_history)
-        pop.bind("<Escape>", self._on_history_escape)
-        pop.bind("<Control-f>", self._toggle_history_find_bar)
-        pop.bind("<Control-F>", self._toggle_history_find_bar)
-
-        main = tk.Frame(pop, bg=C.panel, padx=18, pady=14)
-        main.pack(fill=tk.BOTH, expand=True)
-
-        text_edge = tk.Frame(main, bg=C.line, bd=0, highlightthickness=0)
-        self._history_find_bar = TranscriptSearchBar(
-            main,
-            get_targets=lambda: (getattr(self, "_history_text", None),),
-            font=self.font_ui,
-            on_show=lambda edge=text_edge: (
-                self._history_find_bar.pack(fill=tk.X, pady=(0, 8), before=edge)
-                if self._history_find_bar is not None and not self._history_find_bar.winfo_manager()
-                else None
-            ),
-            on_hide=self._on_history_find_hide,
-            label_text=t("find_placeholder"),
-            close_tip=t("close"),
-        )
-        text_edge.pack(fill=tk.BOTH, expand=True)
-        txt = tk.Text(
-            text_edge,
-            wrap=tk.WORD,
-            font=self.font_body,
-            bg=C.bg,
-            fg=C.text,
-            insertbackground=C.text,
-            selectbackground=C.select,
-            selectforeground=C.text,
-            relief="flat",
-            bd=0,
-            highlightthickness=0,
-            padx=12,
-            pady=10,
-        )
-        h_scroll = tk.Scrollbar(
-            text_edge,
-            orient=tk.VERTICAL,
-            command=txt.yview,
-            width=10,
-            bg=C.panel,
-            troughcolor=C.rail,
-            activebackground=C.hover,
-            bd=0,
-            highlightthickness=0,
-            relief="flat",
-        )
-        txt.configure(yscrollcommand=h_scroll.set)
-        h_scroll.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 1), pady=1)
-        txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(1, 0), pady=1)
-        txt.tag_configure("meta", foreground=C.dim, font=self.font_log)
-        txt.tag_configure("heard", foreground=C.muted)
-        txt.tag_configure("trans", foreground=C.text)
-        TranscriptSearchBar.style_text_tags(txt)
-        self._lock_text(txt)
-        self._history_text = txt
-
-        bottom = tk.Frame(main, bg=C.panel)
-        bottom.pack(fill=tk.X, pady=(10, 0))
-        close_wrap = tk.Frame(bottom, bg=C.line, bd=0, highlightthickness=0)
-        close_wrap.pack(side=tk.RIGHT)
-        self._history_close_btn = tk.Button(
-            close_wrap,
-            text=t("close"),
-            font=self.font_ui,
-            bg=C.panel,
-            fg=C.text,
-            activebackground=C.hover,
-            activeforeground=C.text,
-            relief="flat",
-            bd=0,
-            highlightthickness=0,
-            padx=14,
-            pady=4,
-            cursor="hand2",
-            command=self._close_history,
-        )
-        self._history_close_btn.pack(padx=1, pady=1)
-
-        self._populate_history_window()
-
-        pop.update_idletasks()
-        w, h = 560, 420
-        screen_w = pop.winfo_screenwidth()
-        screen_h = pop.winfo_screenheight()
-        w = min(w, max(340, screen_w - 40))
-        h = min(h, max(260, screen_h - 80))
-        x = max(0, min(self.winfo_rootx() + (self.winfo_width() - w) // 2, max(0, screen_w - w)))
-        y = max(0, min(self.winfo_rooty() + (self.winfo_height() - h) // 2, max(0, screen_h - h - 48)))
-        pop.geometry(f"{w}x{h}+{x}+{y}")
-        pop.deiconify()
-        pop.update_idletasks()
-        try:
-            pop.grab_set()
-        except tk.TclError:
-            pass
-        pop.focus_set()
-
-    def _populate_history_window(self) -> None:
-        txt = getattr(self, "_history_text", None)
-        if txt is None or not txt.winfo_exists():
-            return
-        txt.delete("1.0", tk.END)
-        records = load_recent_history(limit=100)
-        if not records:
-            txt.insert(tk.END, t("history_empty"), ("meta",))
-            return
-        for idx, rec in enumerate(records):
-            if idx > 0:
-                txt.insert(tk.END, "\n")
-            raw_ts = str(rec.get("timestamp", "")).replace("T", " ")
-            if "." in raw_ts:
-                raw_ts = raw_ts.split(".", 1)[0]
-            src_c = rec.get("src", "auto")
-            dst_c = rec.get("dst", "")
-            txt.insert(tk.END, f"[{raw_ts}]  ({src_c} → {dst_c})\n", ("meta",))
-            heard_line = str(rec.get("heard", "")).strip()
-            trans_line = str(rec.get("trans", "")).strip()
-            if heard_line:
-                txt.insert(tk.END, f"• {heard_line}\n", ("heard",))
-            if trans_line:
-                txt.insert(tk.END, f"→ {trans_line}\n", ("trans",))
-        txt.see(tk.END)
-        if self._history_find_bar is not None and self._history_find_bar.is_open:
-            self._history_find_bar.refresh(scroll=False)
-
-    def _toggle_history_find_bar(self, _event=None):
-        if self._history_find_bar is None or not self._history_find_bar.winfo_exists():
-            return None
-        return self._history_find_bar.toggle()
-
-    def _on_history_find_hide(self) -> None:
-        if self._history_find_bar is not None and self._history_find_bar.winfo_exists():
-            self._history_find_bar.pack_forget()
-        if self._history_win is not None and self._history_win.winfo_exists():
-            try:
-                self._history_win.focus_set()
-            except tk.TclError:
-                pass
-
-    def _on_history_escape(self, _event=None):
-        if self._history_find_bar is not None and self._history_find_bar.is_open:
-            return self._history_find_bar.close()
-        self._close_history()
-        return "break"
-
-    def _close_history(self) -> None:
-        pop, self._history_win = self._history_win, None
-        self._history_text = None
-        self._history_find_bar = None
-        self._history_close_btn = None
-        if pop is None:
-            return
-        try:
-            pop.grab_release()
-        except tk.TclError:
-            pass
-        try:
-            pop.destroy()
-        except tk.TclError:
-            pass
-        if self._settings is not None and self._settings.winfo_exists():
-            try:
-                self._settings.grab_set()
-                self._settings.focus_set()
-            except tk.TclError:
-                pass
-
-    def _style_lang_buttons(self) -> None:
-        current = get_ui_lang()
-        for code, btn in self._ui_lang_btns.items():
-            if not btn.winfo_exists():
-                continue
-            selected = code == current
-            btn._rest_bg = C.fill if selected else C.panel
-            btn._hover_bg = C.fill_hover if selected else C.hover
-            btn.configure(
-                bg=btn._rest_bg,
-                fg=C.fill_fg if selected else C.text,
-                activebackground=btn._hover_bg,
-                activeforeground=C.fill_fg if selected else C.text,
-            )
-            btn.bind("<Enter>", lambda _e, b=btn: b.configure(bg=b._hover_bg))
-            btn.bind("<Leave>", lambda _e, b=btn: b.configure(bg=b._rest_bg))
-
-    def _set_ui_language(self, lang: str) -> None:
-        lang = "en" if lang == "en" else "tr"
-        if lang == get_ui_lang():
-            self._style_lang_buttons()
-            return
-        set_ui_lang(lang)
-        try:
-            save_preferences(ui_lang=lang)
-        except OSError as exc:
-            self._append(f"[uyarı] {exc}\n")
-        self._retranslate_ui()
-        self._retranslate_settings()
-
-    def _retranslate_settings(self) -> None:
-        pop = self._settings
-        if pop is None or not pop.winfo_exists():
-            return
-        pop.title(t("settings", "Ayarlar"))
-        for tab_key, label_key in (("general", "tab_general"), ("translation", "tab_translation")):
-            t_btn = self._settings_tab_btns.get(tab_key)
-            if t_btn is not None and t_btn.winfo_exists():
-                t_btn.configure(text=t(label_key))
-        refs = self._settings_refs
-        for key, value in (
-            ("ui_title", t("ui_language")),
-            ("api_title", t("api_key_section")),
-            ("link", t("get_key")),
-            ("dub_title", t("dub_section")),
-            ("dub_desc", t("dub_summary")),
-            ("dub_level", t("dub_background_level")),
-            ("shortcuts_title", t("shortcuts")),
-            ("audio_overlay_title", t("audio_overlay_section")),
-            ("volume_lbl", t("translation_volume")),
-            ("opacity_lbl", t("overlay_opacity")),
-            ("glossary_title", t("glossary_section")),
-            ("glossary_hint", t("glossary_hint")),
-            ("history_title", t("history_section")),
-        ):
-            widget = refs.get(key)
-            if widget is not None and widget.winfo_exists():
-                widget.configure(text=value)
-        for label, key in refs.get("shortcut_labels", []):
-            if label.winfo_exists():
-                label.configure(text=t(key))
-        if self._dub_toggle is not None and self._dub_toggle.winfo_exists():
-            self._dub_toggle.configure(text=t("dub_toggle"))
-        if self._dub_bg_toggle is not None and self._dub_bg_toggle.winfo_exists():
-            self._dub_bg_toggle.configure(text=t("dub_background"))
-        if self._dub_ducking_toggle is not None and self._dub_ducking_toggle.winfo_exists():
-            self._dub_ducking_toggle.configure(text=t("dub_ducking_toggle"))
-        if self._save_history_toggle is not None and self._save_history_toggle.winfo_exists():
-            self._save_history_toggle.configure(text=t("save_history_toggle"))
-        if self._push_to_talk_toggle is not None and self._push_to_talk_toggle.winfo_exists():
-            self._push_to_talk_toggle.configure(text=t("push_to_talk_toggle"))
-        if self._shortcut_status is not None and self._shortcut_status.winfo_exists():
-            self._shortcut_status.configure(text=t("shortcut_hint"), fg=C.muted)
-        for btn, key in (
-            (self.test_key_btn, "test"),
-            (self.save_key_btn, "save"),
-            (self._settings_close_btn, "close"),
-            (self._reset_btn, "reset_settings"),
-            (self._view_history_btn, "view_history"),
-            (self._clear_history_btn, "clear_history"),
-        ):
-            if btn is not None and btn.winfo_exists():
-                btn.configure(text=t(key))
-        if self._save_status_key:
-            self._show_save_status(self._save_status_key)
-        self._style_lang_buttons()
-        self._style_settings_tabs()
 
     def _retranslate_ui(self) -> None:
         """Motor çalışırken arayüz dilini yeniden uygular."""
@@ -4604,580 +2567,6 @@ class App(tk.Tk):
             self._set_status(self._status_raw, self._status_color)
         self._translating_ui = False
 
-    def _reset_settings(self) -> None:
-        parent = self._settings if self._settings is not None and self._settings.winfo_exists() else self
-        if not messagebox.askyesno(
-            t("reset_settings"), t("reset_settings_confirm"), parent=parent
-        ):
-            return
-        try:
-            reset_config()
-        except OSError as exc:
-            message = t("reset_settings_failed").format(error=exc)
-            self._append(f"[hata] {message}\n")
-            if self._settings_status is not None and self._settings_status.winfo_exists():
-                self._settings_status.configure(text=message, fg=C.warn)
-            return
-        cfg = load_config()
-        self._adopt_reset_settings(cfg)
-        self._show_save_status("reset_settings_done")
-        self._append(f"[bilgi] {t('reset_settings_done')}\n")
-
-    def _adopt_reset_settings(self, cfg) -> None:
-        """Sıfırlanan config'i canlı arayüze uygular (API anahtarı korunur)."""
-        self._resetting_settings = True
-        try:
-            if getattr(self, "_save_prefs_timer", None) is not None:
-                try:
-                    self.after_cancel(self._save_prefs_timer)
-                except Exception:
-                    pass
-                self._save_prefs_timer = None
-            self._cfg = cfg
-            self._theme = cfg.theme
-            C.apply_theme(cfg.theme)
-            dark_titlebar(self, dark=(cfg.theme != "light"))
-            set_ui_lang(cfg.ui_lang)
-            self.mute_shortcut = cfg.mute_shortcut
-            self.start_stop_shortcut = cfg.start_stop_shortcut
-            self.pause_shortcut = getattr(cfg, "pause_shortcut", "") or ""
-            self.push_to_talk = bool(getattr(cfg, "push_to_talk", False))
-            self.always_on_top = cfg.always_on_top
-            self.overlay_font_size = cfg.overlay_font_size
-            self.overlay_alpha = cfg.overlay_alpha
-            self.overlay_click_through = cfg.overlay_click_through
-            self.dub_mute_source = cfg.dub_mute_source
-            self.dub_background = cfg.dub_background
-            self.dub_background_gain = self._clamp_bed_gain(
-                getattr(cfg, "dub_background_gain", DUB_BACKGROUND)
-            )
-            self.dub_ducking = bool(getattr(cfg, "dub_ducking", True))
-            self.translation_volume = self._clamp_volume(getattr(cfg, "translation_volume", 1.0))
-            self.glossary = str(getattr(cfg, "glossary", "") or "")
-            self.save_history = bool(getattr(cfg, "save_history", True))
-            self._input_application_path = cfg.input_application
-            if self.loop_obj is not None and hasattr(self.loop_obj, "set_volume"):
-                try:
-                    self.loop_obj.set_volume(self.translation_volume)
-                except Exception:
-                    pass
-            try:
-                self.attributes("-topmost", self.always_on_top)
-            except tk.TclError:
-                pass
-            if hasattr(self, "pin_btn"):
-                self.pin_btn.set_accent(self.always_on_top)
-            if self._mute_shortcut_var is not None:
-                self._mute_shortcut_var.set(self.mute_shortcut)
-            if self._start_stop_shortcut_var is not None:
-                self._start_stop_shortcut_var.set(self.start_stop_shortcut)
-            if self._pause_shortcut_var is not None:
-                self._pause_shortcut_var.set(self.pause_shortcut)
-            if self._push_to_talk_var is not None:
-                self._push_to_talk_var.set(self.push_to_talk)
-            if self._dub_var is not None:
-                self._dub_var.set(False)
-            if self._dub_bg_var is not None:
-                self._dub_bg_var.set(False)
-            if self._dub_ducking_var is not None:
-                self._dub_ducking_var.set(self.dub_ducking)
-            if self._dub_bg_gain_var is not None:
-                self._dub_gain_ui = False
-                self._dub_bg_gain_var.set(
-                    int(round(self._clamp_bed_gain(self.dub_background_gain) * 100))
-                )
-                self._dub_gain_ui = True
-            if self._volume_var is not None:
-                self._volume_ui = False
-                self._volume_var.set(int(round(self.translation_volume * 100)))
-                self._volume_ui = True
-            self._refresh_volume_label()
-            if self._overlay_alpha_var is not None:
-                self._overlay_alpha_ui = False
-                self._overlay_alpha_var.set(int(round(self.overlay_alpha * 100)))
-                self._overlay_alpha_ui = True
-            self._refresh_overlay_alpha_label()
-            if self._glossary_text is not None and self._glossary_text.winfo_exists():
-                self._glossary_text.delete("1.0", tk.END)
-                if self.glossary:
-                    self._glossary_text.insert("1.0", self.glossary)
-            if self._save_history_var is not None:
-                self._save_history_var.set(self.save_history)
-            self._refresh_dub_gain_label()
-            self._sync_dub_gain_controls()
-            self.src_var.set(display_name(src_code_to_name(cfg.src_lang)))
-            self.dst_var.set(display_name(lang_code_to_name(cfg.dst_lang)))
-            if not self._worker_alive():
-                # Çalışan oturumun aygıt seçimini bozmadan varsayılana dön.
-                self.in_var.set("")
-                self.out_var.set("")
-            try:
-                self.refresh_devices(async_scan=False)
-            except Exception as exc:
-                self._append(f"[uyarı] Aygıtlar yenilenemedi: {exc}\n")
-            self._hotkeys_suspended = False
-            self._register_global_hotkeys()
-            self._refresh_theme()
-            self._retranslate_ui()
-            self._retranslate_settings()
-            self._sync_source_dub()
-            if self._overlay is not None and self._overlay.winfo_exists():
-                try:
-                    self._overlay.attributes("-alpha", self.overlay_alpha)
-                    self.overlay_label.configure(
-                        font=(self.font_brand[0], self.overlay_font_size, "bold")
-                    )
-                    self._apply_overlay_click_through()
-                except Exception:
-                    pass
-        finally:
-            self._resetting_settings = False
-            self._save_user_prefs()
-
-    def _close_settings(self) -> None:
-        if self._settings is None:
-            return
-        self._resume_global_hotkeys()
-        for timer_attr, commit_fn in (
-            ("_dub_gain_timer", self._commit_dub_gain),
-            ("_volume_timer", self._commit_volume),
-            ("_overlay_alpha_timer", self._commit_overlay_alpha),
-        ):
-            timer = getattr(self, timer_attr, None)
-            if timer is not None:
-                try:
-                    self.after_cancel(timer)
-                except tk.TclError:
-                    pass
-                setattr(self, timer_attr, None)
-                commit_fn()
-        try:
-            self._settings.grab_release()
-        except tk.TclError:
-            pass
-        self._settings.destroy()
-        self._settings = None
-        self.key_entry = None
-        self.mask_btn = None
-        self.key_edge = None
-        self._settings_status = None
-        self._settings_close_btn = None
-        self._mute_shortcut_var = None
-        self._start_stop_shortcut_var = None
-        self._pause_shortcut_var = None
-        self._mute_shortcut_entry = None
-        self._start_stop_shortcut_entry = None
-        self._pause_shortcut_entry = None
-        self._push_to_talk_var = None
-        self._push_to_talk_toggle = None
-        self._shortcut_status = None
-        self._dub_var = None
-        self._dub_toggle = None
-        self._dub_bg_var = None
-        self._dub_bg_toggle = None
-        self._dub_ducking_var = None
-        self._dub_ducking_toggle = None
-        self._dub_bg_gain_var = None
-        self._dub_bg_scale = None
-        self._dub_bg_gain_lbl = None
-        self._dub_bg_pct_lbl = None
-        self._dub_gain_ui = False
-        self._volume_var = None
-        self._volume_scale = None
-        self._volume_pct_lbl = None
-        self._volume_ui = False
-        self._overlay_alpha_var = None
-        self._overlay_alpha_scale = None
-        self._overlay_alpha_pct_lbl = None
-        self._overlay_alpha_ui = False
-        self._glossary_edge = None
-        self._glossary_text = None
-        self._save_history_var = None
-        self._save_history_toggle = None
-        self._view_history_btn = None
-        self._clear_history_btn = None
-        self._history_status = None
-        self._settings_refs = {}
-        self._ui_lang_btns = {}
-        self._settings_tab_btns = {}
-        self._settings_tab_frames = {}
-        self._reset_btn = None
-        self._save_status = None
-        self._save_status_key = None
-        self._settings_canvas = None
-        self._settings_scroll = None
-        self._refresh_key_notice()
-
-    def _place_overlay(self, x: int, y: int, width: int, height: int) -> None:
-        """Altyazıyı gerçek koordinata taşır; negatif eksende Tk referansını düzeltir."""
-        pop = self._overlay
-        if pop is None or not pop.winfo_exists():
-            return
-        screen_width = pop.winfo_screenwidth()
-        screen_height = pop.winfo_screenheight()
-
-        def geometry(dx: int = 0, dy: int = 0) -> str:
-            x_part = f"+{x}" if x >= 0 else f"-{screen_width - width - x + dx}"
-            y_part = f"+{y}" if y >= 0 else f"-{screen_height - height - y + dy}"
-            return f"{width}x{height}{x_part}{y_part}"
-
-        pop.geometry(geometry())
-        if x < 0 or y < 0:
-            # Tk sağ/alt kenar referansını birincil ekranla sınırlıyorsa sapmayı düzelt.
-            pop.update_idletasks()
-            actual_x, actual_y = pop.winfo_x(), pop.winfo_y()
-            if (actual_x, actual_y) != (x, y):
-                pop.geometry(geometry(actual_x - x, actual_y - y))
-
-    def _overlay_bounds(self, x: int, y: int, width: int, height: int) -> tuple[int, int, int, int]:
-        """Verilen dikdörtgenin durduğu monitörün sınırları; yoksa sanal ekran."""
-        center_x = int(x) + max(1, int(width)) // 2
-        center_y = int(y) + max(1, int(height)) // 2
-        return _monitor_work_area(center_x, center_y) or _virtual_screen_bounds(self)
-
-    def _fit_overlay(self, anchor: str = "bottom") -> None:
-        pop = self._overlay
-        if pop is None or not pop.winfo_exists():
-            return
-        pop.update_idletasks()
-        # winfo_* gerçek konumu verir; geometry() negatif x'i sağ kenardan yazar.
-        cur_x, cur_y = pop.winfo_x(), pop.winfo_y()
-        cur_width, cur_height = pop.winfo_width(), pop.winfo_height()
-        width = max(220, cur_width)
-        height = max(40, cur_height)
-        x = cur_x
-        y = cur_y if anchor == "top" else cur_y + cur_height - height
-        x, y = _clamp_to_bounds(x, y, width, height, self._overlay_bounds(x, y, width, height))
-        if (x, y, width, height) != (cur_x, cur_y, width, cur_height):
-            self._place_overlay(x, y, width, height)
-
-    def _resize_overlay(self, width: int, height: int) -> None:
-        pop = self._overlay
-        if pop is None or not pop.winfo_exists():
-            return
-        cur_x, cur_y = pop.winfo_x(), pop.winfo_y()
-        bounds = self._overlay_bounds(cur_x, cur_y, max(1, pop.winfo_width()), max(1, pop.winfo_height()))
-        _, _, screen_width, screen_height = bounds
-        width = max(220, min(screen_width, width))
-        height = max(40, min(screen_height, height))
-        x, y = _clamp_to_bounds(cur_x, cur_y, width, height, bounds)
-        self._place_overlay(x, y, width, height)
-        pop.update_idletasks()
-        self.overlay_label.configure(
-            wraplength=max(120, width - 64),
-            text=self._overlay_tail(self._overlay_text) or "...",
-        )
-
-    def _set_overlay_controls_visible(self, visible: bool) -> None:
-        if visible == self._overlay_controls_visible:
-            return
-        hdr = getattr(self, "_overlay_hdr", None)
-        grip = getattr(self, "_overlay_grip", None)
-        if hdr is None or grip is None:
-            return
-        self._overlay_controls_visible = visible
-        if visible:
-            hdr.place(relx=1.0, x=-4, y=4, anchor="ne")
-            grip.place(relx=1.0, rely=1.0, x=-2, y=-2, anchor="se")
-            hdr.lift()
-            grip.lift()
-        else:
-            hdr.place_forget()
-            grip.place_forget()
-
-    def _sync_overlay_pointer(self) -> None:
-        """Fare geçirgen olsa da global imleç konumundan hover durumunu güncelle."""
-        pop = self._overlay
-        hdr = getattr(self, "_overlay_hdr", None)
-        grip = getattr(self, "_overlay_grip", None)
-        if pop is None or hdr is None or grip is None or not pop.winfo_exists():
-            return
-        pointer_x, pointer_y = pop.winfo_pointerxy()
-        rel_x = pointer_x - pop.winfo_rootx()
-        rel_y = pointer_y - pop.winfo_rooty()
-        width, height = pop.winfo_width(), pop.winfo_height()
-        inside = 0 <= rel_x < width and 0 <= rel_y < height
-        self._set_overlay_controls_visible(inside)
-
-        over_header = (
-            inside
-            and width - hdr.winfo_reqwidth() - 4 <= rel_x < width
-            and 4 <= rel_y < hdr.winfo_reqheight() + 4
-        )
-        over_grip = (
-            inside
-            and width - grip.winfo_reqwidth() - 2 <= rel_x < width
-            and height - grip.winfo_reqheight() - 2 <= rel_y < height
-        )
-        interactive = bool(self.overlay_click_through and (over_header or over_grip))
-        if interactive != self._overlay_controls_interactive:
-            self._overlay_controls_interactive = interactive
-            self._apply_overlay_click_through()
-
-    def _poll_overlay_pointer(self) -> None:
-        self._overlay_pointer_after_id = None
-        pop = self._overlay
-        if pop is None or not pop.winfo_exists():
-            return
-        self._sync_overlay_pointer()
-        self._overlay_pointer_after_id = pop.after(50, self._poll_overlay_pointer)
-
-    def _close_overlay(self) -> None:
-        pop = self._overlay
-        if pop is None or not pop.winfo_exists():
-            return
-        if self._overlay_pointer_after_id is not None:
-            pop.after_cancel(self._overlay_pointer_after_id)
-            self._overlay_pointer_after_id = None
-        pop.destroy()
-        self._overlay = None
-        self._overlay_click_style = None
-        self._overlay_controls_visible = False
-        self._overlay_controls_interactive = False
-        self.overlay_btn.set_accent(False)
-
-    def toggle_overlay(self) -> None:
-        if self._overlay is not None and self._overlay.winfo_exists():
-            if self.overlay_click_through:
-                self._toggle_overlay_click_through()
-                return
-            self._close_overlay()
-            return
-        self._build_overlay()
-
-    def _build_overlay(self, geom: str | None = None) -> None:
-        pop = tk.Toplevel(self)
-        pop.withdraw()
-        self._overlay = pop
-        self._overlay_click_style = None
-        self._overlay_controls_visible = False
-        self._overlay_controls_interactive = False
-        pop.title("Altyazı")
-        pop.overrideredirect(True)
-        try:
-            pop.attributes("-topmost", True)
-            pop.attributes("-alpha", getattr(self, "overlay_alpha", 0.92))
-        except tk.TclError:
-            pass
-        pop.configure(bg=C.overlay_bg)
-        self.overlay_btn.set_accent(True)
-
-        def start_move(e):
-            pop._drag_x = e.x_root - pop.winfo_x()
-            pop._drag_y = e.y_root - pop.winfo_y()
-
-        def do_move(e):
-            x = e.x_root - pop._drag_x
-            y = e.y_root - pop._drag_y
-            self._place_overlay(x, y, pop.winfo_width(), pop.winfo_height())
-
-        wrap = tk.Frame(pop, bg=C.overlay_bg, highlightthickness=1, highlightbackground=C.line, bd=0)
-        wrap.pack(fill=tk.BOTH, expand=True)
-        self._overlay_wrap = wrap
-
-        hdr = tk.Frame(wrap, bg=C.overlay_bg)
-        self._overlay_hdr = hdr
-
-        close_btn = IconButton(hdr, "close", self._close_overlay, bg=C.overlay_bg)
-        close_btn.pack(side=tk.RIGHT, padx=(4, 0))
-        self._overlay_close = close_btn
-
-        thru_kind = "target" if getattr(self, "overlay_click_through", False) else "cursor"
-        self._overlay_thru_btn = IconButton(hdr, thru_kind, self._toggle_overlay_click_through, bg=C.overlay_bg)
-        self._overlay_thru_btn.pack(side=tk.RIGHT, padx=(4, 0))
-
-        fplus = tk.Label(hdr, text="A+", font=self.font_ui, fg=C.dim, bg=C.overlay_bg, cursor="hand2")
-        fplus.pack(side=tk.RIGHT, padx=(4, 0))
-        fplus.bind("<Button-1>", lambda _e: self._adjust_overlay_font(1))
-        self._overlay_fplus = fplus
-
-        fminus = tk.Label(hdr, text="A-", font=self.font_ui, fg=C.dim, bg=C.overlay_bg, cursor="hand2")
-        fminus.pack(side=tk.RIGHT, padx=(4, 0))
-        fminus.bind("<Button-1>", lambda _e: self._adjust_overlay_font(-1))
-        self._overlay_fminus = fminus
-        raw_text = self.trans.get("1.0", "end").strip()
-        self._overlay_text = next((line.strip() for line in reversed(raw_text.splitlines()) if line.strip()), "")
-        cur_text = self._overlay_text or "..."
-
-        anchor, justify = self._overlay_text_layout()
-        self.overlay_label = tk.Label(
-            wrap,
-            text=cur_text,
-            font=(self.font_brand[0], getattr(self, "overlay_font_size", 13), "bold"),
-            fg=C.text,
-            bg=C.overlay_bg,
-            wraplength=520,
-            anchor=anchor,
-            justify=justify,
-            padx=12,
-            pady=2,
-        )
-        self.overlay_label.pack(fill=tk.BOTH, expand=True)
-
-        # Araçlarla aynı şekilde içerik üzerinde durur; gizliyken yer kaplamaz.
-        grip = tk.Label(
-            wrap, text="◢", font=(self.font_ui[0], 12), fg=C.dim,
-            bg=C.overlay_bg, cursor="size_nw_se", padx=4, pady=2,
-        )
-        self._overlay_grip = grip
-
-        def start_resize(e):
-            pop._resize_x = e.x_root
-            pop._resize_y = e.y_root
-            pop._resize_w = pop.winfo_width()
-            pop._resize_h = pop.winfo_height()
-            return "break"
-
-        def do_resize(e):
-            self._resize_overlay(
-                pop._resize_w + e.x_root - pop._resize_x,
-                pop._resize_h + e.y_root - pop._resize_y,
-            )
-            return "break"
-
-        grip.bind("<ButtonPress-1>", start_resize)
-        grip.bind("<B1-Motion>", do_resize)
-        grip.bind("<ButtonRelease-1>", lambda _e: self._save_user_prefs())
-
-        controls = (hdr, close_btn, self._overlay_thru_btn, fplus, fminus, grip)
-        for widget in (pop, wrap, self.overlay_label):
-            widget.bind("<ButtonPress-1>", start_move)
-            widget.bind("<B1-Motion>", do_move)
-
-        def _on_overlay_wheel(e):
-            delta = getattr(e, "delta", 0)
-            if delta > 0:
-                self._adjust_overlay_alpha(0.05)
-            elif delta < 0:
-                self._adjust_overlay_alpha(-0.05)
-            return "break"
-
-        pop.bind("<Control-MouseWheel>", _on_overlay_wheel)
-
-        vx, vy, vw, vh = _virtual_screen_bounds(self)
-        screen_w = self.winfo_screenwidth()
-        screen_h = self.winfo_screenheight()
-        w, h = min(580, vw), 40
-
-        def _clamped_rect(g: str) -> tuple[int, int, int, int] | None:
-            rect = _parse_geometry(g, screen_w, screen_h)
-            if rect is None:
-                return None
-            gx, gy, gw, gh = rect
-            if gw < 220 or gh < 40:
-                return None
-            bounds = _monitor_work_area(gx + gw // 2, gy + gh // 2) or (vx, vy, vw, vh)
-            if gw > bounds[2] or gh > bounds[3]:
-                # Monitöre sığmıyorsa sanal ekran sınırlarına düş.
-                bounds = (vx, vy, vw, vh)
-                if gw > vw or gh > vh:
-                    return None
-            gx, gy = _clamp_to_bounds(gx, gy, gw, gh, bounds)
-            return gx, gy, gw, gh
-
-        applied = False
-        for cand in (geom, getattr(self._cfg, "overlay_geom", "") if getattr(self, "_cfg", None) else ""):
-            rect = _clamped_rect(cand) if cand else None
-            if rect:
-                self._place_overlay(*rect)
-                applied = True
-                break
-        if not applied:
-            # Varsayılan: ana pencerenin bulunduğu monitörün alt-orta kısmı.
-            host = _monitor_work_area(
-                self.winfo_rootx() + self.winfo_width() // 2,
-                self.winfo_rooty() + self.winfo_height() // 2,
-            ) or (vx, vy, vw, vh)
-            hx, hy, hw, hh = host
-            w = min(w, hw)
-            h = min(h, hh)
-            fx = hx + max(0, (hw - w) // 2)
-            fy = hy + max(0, hh - h - 100)
-            self._place_overlay(fx, fy, w, h)
-        pop.update_idletasks()
-        self.overlay_label.configure(wraplength=max(120, pop.winfo_width() - 44))
-        self.overlay_label.configure(text=self._overlay_tail(self._overlay_text) or "...")
-        self._apply_overlay_click_through()
-        for w_widget in (pop, wrap, self.overlay_label):
-            w_widget.bind("<ButtonRelease-1>", lambda _e: self._save_user_prefs(), add="+")
-        self._fit_overlay()
-        self._set_overlay_controls_visible(False)
-        pop.deiconify()
-        self._overlay_pointer_after_id = pop.after(50, self._poll_overlay_pointer)
-
-    def _install_single_instance_activate(self) -> None:
-        """İkinci başlatma, bu pencereyi simgeden çıkarıp öne getirsin.
-
-        UI thread kimliği paylaşılır. İkinci süreç PostThreadMessage bırakır;
-        Tk kuyruğu mesajı bu thread'e teslim eder.
-        """
-        slot = getattr(self, "_activate_slot", None)
-        if slot is None or os.name != "nt":
-            return
-        try:
-            from single_instance import activate_message_id, allow_activation, kernel32
-        except Exception:
-            return
-        try:
-            message = activate_message_id()
-        except OSError:
-            return
-        allow_activation()
-        slot.publish(int(kernel32.GetCurrentThreadId()))
-        self._single_instance_message = message
-        self._poll_activate_message()
-
-    def _poll_activate_message(self) -> None:
-        message = getattr(self, "_single_instance_message", 0)
-        if not message or os.name != "nt":
-            return
-        try:
-            api = _win32_gui_apis()
-            ctypes = api.ctypes
-            wintypes = api.wintypes
-            user32 = api.user32
-            PM_REMOVE = 0x0001
-            msg = wintypes.MSG()
-            while user32.PeekMessageW(ctypes.byref(msg), None, message, message, PM_REMOVE):
-                if int(msg.message) == message and int(msg.wParam) == 1 and int(msg.lParam) == 1:
-                    self._raise_existing_window()
-        except Exception:
-            pass
-        try:
-            self._activate_after_id = self.after(200, self._poll_activate_message)
-        except tk.TclError:
-            self._activate_after_id = None
-
-    def _stop_activate_listener(self) -> None:
-        after_id = getattr(self, "_activate_after_id", None)
-        self._activate_after_id = None
-        if after_id is not None:
-            try:
-                self.after_cancel(after_id)
-            except Exception:
-                pass
-        slot = getattr(self, "_activate_slot", None)
-        if slot is not None:
-            try:
-                slot.clear()
-            except Exception:
-                pass
-
-    def _raise_existing_window(self) -> None:
-        from single_instance import allow_activation, bring_to_front, root_hwnd
-
-        try:
-            if self.state() in {"iconic", "withdrawn"} or not self.winfo_viewable():
-                self.deiconify()
-            self.lift()
-            self.attributes("-topmost", True)
-            self.after(80, lambda: self.attributes("-topmost", bool(getattr(self, "always_on_top", False))))
-            self.focus_force()
-            bring_to_front(root_hwnd(self.winfo_id()))
-            allow_activation()
-        except tk.TclError:
-            pass
-
     def _on_close(self):
         if getattr(self, "_pump_after_id", None) is not None:
             try:
@@ -5266,6 +2655,13 @@ class App(tk.Tk):
         if getattr(self, "_hotkeys", None) is not None:
             self._hotkeys.close()
             self._hotkeys = None
+        spill_path = getattr(self, "_transcript_spill_path", None)
+        if spill_path is not None:
+            try:
+                spill_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            self._transcript_spill_path = None
         for var_attr in (
             "_dub_var",
             "_dub_bg_var",

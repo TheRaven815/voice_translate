@@ -2622,3 +2622,110 @@ def test_r06_gui_export_bilingual_srt_and_vtt(tmp_path, monkeypatch):
         assert "Çeviri satırı" in vtt_text
     finally:
         app.destroy()
+
+
+def test_r08_friendly_application_names_and_picker_icons(monkeypatch):
+    import sys
+    import applications
+    from applications import ApplicationAudioSource, executable_description, format_application_name
+    from devices import find_input_by_label
+
+    with monkeypatch.context() as mp:
+        def fake_desc(_key, raw_path):
+            lower = raw_path.lower()
+            if lower.endswith("firefox.exe"):
+                return "Mozilla Firefox"
+            if lower.endswith("same_name.exe"):
+                return "same_name.exe"
+            return ""
+
+        mp.setattr(applications, "_cached_pe_description", fake_desc)
+        assert executable_description(r"C:\Apps\firefox.exe") == "Mozilla Firefox"
+        assert format_application_name(r"C:\Apps\firefox.exe") == "Mozilla Firefox (firefox.exe)"
+        assert format_application_name(r"C:\Games\same_name.exe") == "same_name.exe"
+        assert format_application_name(r"C:\Games\custom_game.exe") == "custom_game.exe"
+
+    ff = ApplicationAudioSource(
+        pid=42,
+        name="Mozilla Firefox (firefox.exe)",
+        executable=r"C:\Apps\firefox.exe",
+        creation_time=1,
+    )
+    assert find_input_by_label([ff], "[Uygulama] Mozilla Firefox (firefox.exe)") is ff
+    assert find_input_by_label([ff], "[Uygulama] firefox.exe") is ff
+    assert find_input_by_label([ff], "firefox.exe") is ff
+
+    monkeypatch.setattr(App, "refresh_devices", lambda self, async_scan=True: None)
+    app = App()
+    try:
+        py_src = ApplicationAudioSource(
+            pid=123,
+            name="Python (python.exe)",
+            executable=sys.executable,
+            creation_time=1,
+        )
+        missing_src = ApplicationAudioSource(
+            pid=456,
+            name="custom_game.exe",
+            executable=r"C:\nonexistent\custom_game.exe",
+            creation_time=2,
+        )
+        app._applications = [py_src, missing_src]
+        app._open_application_picker()
+        assert app._application_list is not None
+        assert app._application_list.get(0, "end") == ("Python (python.exe)", "custom_game.exe")
+        if sys.platform == "win32":
+            assert app._application_list.icon_count() >= 1
+        app._close_application_picker()
+    finally:
+        app.destroy()
+
+
+def test_r11_bounded_transcript_panes_log_and_spillover_export(monkeypatch):
+    from export import TranscriptItem
+
+    monkeypatch.setattr(App, "refresh_devices", lambda self, async_scan=True: None)
+    app = App()
+    spill_path = None
+    try:
+        app.MAX_PANE_LINES = 20
+        app.PANE_TRIM_BATCH = 5
+        app.MAX_LOG_LINES = 15
+        app.LOG_TRIM_BATCH = 5
+        app.MAX_TRANSCRIPT_ITEMS = 10
+        app.TRANSCRIPT_SPILL_BATCH = 4
+
+        for i in range(30):
+            app._write_pane(app.heard, f"heard line {i}\n")
+        heard_lines = int(app.heard.index("end-1c").split(".")[0])
+        assert heard_lines <= 21
+
+        for i in range(25):
+            app._append(f"[bilgi] log {i}\n")
+        log_lines = int(app.log.index("end-1c").split(".")[0])
+        assert log_lines <= 16
+
+        for i in range(18):
+            stream = "heard" if i % 2 == 0 else "trans"
+            app._append_transcript_item(
+                TranscriptItem(timestamp=1000.0 + i, stream=stream, text=f"item {i}", duration_s=1.0)
+            )
+        assert len(app.transcript_items) <= 10
+        spill_path = app._transcript_spill_path
+        assert spill_path is not None and spill_path.is_file()
+
+        exported = app._get_export_items()
+        assert len(exported) == 18
+        assert [it.text for it in exported] == [f"item {i}" for i in range(18)]
+
+        app._clear_pane(app.heard)
+        remaining = app._get_export_items()
+        assert len(remaining) == 9
+        assert all(it.stream == "trans" for it in remaining)
+    finally:
+        if spill_path is None:
+            spill_path = getattr(app, "_transcript_spill_path", None)
+        app.destroy()
+        if spill_path is not None:
+            assert not spill_path.exists()
+
