@@ -121,6 +121,8 @@ class Settings:
     save_history: bool = True
     mute_shortcut: str = "Ctrl+Shift+M"
     start_stop_shortcut: str = "Ctrl+Shift+Space"
+    pause_shortcut: str = ""
+    push_to_talk: bool = False
     dub_mute_source: bool = False
     dub_background: bool = False
     # 1/6 ≈ −15.6 dB: duyulan orijinalin katı. source_mute.DUB_BACKGROUND ile aynı.
@@ -285,6 +287,10 @@ def load() -> Settings:
     overlay_alpha = _safe_float(raw.get("overlay_alpha"), default=0.92, min_val=0.1, max_val=1.0)
     raw_save_hist = raw.get("save_history", True)
     save_history = bool(raw_save_hist) if isinstance(raw_save_hist, (bool, int)) else True
+    raw_pause_sc = raw.get("pause_shortcut")
+    pause_shortcut = str(raw_pause_sc) if isinstance(raw_pause_sc, str) else ""
+    raw_ptt = raw.get("push_to_talk", False)
+    push_to_talk = bool(raw_ptt) if isinstance(raw_ptt, (bool, int)) else False
 
     return Settings(
         api_key=_decrypt_key(raw_key),
@@ -304,6 +310,8 @@ def load() -> Settings:
         save_history=save_history,
         mute_shortcut=str(raw.get("mute_shortcut") or "Ctrl+Shift+M"),
         start_stop_shortcut=str(raw.get("start_stop_shortcut") or "Ctrl+Shift+Space"),
+        pause_shortcut=pause_shortcut,
+        push_to_talk=push_to_talk,
         dub_mute_source=dub_mute_source,
         dub_background=dub_background,
         dub_background_gain=dub_background_gain,
@@ -330,6 +338,8 @@ def save(settings: Settings) -> Path:
     raw["save_history"] = settings.save_history
     raw["mute_shortcut"] = settings.mute_shortcut
     raw["start_stop_shortcut"] = settings.start_stop_shortcut
+    raw["pause_shortcut"] = settings.pause_shortcut
+    raw["push_to_talk"] = settings.push_to_talk
     raw["dub_mute_source"] = settings.dub_mute_source
     raw["dub_background"] = settings.dub_background
     raw["dub_background_gain"] = settings.dub_background_gain
@@ -373,6 +383,8 @@ def save_preferences(
     save_history: bool | None = None,
     mute_shortcut: str | None = None,
     start_stop_shortcut: str | None = None,
+    pause_shortcut: str | None = None,
+    push_to_talk: bool | None = None,
     dub_mute_source: bool | None = None,
     dub_background: bool | None = None,
     dub_background_gain: float | None = None,
@@ -413,6 +425,10 @@ def save_preferences(
         raw["mute_shortcut"] = mute_shortcut
     if start_stop_shortcut is not None:
         raw["start_stop_shortcut"] = start_stop_shortcut
+    if pause_shortcut is not None:
+        raw["pause_shortcut"] = pause_shortcut
+    if push_to_talk is not None:
+        raw["push_to_talk"] = bool(push_to_talk)
     if dub_mute_source is not None:
         raw["dub_mute_source"] = dub_mute_source
     if dub_background is not None:

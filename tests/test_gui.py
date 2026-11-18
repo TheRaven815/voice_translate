@@ -2195,12 +2195,13 @@ def test_history_pairing_viewer_toggle_and_clear(tmp_path, monkeypatch):
         app.destroy()
 
 
-def test_dynamic_dub_ducking_attenuates_only_while_speaking():
+def test_dynamic_dub_ducking_attenuates_only_while_speaking(monkeypatch):
     from types import SimpleNamespace
 
     from devices import display_input_label
     from source_mute import SESSION_MUTE_FLOOR, DubPlan
 
+    monkeypatch.setattr(App, "refresh_devices", lambda self, async_scan=True: None)
     events = []
 
     class FakeDub:
@@ -2304,3 +2305,320 @@ def test_srt_export_real_durations_no_overlap_and_en_errors():
         assert "Invalid API key" in msg
     finally:
         set_ui_lang("tr")
+
+
+def test_r01_pause_resume_ptt_dub_release_and_reconnect(monkeypatch):
+    from types import SimpleNamespace
+
+    from devices import display_input_label
+    from i18n import set_ui_lang
+    from reconnect import clone_loop_for_retry
+    from source_mute import SESSION_MUTE_FLOOR, DubPlan
+
+    monkeypatch.setattr(App, "refresh_devices", lambda self, async_scan=True: None)
+    dub_events = []
+
+    class FakeDub:
+        def preview(self, source, output, *, enabled, gain=None):
+            if not enabled:
+                return DubPlan("idle")
+            return DubPlan("mute_other_sessions", root_pid=1)
+
+        def engage(self, plan):
+            dub_events.append(("engage", plan.action))
+
+        def release(self):
+            dub_events.append(("release",))
+
+    class FakeLoop:
+        def __init__(self, **kw):
+            self.kwargs = kw
+            self._paused_flag = False
+            self._dub_exclude = False
+            self._capture_gain = 1.0
+            self.playing = True
+
+        @property
+        def is_paused(self) -> bool:
+            return self._paused_flag
+
+        def pause(self) -> None:
+            self._paused_flag = True
+
+        def resume(self) -> None:
+            self._paused_flag = False
+
+        def set_dub_exclude(self, enabled: bool) -> None:
+            self._dub_exclude = bool(enabled)
+
+        def set_capture_gain(self, gain: float) -> None:
+            self._capture_gain = float(gain)
+
+        def is_playing_audio(self) -> bool:
+            return self.playing
+
+        def request_stop(self) -> None:
+            pass
+
+    app = App()
+    try:
+        assert str(app.pause_btn["state"]) == tk.DISABLED
+        assert app.pause_btn.cget("text") == "Duraklat"
+
+        app._source_dub = FakeDub()
+        app.dub_mute_source = True
+        app.dub_ducking = True
+        same_spk = SimpleNamespace(name="Hoparlör", id="spk")
+        same_loop = SimpleNamespace(name="Hoparlör", id="spk", isloopback=True, is_application=False)
+        app.outputs = [same_spk]
+        app.inputs = [same_loop]
+        app.out_box["values"] = (NONE_OUTPUT, "Hoparlör")
+        app.in_var.set(display_input_label(same_loop))
+        app.out_var.set("Hoparlör")
+
+        loop = FakeLoop()
+        app.loop_obj = loop
+        app.worker = type("Worker", (), {"is_alive": lambda self: True})()
+        app._stopping.clear()
+        app._set_running(True)
+        app._set_status("Dinleniyor", C.live)
+        dub_events.clear()
+        app._sync_source_dub()
+        assert str(app.pause_btn["state"]) == tk.NORMAL
+        assert dub_events[-1] == ("engage", "mute_other_sessions")
+        assert loop._capture_gain == pytest.approx(1.0 / SESSION_MUTE_FLOOR)
+
+        # Pause releases dubbing immediately to idle while keeping exclude steady
+        app.toggle_pause()
+        assert app.is_paused is True
+        assert loop.is_paused is True
+        assert app.pause_btn.cget("text") == "Devam"
+        assert app.status.cget("text") == "Duraklatıldı"
+        assert app._dot.itemcget(app._dot_id, "fill") == C.warn
+        assert dub_events[-1] == ("engage", "idle")
+        assert loop._capture_gain == pytest.approx(1.0)
+        assert loop._dub_exclude is True
+
+        # Localization check (TR -> EN -> TR) and late status/latency protection
+        app._set_ui_language("en")
+        assert app.status.cget("text") == "Paused"
+        assert app.pause_btn.cget("text") == "Resume"
+        app.log_queue.put(("status", "Dinleniyor", C.live))
+        app.log_queue.put(("latency", 240))
+        app._pump_log()
+        assert app.status.cget("text") == "Paused"
+        app._set_ui_language("tr")
+        assert app.status.cget("text") == "Duraklatıldı"
+
+        # clone_loop_for_retry preserves paused state
+        cloned = clone_loop_for_retry(loop, {"src": "en", "dst": "tr"}, lambda **kw: FakeLoop(**kw))
+        assert cloned.is_paused is True
+        assert cloned._dub_exclude is True
+
+        # Global hotkey toggle & Push-to-Talk press/release
+        app.log_queue.put(("hotkey", "pause"))
+        app._pump_log()
+        assert app.is_paused is False
+        assert loop.is_paused is False
+        assert app.status.cget("text") == "Dinleniyor"
+        assert dub_events[-1] == ("engage", "mute_other_sessions")
+
+        app.log_queue.put(("hotkey", "pause_release"))
+        app._pump_log()
+        assert app.is_paused is True
+        app.log_queue.put(("hotkey", "pause_press"))
+        app._pump_log()
+        assert app.is_paused is False
+
+        # Settings dialog shortcut save + Push-to-Talk initial paused start
+        app._set_running(False)
+        app.worker = None
+        app.loop_obj = None
+        app._open_settings()
+        monkeypatch.setattr(app, "_register_global_hotkeys", lambda: None)
+        app.key_var.set("sk-ptt-key")
+        app._pause_shortcut_var.set("Ctrl+Shift+P")
+        app._push_to_talk_toggle.invoke()
+        app._save_settings()
+        assert config.load().pause_shortcut == "Ctrl+Shift+P"
+        assert config.load().push_to_talk is True
+
+        created_loops = []
+        monkeypatch.setattr(
+            "gui.app.SystemAudioLoop",
+            lambda **kw: created_loops.append(FakeLoop(**kw)) or created_loops[-1],
+        )
+        monkeypatch.setattr(
+            "gui.app.threading.Thread",
+            lambda **kw: SimpleNamespace(start=lambda: None, is_alive=lambda: True),
+        )
+        app.start()
+        assert app.is_paused is True
+        assert created_loops[-1].is_paused is True
+        assert app.status.cget("text") == "Duraklatıldı"
+    finally:
+        set_ui_lang("tr")
+        app.destroy()
+
+
+def test_r04_auto_scroll_lock_and_jump_to_live_pill(monkeypatch):
+    from i18n import set_ui_lang
+
+    monkeypatch.setattr(App, "refresh_devices", lambda self, async_scan=True: None)
+    app = App()
+    try:
+        app.geometry("960x480")
+        for i in range(60):
+            app._write_pane(app.trans, f"Satır {i}: Başlangıç çeviri metni.\n")
+        app.update_idletasks()
+        app.update()
+        assert app.trans.yview()[1] >= 0.98
+        assert not app._is_jump_pill_visible(app.trans)
+
+        # Yukarı kaydır -> yeni gelen parça görünümü aşağı çekmemeli, hap görünmeli
+        app.trans.yview_moveto(0.0)
+        app.update_idletasks()
+        assert app.trans.yview()[1] < 0.98
+
+        app.log_queue.put(("trans", "Yeni canlı cümle parçası."))
+        app.log_queue.put(("trans_end",))
+        app._pump_log()
+        app.update_idletasks()
+
+        assert app.trans.yview()[0] == pytest.approx(0.0)
+        assert app._is_jump_pill_visible(app.trans)
+        assert app.trans_jump_btn.cget("text") == "↓ Canlı akışa dön"
+
+        app._set_ui_language("en")
+        assert app.trans_jump_btn.cget("text") == "↓ Jump to live"
+        app._set_ui_language("tr")
+
+        # Hap düğmesine tıklayınca en alta inmeli ve gizlenmeli
+        app.trans_jump_btn.invoke()
+        app.update_idletasks()
+        assert app.trans.yview()[1] == pytest.approx(1.0)
+        assert not app._is_jump_pill_visible(app.trans)
+
+        # Manuel en alta kaydırma da hapı otomatik gizlemeli
+        app.trans.yview_moveto(0.0)
+        app.update_idletasks()
+        app._write_pane(app.trans, "Başka bir yeni satır.\n")
+        assert app._is_jump_pill_visible(app.trans)
+        app.trans.yview_moveto(1.0)
+        app.update_idletasks()
+        app._on_pane_yscroll(app.trans, *app.trans.yview())
+        assert not app._is_jump_pill_visible(app.trans)
+    finally:
+        set_ui_lang("tr")
+        app.destroy()
+
+
+def test_r04_ctrl_f_find_bar_in_main_and_history(tmp_path, monkeypatch):
+    import logger
+
+    monkeypatch.setattr(App, "refresh_devices", lambda self, async_scan=True: None)
+    monkeypatch.setattr("logger.config_dir", lambda: tmp_path)
+    logger.clear_history()
+    logger.append_history("Alpha beta", "Alfa beta çeviri", src="en", dst="tr")
+    logger.append_history("Gamma", "BETA ikinci kayıt", src="en", dst="tr")
+
+    app = App()
+    try:
+        app._write_pane(app.heard, "Hello Keyword one and KEYWORD two.\n")
+        app._write_pane(app.trans, "Çeviri içinde keyword üç.\n")
+        assert app._find_bar.is_open is False
+
+        # Ctrl+F açar ve eşleşmeleri sayar
+        app._toggle_find_bar()
+        assert app._find_bar.is_open is True
+        assert app._find_bar.winfo_manager() == "grid"
+
+        app._find_bar.query_var.set("keyword")
+        assert app._find_bar.count_lbl.cget("text") == "1/3"
+        assert len(app.heard.tag_ranges("search_hit")) == 4  # 2 eşleşme -> 4 indeks
+        assert len(app.trans.tag_ranges("search_hit")) == 2  # 1 eşleşme -> 2 indeks
+        assert len(app.heard.tag_ranges("search_current")) == 2
+        assert app.heard.tag_cget("search_current", "background") == C.accent
+
+        # Enter -> sonraki, Shift+Enter -> önceki
+        app._find_bar.next_match()
+        assert app._find_bar.count_lbl.cget("text") == "2/3"
+        app._find_bar.next_match()
+        assert app._find_bar.count_lbl.cget("text") == "3/3"
+        assert len(app.trans.tag_ranges("search_current")) == 2
+        app._find_bar.prev_match()
+        assert app._find_bar.count_lbl.cget("text") == "2/3"
+
+        # Eşleşme yoksa 0/0
+        app._find_bar.query_var.set("bulunmayan_kelime")
+        assert app._find_bar.count_lbl.cget("text") == "0/0"
+        assert len(app.heard.tag_ranges("search_hit")) == 0
+
+        # Escape arama çubuğunu kapatır ve vurguları temizler
+        app._find_bar.query_var.set("keyword")
+        assert len(app.heard.tag_ranges("search_hit")) == 4
+        app._on_root_escape()
+        assert app._find_bar.is_open is False
+        assert app._find_bar.winfo_manager() == ""
+        assert len(app.heard.tag_ranges("search_hit")) == 0
+        assert len(app.trans.tag_ranges("search_current")) == 0
+
+        # Konuşma Geçmişi penceresinde Ctrl+F ve iki aşamalı Escape
+        app._open_history()
+        assert app._history_win is not None
+        app._toggle_history_find_bar()
+        assert app._history_find_bar.is_open is True
+        app._history_find_bar.query_var.set("beta")
+        assert app._history_find_bar.count_lbl.cget("text") == "1/3"
+        assert len(app._history_text.tag_ranges("search_hit")) == 6
+
+        # İlk Escape yalnız arama çubuğunu kapatır, geçmiş penceresi açık kalır
+        app._on_history_escape()
+        assert app._history_find_bar.is_open is False
+        assert app._history_win is not None and app._history_win.winfo_exists()
+        assert len(app._history_text.tag_ranges("search_hit")) == 0
+
+        # İkinci Escape geçmiş penceresini kapatır
+        app._on_history_escape()
+        assert app._history_win is None
+    finally:
+        app.destroy()
+
+
+def test_r06_gui_export_bilingual_srt_and_vtt(tmp_path, monkeypatch):
+    from export import TranscriptItem
+
+    monkeypatch.setattr(App, "refresh_devices", lambda self, async_scan=True: None)
+    app = App()
+    try:
+        app._timeline_start_time = 200.0
+        app.transcript_items = [
+            TranscriptItem(timestamp=201.0, stream="heard", text="Original line", duration_s=2.0),
+            TranscriptItem(timestamp=201.5, stream="trans", text="Çeviri satırı", duration_s=2.5),
+        ]
+
+        seen_filetypes = []
+        bi_path = tmp_path / "out.bilingual.srt"
+
+        def fake_save_bi(**kw):
+            seen_filetypes.extend(kw.get("filetypes", []))
+            return str(bi_path)
+
+        monkeypatch.setattr("tkinter.filedialog.asksaveasfilename", fake_save_bi)
+        app._export_transcripts()
+        patterns = [pat for _lbl, pat in seen_filetypes]
+        assert "*.bilingual.srt" in patterns
+        assert "*.vtt" in patterns
+        bi_text = bi_path.read_text(encoding="utf-8")
+        assert "00:00:01,500 --> 00:00:04,000" in bi_text
+        assert "Original line\nÇeviri satırı" in bi_text
+
+        vtt_path = tmp_path / "out.vtt"
+        monkeypatch.setattr("tkinter.filedialog.asksaveasfilename", lambda **kw: str(vtt_path))
+        app._export_transcripts()
+        vtt_text = vtt_path.read_text(encoding="utf-8")
+        assert vtt_text.startswith("WEBVTT\n\n")
+        assert "00:00:01.500 --> 00:00:04.000" in vtt_text
+        assert "Çeviri satırı" in vtt_text
+    finally:
+        app.destroy()

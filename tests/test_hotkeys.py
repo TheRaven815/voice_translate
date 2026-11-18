@@ -57,3 +57,61 @@ def test_numlock_mod1_bit_is_not_captured_as_alt_on_windows(monkeypatch):
 
     ctrl_alt = SimpleNamespace(keysym="m", keycode=0x4D, state=0x0004 | 0x0008 | 0x20000)
     assert shortcut_from_tk_event(ctrl_alt) == "Ctrl+Alt+M"
+
+
+def test_global_hotkeys_pause_and_push_to_talk_press_release(monkeypatch):
+    import hotkeys
+    from hotkeys import GlobalHotkeys
+
+    # Avoid spawning the Win32 message thread so we can deterministically test
+    # _dispatch_hotkey and _check_ptt_release state transitions.
+    monkeypatch.setattr(hotkeys.sys, "platform", "linux")
+    events: list[str] = []
+    hk = GlobalHotkeys(events.append, push_to_talk=False)
+    assert "pause" in GlobalHotkeys._IDS
+
+    down_vks: set[int] = set()
+    timers_started: list[int] = []
+    timers_killed: list[int] = []
+
+    class FakeUser32:
+        def GetAsyncKeyState(self, vk: int) -> int:
+            return -0x8000 if vk in down_vks else 0
+
+        def SetTimer(self, _hwnd, _id, elapsed, _cb) -> int:
+            timers_started.append(elapsed)
+            return 42
+
+        def KillTimer(self, _hwnd, timer_id: int) -> int:
+            timers_killed.append(timer_id)
+            return 1
+
+    hk._user32 = FakeUser32()
+    combo = parse_shortcut("Ctrl+Shift+P")
+    registered = {"pause": combo}
+
+    # Normal toggle mode (push_to_talk=False)
+    hk._dispatch_hotkey("pause", registered)
+    assert events == ["pause"]
+    assert timers_started == []
+
+    # Push-to-Talk mode (push_to_talk=True)
+    events.clear()
+    hk.set_push_to_talk(True)
+    down_vks.update({0x11, 0x10, ord("P")})  # Ctrl + Shift + P held
+    hk._dispatch_hotkey("pause", registered)
+    # Repeated WM_HOTKEY while held must not emit duplicate pause_press
+    hk._dispatch_hotkey("pause", registered)
+    assert events == ["pause_press"]
+    assert timers_started == [GlobalHotkeys._PTT_POLL_MS]
+
+    # Still held on timer tick -> no release yet
+    hk._check_ptt_release(registered)
+    assert events == ["pause_press"]
+
+    # Releasing 'P' emits pause_release and kills timer
+    down_vks.discard(ord("P"))
+    hk._check_ptt_release(registered)
+    assert events == ["pause_press", "pause_release"]
+    assert timers_killed == [42]
+    assert hk._ptt_held is False

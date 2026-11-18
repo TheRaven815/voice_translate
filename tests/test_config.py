@@ -268,3 +268,32 @@ def test_translation_volume_glossary_and_ducking_persistence(tmp_path, monkeypat
     assert after_reset.glossary == ""
     assert after_reset.dub_ducking is True
     assert after_reset.save_history is True
+
+
+def test_r01_pause_shortcut_and_push_to_talk_persistence(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    defaults = config.load()
+    assert defaults.pause_shortcut == ""
+    assert defaults.push_to_talk is False
+
+    config.save_preferences(pause_shortcut="Ctrl+Shift+P", push_to_talk=True)
+    loaded = config.load()
+    assert loaded.pause_shortcut == "Ctrl+Shift+P"
+    assert loaded.push_to_talk is True
+
+    # Malformed values fall back safely
+    (tmp_path / "config.json").write_text(
+        json.dumps({"pause_shortcut": 12345, "push_to_talk": "not_bool"}),
+        encoding="utf-8",
+    )
+    fallback = config.load()
+    assert fallback.pause_shortcut == ""
+    assert fallback.push_to_talk is False
+
+    config.save_api_key("sk-ptt")
+    config.save_preferences(pause_shortcut="F8", push_to_talk=True)
+    config.reset()
+    reset_cfg = config.load()
+    assert reset_cfg.api_key == "sk-ptt"
+    assert reset_cfg.pause_shortcut == ""
+    assert reset_cfg.push_to_talk is False

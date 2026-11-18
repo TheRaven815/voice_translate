@@ -1258,3 +1258,309 @@ class LevelSlider(tk.Canvas):
             outline=fill,
             width=1.6,
         )
+
+
+class TranscriptSearchBar(tk.Frame):
+    """Transkript ve geçmiş panelleri için ince satır içi arama çubuğu (Ctrl+F)."""
+
+    def __init__(
+        self,
+        master,
+        *,
+        get_targets,
+        font,
+        on_show=None,
+        on_hide=None,
+        label_text: str = "",
+        prev_tip: str = "",
+        next_tip: str = "",
+        close_tip: str = "",
+    ):
+        super().__init__(master, bg=C.panel, bd=0, highlightthickness=0)
+        self._get_targets = get_targets
+        self._on_show = on_show
+        self._on_hide = on_hide
+        self._font = font
+        self.is_open = False
+        self.matches: list[tuple[tk.Text, str, str]] = []
+        self.current_index = -1
+
+        self._inner = tk.Frame(self, bg=C.panel, padx=12, pady=5)
+        self._inner.pack(fill=tk.X)
+        self._sep = tk.Frame(self, bg=C.line, height=1, bd=0, highlightthickness=0)
+        self._sep.pack(fill=tk.X, side=tk.BOTTOM)
+
+        self.close_btn = IconButton(
+            self._inner, "close", self.close, bg=C.panel, tooltip=close_tip
+        )
+        self.close_btn.pack(side=tk.RIGHT, padx=(4, 0))
+
+        self.next_btn = tk.Button(
+            self._inner,
+            text="↓",
+            command=self.next_match,
+            font=font,
+            bg=C.panel,
+            fg=C.muted,
+            activebackground=C.hover,
+            activeforeground=C.text,
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+            padx=7,
+            pady=1,
+            cursor="hand2",
+            takefocus=0,
+        )
+        self.next_btn.pack(side=tk.RIGHT, padx=(2, 0))
+
+        self.prev_btn = tk.Button(
+            self._inner,
+            text="↑",
+            command=self.prev_match,
+            font=font,
+            bg=C.panel,
+            fg=C.muted,
+            activebackground=C.hover,
+            activeforeground=C.text,
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+            padx=7,
+            pady=1,
+            cursor="hand2",
+            takefocus=0,
+        )
+        self.prev_btn.pack(side=tk.RIGHT, padx=(6, 0))
+
+        self.count_lbl = tk.Label(
+            self._inner,
+            text="",
+            width=7,
+            anchor="e",
+            font=font,
+            fg=C.muted,
+            bg=C.panel,
+        )
+        self.count_lbl.pack(side=tk.RIGHT, padx=(8, 0))
+
+        self._label = tk.Label(
+            self._inner,
+            text=label_text,
+            font=font,
+            fg=C.dim,
+            bg=C.panel,
+        )
+        if label_text:
+            self._label.pack(side=tk.LEFT, padx=(0, 8))
+
+        self._entry_edge = tk.Frame(self._inner, bg=C.line, bd=0, highlightthickness=0)
+        self._entry_edge.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        self.query_var = tk.StringVar(master=self, value="")
+        self._search_count_var = tk.IntVar(master=self, value=0)
+        self.entry = tk.Entry(
+            self._entry_edge,
+            textvariable=self.query_var,
+            font=font,
+            bg=C.bg,
+            fg=C.text,
+            insertbackground=C.text,
+            selectbackground=C.select,
+            selectforeground=C.text,
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+        )
+        self.entry.pack(fill=tk.X, padx=1, pady=1, ipady=3, ipadx=6)
+        self._trace = self.query_var.trace_add("write", lambda *_: self.refresh(scroll=True))
+        self.entry.bind("<Return>", self._on_return)
+        self.entry.bind("<KP_Enter>", self._on_return)
+        self.entry.bind("<Shift-Return>", self.prev_match)
+        self.entry.bind("<Escape>", self.close)
+        self.entry.bind("<FocusIn>", lambda _e: self._entry_edge.configure(bg=C.accent))
+        self.entry.bind("<FocusOut>", lambda _e: self._entry_edge.configure(bg=C.line))
+        for btn in (self.prev_btn, self.next_btn):
+            btn.bind("<Enter>", lambda _e, b=btn: b.configure(bg=C.hover, fg=C.text))
+            btn.bind("<Leave>", lambda _e, b=btn: b.configure(bg=C.panel, fg=C.muted))
+        self._prev_tip = prev_tip
+        self._next_tip = next_tip
+
+    def destroy(self):
+        try:
+            self.query_var.trace_remove("write", self._trace)
+        except (tk.TclError, ValueError):
+            pass
+        self.query_var = None  # type: ignore[assignment]
+        self._search_count_var = None  # type: ignore[assignment]
+        super().destroy()
+
+    @staticmethod
+    def style_text_tags(widget: tk.Text) -> None:
+        hit_bg = mix(C.bg, C.accent, 0.34 if C.current == "dark" else 0.28)
+        widget.tag_configure("search_hit", background=hit_bg, foreground=C.text)
+        widget.tag_configure("search_current", background=C.accent, foreground=C.fill_fg)
+        widget.tag_raise("search_current", "search_hit")
+
+    def _targets(self) -> list[tk.Text]:
+        result: list[tk.Text] = []
+        for w in self._get_targets() or ():
+            if w is None:
+                continue
+            try:
+                if w.winfo_exists():
+                    result.append(w)
+            except tk.TclError:
+                pass
+        return result
+
+    def _on_return(self, event=None):
+        state = int(getattr(event, "state", 0) or 0)
+        if state & 0x0001:
+            return self.prev_match()
+        return self.next_match()
+
+    def open(self) -> str:
+        if not self.is_open:
+            self.is_open = True
+            if self._on_show is not None:
+                self._on_show()
+        self.refresh(scroll=True)
+        try:
+            self.entry.focus_set()
+            self.entry.selection_range(0, tk.END)
+            self.entry.icursor(tk.END)
+        except tk.TclError:
+            pass
+        return "break"
+
+    def close(self, _event=None) -> str:
+        if not self.is_open:
+            return "break"
+        self.is_open = False
+        self.clear_highlights()
+        if self._on_hide is not None:
+            self._on_hide()
+        return "break"
+
+    def toggle(self, _event=None) -> str:
+        if self.is_open:
+            return self.close()
+        return self.open()
+
+    def clear_highlights(self) -> None:
+        for w in self._targets():
+            try:
+                w.tag_remove("search_hit", "1.0", tk.END)
+                w.tag_remove("search_current", "1.0", tk.END)
+            except tk.TclError:
+                pass
+        self.matches = []
+        self.current_index = -1
+        try:
+            if self.count_lbl.winfo_exists():
+                self.count_lbl.configure(text="", fg=C.muted)
+        except tk.TclError:
+            pass
+
+    def refresh(self, *, scroll: bool = True, preserve_index: bool = False) -> None:
+        if not self.is_open or self.query_var is None:
+            return
+        query = self.query_var.get()
+        targets = self._targets()
+        for w in targets:
+            self.style_text_tags(w)
+            w.tag_remove("search_hit", "1.0", tk.END)
+            w.tag_remove("search_current", "1.0", tk.END)
+        if not query:
+            self.matches = []
+            self.current_index = -1
+            self.count_lbl.configure(text="", fg=C.muted)
+            return
+        prev_idx = self.current_index
+        found: list[tuple[tk.Text, str, str]] = []
+        count_var = self._search_count_var
+        for w in targets:
+            pos = "1.0"
+            while True:
+                idx = w.search(query, pos, stopindex="end-1c", nocase=True, count=count_var)
+                if not idx:
+                    break
+                mlen = max(1, int(count_var.get() if count_var is not None else len(query)) or len(query))
+                end_idx = f"{idx}+{mlen}c"
+                w.tag_add("search_hit", idx, end_idx)
+                found.append((w, idx, end_idx))
+                pos = end_idx
+        self.matches = found
+        if not found:
+            self.current_index = -1
+            self.count_lbl.configure(text="0/0", fg=C.warn)
+            return
+        if preserve_index and 0 <= prev_idx < len(found):
+            self.current_index = prev_idx
+        else:
+            self.current_index = 0
+        self._apply_current(scroll=scroll)
+
+    def _apply_current(self, *, scroll: bool = True) -> None:
+        for w in self._targets():
+            w.tag_remove("search_current", "1.0", tk.END)
+        if not self.matches or not (0 <= self.current_index < len(self.matches)):
+            return
+        w, start_idx, end_idx = self.matches[self.current_index]
+        w.tag_add("search_current", start_idx, end_idx)
+        w.tag_raise("search_current", "search_hit")
+        self.count_lbl.configure(
+            text=f"{self.current_index + 1}/{len(self.matches)}",
+            fg=C.muted,
+        )
+        if scroll:
+            w.see(start_idx)
+
+    def next_match(self, _event=None) -> str:
+        if self.matches:
+            self.current_index = (self.current_index + 1) % len(self.matches)
+            self._apply_current(scroll=True)
+        return "break"
+
+    def prev_match(self, _event=None) -> str:
+        if self.matches:
+            self.current_index = (self.current_index - 1) % len(self.matches)
+            self._apply_current(scroll=True)
+        return "break"
+
+    def set_labels(self, *, label_text: str = "", close_tip: str = "") -> None:
+        self._label.configure(text=label_text)
+        if label_text and not self._label.winfo_manager():
+            self._label.pack(side=tk.LEFT, padx=(0, 8), before=self._entry_edge)
+        elif not label_text and self._label.winfo_manager():
+            self._label.pack_forget()
+        self.close_btn.set_tooltip(close_tip)
+
+    def update_theme(self) -> None:
+        super().configure(bg=C.panel)
+        self._inner.configure(bg=C.panel)
+        self._sep.configure(bg=C.line)
+        self._label.configure(bg=C.panel, fg=C.dim)
+        focused = False
+        try:
+            focused = self.focus_get() is self.entry
+        except (KeyError, tk.TclError):
+            focused = False
+        self._entry_edge.configure(bg=C.accent if focused else C.line)
+        self.entry.configure(
+            bg=C.bg,
+            fg=C.text,
+            insertbackground=C.text,
+            selectbackground=C.select,
+            selectforeground=C.text,
+        )
+        self.count_lbl.configure(
+            bg=C.panel,
+            fg=C.warn if (self.query_var is not None and self.query_var.get() and not self.matches) else C.muted,
+        )
+        for btn in (self.prev_btn, self.next_btn):
+            btn.configure(bg=C.panel, fg=C.muted, activebackground=C.hover, activeforeground=C.text)
+        self.close_btn.configure(bg=C.panel)
+        for w in self._targets():
+            self.style_text_tags(w)

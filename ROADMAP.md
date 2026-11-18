@@ -19,21 +19,21 @@ For context, the first wave of high-priority improvements has already been imple
 
 ## Overview Matrix of Remaining Items
 
-| ID | Title | Category | Impact | Effort | Primary Files |
-|---|---|---|---|---|---|
-| **R01** | Live Pause / Resume & Push-to-Talk | Ready Backend → GUI | High | Low | `loop.py`, `gui/app.py`, `hotkeys.py`, `config.py` |
-| **R02** | GUI Controls for `vad_threshold` & `system_instruction` | Ready Backend → GUI | Medium-High | Low | `loop.py`, `config.py`, `gui/app.py`, `i18n.py` |
-| **R03** | System Tray Mode & Context Menu | Product Feature | High | Medium | `notifications.py`, `gui/app.py`, `config.py`, `i18n.py` |
-| **R04** | Transcript Auto-Scroll Lock & Search (`Ctrl+F`) | Product Feature | High | Low-Medium | `gui/app.py`, `gui/widgets.py`, `i18n.py` |
-| **R05** | Output Voice Character (`voice_name`) Selection | Product Feature | Medium-High | Low-Medium | `loop.py`, `config.py`, `cli.py`, `gui/app.py` |
-| **R06** | Bilingual Subtitles (`.srt`) & WebVTT (`.vtt`) Export | Product Feature | Medium | Low | `export.py`, `gui/app.py`, `i18n.py` |
-| **R07** | CLI Feature Parity (`--app`, `--dub`) & Two-Way Meeting Mode | Product Feature | High | Medium-High | `cli.py`, `applications.py`, `source_mute.py`, `loop.py` |
-| **R08** | Friendly App Names (`FileDescription`) & Icons in Picker | UX Polish | Medium | Medium | `applications.py`, `gui/app.py` |
-| **R09** | Event-Driven Overlay Hover (Conditional `50 ms` Polling) | Performance | Low-Medium | Low | `gui/app.py` |
-| **R10** | `SourceDub` Background Watcher Optimization | Performance | Medium | Low-Medium | `source_mute.py` |
-| **R11** | Bounded Transcript Buffers & Zero-Copy `AudioConverter` | Performance & Memory | Medium | Medium | `gui/app.py`, `audio.py`, `loop.py` |
-| **R12** | Modularize `gui/app.py` into Focused Submodules | Architecture | High | Medium-High | `gui/app.py`, `gui/settings.py`, `gui/overlay.py`, `gui/dialogs.py` |
-| **R13** | Documentation Sync (`README`), CI Matrix & Release Signing | Docs, CI & Packaging | Medium | Low | `README.md`, `README.en.md`, `.github/workflows/ci.yml`, `.github/workflows/release.yml` |
+| ID | Title | Category | Impact | Effort | Status | Primary Files |
+|---|---|---|---|---|---|---|
+| **R01** | Live Pause / Resume & Push-to-Talk | Ready Backend → GUI | High | Low | ✅ Completed | `loop.py`, `gui/app.py`, `hotkeys.py`, `config.py` |
+| **R02** | GUI Controls for `vad_threshold` & `system_instruction` | Ready Backend → GUI | Medium-High | Low | Pending | `loop.py`, `config.py`, `gui/app.py`, `i18n.py` |
+| **R03** | System Tray Mode & Context Menu | Product Feature | High | Medium | Pending | `notifications.py`, `gui/app.py`, `config.py`, `i18n.py` |
+| **R04** | Transcript Auto-Scroll Lock & Search (`Ctrl+F`) | Product Feature | High | Low-Medium | ✅ Completed | `gui/app.py`, `gui/widgets.py`, `i18n.py` |
+| **R05** | Output Voice Character (`voice_name`) Selection | Product Feature | Medium-High | Low-Medium | Pending | `loop.py`, `config.py`, `cli.py`, `gui/app.py` |
+| **R06** | Bilingual Subtitles (`.srt`) & WebVTT (`.vtt`) Export | Product Feature | Medium | Low | ✅ Completed | `export.py`, `gui/app.py`, `i18n.py` |
+| **R07** | CLI Feature Parity (`--app`, `--dub`) & Two-Way Meeting Mode | Product Feature | High | Medium-High | Pending | `cli.py`, `applications.py`, `source_mute.py`, `loop.py` |
+| **R08** | Friendly App Names (`FileDescription`) & Icons in Picker | UX Polish | Medium | Medium | Pending | `applications.py`, `gui/app.py` |
+| **R09** | Event-Driven Overlay Hover (Conditional `50 ms` Polling) | Performance | Low-Medium | Low | Pending | `gui/app.py` |
+| **R10** | `SourceDub` Background Watcher Optimization | Performance | Medium | Low-Medium | Pending | `source_mute.py` |
+| **R11** | Bounded Transcript Buffers & Zero-Copy `AudioConverter` | Performance & Memory | Medium | Medium | Pending | `gui/app.py`, `audio.py`, `loop.py` |
+| **R12** | Modularize `gui/app.py` into Focused Submodules | Architecture | High | Medium-High | Pending | `gui/app.py`, `gui/settings.py`, `gui/overlay.py`, `gui/dialogs.py` |
+| **R13** | Documentation Sync (`README`), CI Matrix & Release Signing | Docs, CI & Packaging | Medium | Low | Pending | `README.md`, `README.en.md`, `.github/workflows/ci.yml`, `.github/workflows/release.yml` |
 
 ---
 
@@ -318,9 +318,9 @@ Split `gui/app.py` incrementally into cohesive modules under `gui/` while keepin
 
 1. **Wave 2A — Fast High-Value Polish (Low Effort):**
    - **R13** (Sync `README.md` / `README.en.md` + CI zero-Tkinter & Python 3.13 check)
-   - **R04** (Transcript Auto-Scroll Lock + `Ctrl+F` Search)
-   - **R01** (Live Pause / Resume button & hotkey)
-   - **R06** (Bilingual `.srt` & `.vtt` export)
+   - ✅ **R04** (Transcript Auto-Scroll Lock + `Ctrl+F` Search)
+   - ✅ **R01** (Live Pause / Resume button & hotkey + Push-to-Talk)
+   - ✅ **R06** (Bilingual `.srt` & `.vtt` export)
 2. **Wave 2B — Desktop & Audio Experience Upgrades (Medium Effort):**
    - **R02** (`vad_threshold` & `system_instruction` in GUI Settings)
    - **R05** (Output `voice_name` selection in GUI & CLI)

@@ -1,4 +1,4 @@
-"""Transkript dışa aktarma: TXT, SRT, JSONL."""
+"""Transkript dışa aktarma: TXT, SRT, çift dilli SRT, WebVTT, JSONL."""
 
 from __future__ import annotations
 
@@ -15,13 +15,24 @@ class TranscriptItem:
     duration_s: float = 3.0
 
 
+def _split_time_ms(seconds: float) -> tuple[int, int, int, int]:
+    clamped = max(0.0, float(seconds))
+    total_ms = int(round(clamped * 1000))
+    hours = total_ms // 3_600_000
+    minutes = (total_ms % 3_600_000) // 60_000
+    secs = (total_ms % 60_000) // 1000
+    millis = total_ms % 1000
+    return hours, minutes, secs, millis
+
+
 def format_srt_time(seconds: float) -> str:
-    total_seconds = int(max(0.0, seconds))
-    hours = total_seconds // 3600
-    minutes = (total_seconds % 3600) // 60
-    secs = total_seconds % 60
-    millis = int((seconds - int(seconds)) * 1000)
+    hours, minutes, secs, millis = _split_time_ms(seconds)
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
+def format_vtt_time(seconds: float) -> str:
+    hours, minutes, secs, millis = _split_time_ms(seconds)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
 
 
 def export_txt(items: list[TranscriptItem]) -> str:
@@ -37,24 +48,120 @@ def export_txt(items: list[TranscriptItem]) -> str:
     return "\n".join(lines)
 
 
-def export_srt(items: list[TranscriptItem], session_start: float | None = None) -> str:
+def _pair_heard_for_trans(
+    trans_items: list[TranscriptItem],
+    heard_items: list[TranscriptItem],
+) -> list[str | None]:
+    if not trans_items or not heard_items:
+        return [None] * len(trans_items)
+    used_heard: set[int] = set()
+    paired: list[str | None] = []
+    for idx, t_it in enumerate(trans_items):
+        t_start = t_it.timestamp
+        t_end = t_start + max(1.2, t_it.duration_s)
+        next_t_start = trans_items[idx + 1].timestamp if idx + 1 < len(trans_items) else None
+        prev_t_start = trans_items[idx - 1].timestamp if idx > 0 else None
+        candidates: list[tuple[int, float, int]] = []
+        for j, h_it in enumerate(heard_items):
+            if j in used_heard:
+                continue
+            h_start = h_it.timestamp
+            h_end = h_start + max(1.2, h_it.duration_s)
+            if (
+                next_t_start is not None
+                and next_t_start > t_start
+                and h_start > t_start
+                and abs(h_start - t_start) > abs(h_start - next_t_start)
+            ):
+                continue
+            if prev_t_start is not None and h_end < prev_t_start:
+                continue
+            overlaps = h_start <= t_end and h_end >= t_start
+            precedes = h_start <= t_start and (t_start - h_end) <= 15.0
+            if not (overlaps or precedes):
+                continue
+            gap = max(0.0, t_start - h_end)
+            candidates.append((0 if overlaps else 1, gap, j))
+        if candidates:
+            candidates.sort()
+            best_j = candidates[0][2]
+            used_heard.add(best_j)
+            paired.append(heard_items[best_j].text.strip())
+        else:
+            paired.append(None)
+    return paired
+
+
+def _build_subtitle_cues(
+    items: list[TranscriptItem],
+    session_start: float | None = None,
+    *,
+    bilingual: bool = False,
+) -> list[tuple[float, float, str]]:
     trans_items = [it for it in items if it.stream == "trans" and it.text.strip()]
-    if not trans_items:
-        trans_items = [it for it in items if it.text.strip()]
-    if not trans_items:
-        return ""
-    start_base = session_start if session_start is not None else trans_items[0].timestamp
-    blocks = []
-    for i, it in enumerate(trans_items, 1):
+    heard_items = [it for it in items if it.stream == "heard" and it.text.strip()]
+    has_trans = bool(trans_items)
+    cues_source = trans_items if has_trans else [it for it in items if it.text.strip()]
+    if not cues_source:
+        return []
+    paired_heard = (
+        _pair_heard_for_trans(cues_source, heard_items)
+        if (bilingual and has_trans and heard_items)
+        else [None] * len(cues_source)
+    )
+    start_base = session_start if session_start is not None else cues_source[0].timestamp
+    cues: list[tuple[float, float, str]] = []
+    for i, it in enumerate(cues_source):
         rel_start = max(0.0, it.timestamp - start_base)
         rel_end = rel_start + max(1.2, it.duration_s)
-        if i < len(trans_items):
-            next_start = max(0.0, trans_items[i].timestamp - start_base)
+        if i + 1 < len(cues_source):
+            next_start = max(0.0, cues_source[i + 1].timestamp - start_base)
             if next_start > rel_start and rel_end > next_start:
                 rel_end = max(rel_start + 0.2, next_start - 0.04)
+        body = it.text.strip()
+        heard_text = paired_heard[i]
+        if heard_text and heard_text != body:
+            body = f"{heard_text}\n{body}"
+        cues.append((rel_start, rel_end, body))
+    return cues
+
+
+def export_srt(items: list[TranscriptItem], session_start: float | None = None) -> str:
+    cues = _build_subtitle_cues(items, session_start=session_start, bilingual=False)
+    if not cues:
+        return ""
+    blocks = []
+    for i, (rel_start, rel_end, body) in enumerate(cues, 1):
         time_str = f"{format_srt_time(rel_start)} --> {format_srt_time(rel_end)}"
-        blocks.append(f"{i}\n{time_str}\n{it.text.strip()}\n")
+        blocks.append(f"{i}\n{time_str}\n{body}\n")
     return "\n".join(blocks)
+
+
+def export_bilingual_srt(items: list[TranscriptItem], session_start: float | None = None) -> str:
+    cues = _build_subtitle_cues(items, session_start=session_start, bilingual=True)
+    if not cues:
+        return ""
+    blocks = []
+    for i, (rel_start, rel_end, body) in enumerate(cues, 1):
+        time_str = f"{format_srt_time(rel_start)} --> {format_srt_time(rel_end)}"
+        blocks.append(f"{i}\n{time_str}\n{body}\n")
+    return "\n".join(blocks)
+
+
+def export_vtt(
+    items: list[TranscriptItem],
+    session_start: float | None = None,
+    *,
+    bilingual: bool = False,
+) -> str:
+    cues = _build_subtitle_cues(items, session_start=session_start, bilingual=bilingual)
+    if not cues:
+        return ""
+    blocks = []
+    for i, (rel_start, rel_end, body) in enumerate(cues, 1):
+        time_str = f"{format_vtt_time(rel_start)} --> {format_vtt_time(rel_end)}"
+        blocks.append(f"{i}\n{time_str}\n{body}\n")
+    return "WEBVTT\n\n" + "\n".join(blocks)
 
 
 def export_jsonl(items: list[TranscriptItem]) -> str:

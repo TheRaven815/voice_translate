@@ -173,13 +173,23 @@ def shortcut_from_tk_event(event) -> str:
 class GlobalHotkeys:
     """RegisterHotKey kayıtlarını kendi Windows mesaj thread'inde yönetir."""
 
-    _IDS = {"mute": 1, "start_stop": 2}
+    _IDS = {"mute": 1, "start_stop": 2, "pause": 3}
     _WM_HOTKEY = 0x0312
+    _WM_TIMER = 0x0113
     _WM_COMMAND = 0x8001
     _PM_NOREMOVE = 0x0000
+    _PTT_POLL_MS = 30
+    _MOD_VKS = (
+        (0x0001, 0x12),  # Alt -> VK_MENU
+        (0x0002, 0x11),  # Ctrl -> VK_CONTROL
+        (0x0004, 0x10),  # Shift -> VK_SHIFT
+    )
 
-    def __init__(self, callback: Callable[[str], None]):
+    def __init__(self, callback: Callable[[str], None], *, push_to_talk: bool = False):
         self._callback = callback
+        self._push_to_talk = bool(push_to_talk)
+        self._ptt_held = False
+        self._ptt_timer_id = 0
         self._commands: queue.Queue = queue.Queue()
         self._ready = threading.Event()
         self._thread: threading.Thread | None = None
@@ -194,6 +204,13 @@ class GlobalHotkeys:
         self._thread.start()
         if not self._ready.wait(2.0):
             self._startup_error = "Genel kısayol mesaj thread'i başlatılamadı."
+
+    def set_push_to_talk(self, enabled: bool) -> None:
+        """Bas-Konuş modunu açar/kapatır; basılı kalmış tuş varsa güvenli bırakır."""
+        self._push_to_talk = bool(enabled)
+        if not self._closed and self._thread_id:
+            self._commands.put(("ptt_mode", self._push_to_talk, None, None))
+            self._wake()
 
     def bind(self, action: str, shortcut: str) -> str | None:
         """Kısayolu kaydeder; başarıda None, hatada kullanıcı mesajı döndürür."""
@@ -265,6 +282,61 @@ class GlobalHotkeys:
             return None
         return self._windows_error("Genel kısayol mesajı gönderilemedi")
 
+    def _is_combo_down(self, modifiers: int, virtual_key: int) -> bool:
+        user32 = getattr(self, "_user32", None)
+        if user32 is None:
+            return False
+        if (int(user32.GetAsyncKeyState(virtual_key)) & 0x8000) == 0:
+            return False
+        for mask, mod_vk in self._MOD_VKS:
+            if (modifiers & mask) and (int(user32.GetAsyncKeyState(mod_vk)) & 0x8000) == 0:
+                return False
+        return True
+
+    def _stop_ptt_hold(self, *, emit_release: bool) -> None:
+        user32 = getattr(self, "_user32", None)
+        if self._ptt_timer_id and user32 is not None:
+            try:
+                user32.KillTimer(None, self._ptt_timer_id)
+            except Exception:
+                pass
+        self._ptt_timer_id = 0
+        was_held = self._ptt_held
+        self._ptt_held = False
+        if emit_release and was_held:
+            try:
+                self._callback("pause_release")
+            except Exception:
+                pass
+
+    def _dispatch_hotkey(self, action: str, registered: dict[str, tuple[str, int, int]]) -> None:
+        if action == "pause" and self._push_to_talk:
+            if not self._ptt_held:
+                self._ptt_held = True
+                user32 = getattr(self, "_user32", None)
+                if user32 is not None and not self._ptt_timer_id:
+                    self._ptt_timer_id = int(user32.SetTimer(None, 0, self._PTT_POLL_MS, None) or 0)
+                try:
+                    self._callback("pause_press")
+                except Exception:
+                    pass
+            return
+        try:
+            self._callback(action)
+        except Exception:
+            pass
+
+    def _check_ptt_release(self, registered: dict[str, tuple[str, int, int]]) -> None:
+        if not self._ptt_held:
+            return
+        combo = registered.get("pause")
+        if not self._push_to_talk or combo is None:
+            self._stop_ptt_hold(emit_release=True)
+            return
+        _, modifiers, virtual_key = combo
+        if not self._is_combo_down(modifiers, virtual_key):
+            self._stop_ptt_hold(emit_release=True)
+
     def _run(self) -> None:
         try:
             self._configure_winapi()
@@ -280,16 +352,16 @@ class GlobalHotkeys:
                 if msg.message == self._WM_HOTKEY:
                     action = next((name for name, ident in self._IDS.items() if ident == msg.wParam), None)
                     if action is not None:
-                        try:
-                            self._callback(action)
-                        except Exception:
-                            pass
+                        self._dispatch_hotkey(action, registered)
+                elif msg.message == self._WM_TIMER:
+                    self._check_ptt_release(registered)
                 elif msg.message == self._WM_COMMAND and self._drain_commands(registered):
                     break
         except Exception as exc:
             self._startup_error = f"Genel kısayol sistemi başlatılamadı: {exc}"
             self._ready.set()
         finally:
+            self._stop_ptt_hold(emit_release=False)
             user32 = getattr(self, "_user32", None)
             if user32 is not None:
                 for ident in self._IDS.values():
@@ -302,8 +374,15 @@ class GlobalHotkeys:
             except queue.Empty:
                 return False
             if command == "close":
+                self._stop_ptt_hold(emit_release=False)
                 return True
+            if command == "ptt_mode":
+                if not action and self._ptt_held:
+                    self._stop_ptt_hold(emit_release=True)
+                continue
             if command == "replace":
+                if self._ptt_held and "pause" not in action:
+                    self._stop_ptt_hold(emit_release=True)
                 previous = dict(registered)
                 for ident in self._IDS.values():
                     self._user32.UnregisterHotKey(None, ident)
@@ -326,6 +405,8 @@ class GlobalHotkeys:
                             registered[name] = old_combo
                 response.put(error)
                 continue
+            if action == "pause" and self._ptt_held:
+                self._stop_ptt_hold(emit_release=True)
             ident = self._IDS[action]
             previous = registered.pop(action, None)
             if previous is not None:
@@ -356,6 +437,12 @@ class GlobalHotkeys:
         self._user32.PeekMessageW.restype = wintypes.BOOL
         self._user32.PostThreadMessageW.argtypes = [wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
         self._user32.PostThreadMessageW.restype = wintypes.BOOL
+        self._user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+        self._user32.GetAsyncKeyState.restype = ctypes.c_short
+        self._user32.SetTimer.argtypes = [wintypes.HWND, ctypes.c_size_t, wintypes.UINT, ctypes.c_void_p]
+        self._user32.SetTimer.restype = ctypes.c_size_t
+        self._user32.KillTimer.argtypes = [wintypes.HWND, ctypes.c_size_t]
+        self._user32.KillTimer.restype = wintypes.BOOL
         self._kernel32.GetCurrentThreadId.restype = wintypes.DWORD
 
     @staticmethod
