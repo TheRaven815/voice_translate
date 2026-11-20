@@ -45,6 +45,10 @@ class UpdateError(RuntimeError):
     """Kullanıcıya gösterilebilecek güncelleme hatası."""
 
 
+class UpdateCancelled(UpdateError):
+    """Kullanıcı güncellemenin indirilmesinden vazgeçti."""
+
+
 @dataclass(frozen=True)
 class UpdateInfo:
     version: str
@@ -203,8 +207,15 @@ def _current_executable() -> Path:
 def download_update(
     info: UpdateInfo,
     on_progress: Callable[[int, int], None] | None = None,
+    *,
+    cancel: threading.Event | None = None,
 ) -> Path:
     """Güncellemeyi çalışmakta olan exe ile aynı diske indirip doğrular."""
+    def check_cancel() -> None:
+        if cancel is not None and cancel.is_set():
+            raise UpdateCancelled()
+
+    check_cancel()
     target = _current_executable()
     safe_version = info.version.replace(".", "-")
     staged = target.with_name(f".{target.stem}.update-{safe_version}.exe")
@@ -225,11 +236,19 @@ def download_update(
         except Exception:
             pass
     try:
+        check_cancel()
         with _request(info.download_url, timeout=30) as response, partial.open("xb") as output:
             final_host = urlparse(response.geturl()).hostname
             if final_host not in _ALLOWED_DOWNLOAD_HOSTS:
                 raise UpdateError("Güncelleme güvenilmeyen bir adrese yönlendirildi.")
-            while chunk := response.read(1024 * 1024):
+            # read1 returns available data rather than filling the entire chunk first.
+            read = getattr(response, "read1", response.read)
+            while True:
+                check_cancel()
+                chunk = read(1024 * 1024)
+                check_cancel()
+                if not chunk:
+                    break
                 downloaded += len(chunk)
                 if downloaded > info.size or downloaded > _MAX_ASSET_BYTES:
                     raise UpdateError("İndirilen güncellemenin boyutu beklenenden büyük.")
@@ -246,6 +265,7 @@ def download_update(
             raise UpdateError("İndirilen güncellemenin boyutu eksik.")
         if digest.hexdigest() != info.sha256:
             raise UpdateError("Güncellemenin SHA-256 doğrulaması başarısız.")
+        check_cancel()
         os.replace(partial, staged)
         return staged
     except UpdateError:

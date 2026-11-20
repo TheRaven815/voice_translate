@@ -131,7 +131,7 @@ def test_update_chip_keeps_version_label_short(monkeypatch):
 
     app = App()
     try:
-        monkeypatch.setattr("gui.app.messagebox.askyesno", lambda *_a, **_k: False)
+        monkeypatch.setattr("gui.app.messagebox.askokcancel", lambda *_a, **_k: pytest.fail("Unexpected automatic prompt"))
         info = UpdateInfo(
             version="9.9.9",
             download_url="https://github.com/TheRaven815/voice_translate/releases/download/v9.9.9/Ahenk.exe",
@@ -142,6 +142,68 @@ def test_update_chip_keeps_version_label_short(monkeypatch):
         assert app.version_lbl["text"] == f"v{__version__}"
         assert "9.9.9" in app._update_chip["text"]
         assert app._update_chip.pack_info()
+    finally:
+        app.destroy()
+
+
+@pytest.mark.parametrize("size", ["780x460", "900x500", "960x580"])
+def test_update_chip_does_not_move_or_clip_session_controls(size):
+    app = App()
+    try:
+        app.geometry(size)
+        app.key_var.set("")
+        app._refresh_key_notice()
+        app.deiconify()
+        app.update()
+        buttons = (app.start_btn, app.pause_btn, app.stop_btn)
+        watched = (*buttons, app.in_box, app.heard, app.trans)
+        before = [w.winfo_rooty() for w in watched]
+        app._show_update_chip("9.9.9")
+        app.update_idletasks()
+        assert [w.winfo_rooty() for w in watched] == before
+        for button in buttons:
+            assert button.winfo_ismapped()
+            assert button.winfo_height() >= button.winfo_reqheight()
+            assert button.winfo_rooty() + button.winfo_height() <= app.winfo_rooty() + app.winfo_height()
+        if app._rail_body.winfo_height() > app._rail_canvas.winfo_height():
+            assert app._rail_scroll.winfo_ismapped()
+            app._rail_canvas.yview_moveto(1)
+            app.update_idletasks()
+            assert app.dst_box.winfo_rooty() + app.dst_box.winfo_height() <= app._rail_footer.winfo_rooty()
+    finally:
+        app.destroy()
+
+
+def test_update_cancel_confirmation_and_download_race(tmp_path, monkeypatch):
+    from updater import UpdateInfo
+
+    app = App()
+    try:
+        info = UpdateInfo("9.9.9", "", 1, "")
+        app._handle_update_result(info, manual=False)
+        prompts = []
+        monkeypatch.setattr("gui.app.messagebox.askokcancel", lambda *_a, **k: prompts.append(k) or False)
+        app._update_chip.invoke()
+        assert prompts[0]["default"] == "cancel"
+        assert not app._update_installing
+
+        staged = tmp_path / "update.exe"
+        staged.touch()
+        monkeypatch.setattr("gui.app.messagebox.askokcancel", lambda *_a, **_k: True)
+        monkeypatch.setattr("gui.dialogs.download_update", lambda *_a, **_k: staged)
+        monkeypatch.setattr("gui.dialogs.launch_update_helper", lambda *_a: pytest.fail("Cancelled update launched"))
+        app._update_chip.invoke()
+        assert app._update_chip["text"] == "İndirmeyi iptal et"
+        app._update_chip.invoke()
+        assert app._update_cancel.is_set()
+        assert app._download_fraction is None
+        # Worker may have already staged a verified download when Cancel was pressed.
+        while (msg := app.log_queue.get(timeout=2))[0] != "update_ready":
+            pass
+        app._apply_downloaded_update(msg[1], msg[2])
+        assert not staged.exists()
+        assert not app._update_installing
+        assert app._update_chip["text"] == "v9.9.9 hazır"
     finally:
         app.destroy()
 
@@ -2728,4 +2790,3 @@ def test_r11_bounded_transcript_panes_log_and_spillover_export(monkeypatch):
         app.destroy()
         if spill_path is not None:
             assert not spill_path.exists()
-

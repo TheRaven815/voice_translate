@@ -641,7 +641,7 @@ def test_queue_drop_oldest_on_full_via_receive():
     asyncio.run(_run())
     assert loop_obj.audio_in_queue.qsize() == 2
     assert loop_obj.audio_in_queue.get_nowait() == b"middle"
-    assert loop_obj.audio_in_queue.get_nowait() == b"newest"
+    assert loop_obj.audio_in_queue.get_nowait() == (0, b"newest")
 
 
 def test_g06_bounded_byte_queue_caps_latency():
@@ -696,7 +696,7 @@ def test_receive_handles_both_audio_and_transcription():
 
     asyncio.run(_run())
     assert not loop_obj.audio_in_queue.empty()
-    assert loop_obj.audio_in_queue.get_nowait() == b"\x01\x02\x03\x04"
+    assert loop_obj.audio_in_queue.get_nowait() == (0, b"\x01\x02\x03\x04")
     assert ("trans", "Merged audio-text") in emitted
     assert ("trans_end",) in emitted
 
@@ -975,6 +975,75 @@ def test_write_playback_releases_only_filled_frames():
     assert write_playback(periodic, np.zeros(1000, dtype=np.float32), memmove=memmove) == 1000
     assert released == [480, 480, 40]
     assert copied == [480 * 4, 480 * 4, 40 * 4]
+
+
+@pytest.mark.parametrize("quick_resume", [False, True])
+def test_pause_closes_player_without_finishing_the_queued_phrase(quick_resume, monkeypatch):
+    import queue
+    import loop
+
+    writing = threading.Event()
+    closed = threading.Event()
+    playing_again = threading.Event()
+    resume_sent = threading.Event()
+    played = []
+    opened = []
+    thread_id = []
+
+    class Player:
+        def __enter__(self):
+            thread_id.append(threading.get_ident())
+            opened.append(self)
+            return self
+
+        def __exit__(self, *_args):
+            assert threading.get_ident() == thread_id[-1]
+            if self is opened[0]:
+                closed.set()
+
+    speaker = SimpleNamespace(player=lambda **_kwargs: Player())
+    audio_loop = SystemAudioLoop("en", "tr", None, "key", output_speaker=speaker)
+    audio_loop._play_q = queue.Queue()
+
+    def fake_write(player, frames, *, stop):
+        played.append((player, frames.copy()))
+        if player is opened[0]:
+            # Simulate a write blocked on WASAPI's full render buffer.
+            writing.set()
+            assert resume_sent.wait(2)
+            assert stop()
+            return 0
+        playing_again.set()
+        return len(frames)
+
+    monkeypatch.setattr(loop, "write_playback", fake_write)
+    stale = np.full(24000, 16000, dtype=np.int16).tobytes()
+    fresh = np.full(2400, -16000, dtype=np.int16).tobytes()
+    audio_loop._play_q.put((0, stale))
+    audio_loop._play_q.put((0, stale))
+    worker = threading.Thread(target=audio_loop._play_thread, daemon=True)
+    worker.start()
+    try:
+        assert writing.wait(2)
+        audio_loop.pause()
+        assert not audio_loop.is_playing_audio()
+        if quick_resume:
+            audio_loop.resume()
+        resume_sent.set()
+        assert closed.wait(0.5)
+        assert len(played) == 1
+        if not quick_resume:
+            audio_loop.resume()
+        audio_loop._play_q.put((1, fresh))
+        assert playing_again.wait(2)
+        assert len(opened) == 2
+        assert np.max(played[1][1]) <= 0
+        assert np.min(played[1][1]) < -0.1
+    finally:
+        resume_sent.set()
+        audio_loop.request_stop()
+        worker.join(timeout=2)
+    assert not worker.is_alive()
 
 
 def test_soften_join_ramps_only_a_real_step():
@@ -1656,4 +1725,3 @@ def test_r11_audio_converter_fast_path_decimation_fidelity_and_continuity():
         err = tail - fitted
         snr_db = 10.0 * np.log10(np.sum(fitted ** 2) / max(np.sum(err ** 2), 1e-12))
         assert snr_db > 60.0
-

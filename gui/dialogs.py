@@ -10,6 +10,7 @@ from i18n import t
 from logger import load_recent_history
 from meta import APP_AUTHOR, APP_TITLE, __version__
 from updater import (
+    UpdateCancelled,
     UpdateError,
     UpdateInfo,
     can_self_update,
@@ -221,15 +222,19 @@ class DialogsMixin:
             return
         chip.configure(text=t("update_available").format(version=version), fg=C.live, bg=C.rail)
         if chip.winfo_manager() != "pack":
-            chip.pack(anchor="w", fill=tk.X, pady=(6, 0), before=self._rail_actions)
+            chip.pack(side=tk.RIGHT, fill=tk.Y)
 
     def _on_update_chip(self) -> None:
-        info = self._update_info
-        if info is None or self._update_installing:
+        if self._update_cancel is not None:
+            self._cancel_update_download()
             return
-        install = self._deps().messagebox.askyesno(
+        info = self._update_info
+        if info is None or self._update_check_running or self._update_installing:
+            return
+        install = self._deps().messagebox.askokcancel(
             t("update_dialog_title"),
             t("update_prompt").format(version=info.version),
+            default="cancel",
             parent=self,
         )
         if install:
@@ -286,6 +291,7 @@ class DialogsMixin:
         self._update_check_running = False
         self._update_info = info
         if info is None:
+            self._update_chip.pack_forget()
             if manual:
                 deps.messagebox.showinfo(
                     t("update_title_short"),
@@ -295,26 +301,23 @@ class DialogsMixin:
             if not (self.worker is not None and self.worker.is_alive()):
                 self._set_status("Hazır", C.dim)
             return
-        self.version_lbl.configure(text=f"v{__version__}", fg=C.dim)
         self._show_update_chip(info.version)
         if hasattr(self, "about_update_status") and self.about_update_status.winfo_exists():
             self.about_update_status.configure(
                 text=t("update_ready_status").format(version=info.version), fg=C.live
             )
-        install = deps.messagebox.askyesno(
-            t("update_dialog_title"),
-            t("update_prompt").format(version=info.version),
-            parent=self,
-        )
-        if install:
-            self._download_and_install_update(info)
-        elif not (self.worker is not None and self.worker.is_alive()):
+        if not self._worker_alive():
             self._set_status("Hazır", C.dim)
+        if manual:
+            self._on_update_chip()
 
     def _handle_update_error(self, error: str, *, manual: bool) -> None:
         self._update_check_running = False
-        self._update_installing = False
-        self._clear_download_progress()
+        cancelled = self._update_cancel is not None and self._update_cancel.is_set()
+        if self._update_installing:
+            self._reset_update_download()
+        if cancelled:
+            return
         self._append(f"[hata] {t('update_title_short')}: {error}\n")
         if not (self.worker is not None and self.worker.is_alive()):
             self._set_status("Hazır", C.dim)
@@ -326,27 +329,69 @@ class DialogsMixin:
             return
         deps = self._deps()
         self._update_installing = True
+        self._update_cancel = cancel = deps.threading.Event()
+        self._sync_update_chip()
         self._paint_download_progress(0.0)
-        self._set_status("Güncelleme indiriliyor", C.warn)
         self._append(f"[bilgi] {t('update_downloading_log').format(version=info.version)}\n")
 
+        last_progress = -1
+
         def on_progress(got: int, total: int) -> None:
+            nonlocal last_progress
             frac = 0.0 if total <= 0 else min(1.0, got / total)
-            self.log_queue.put(("update_progress", frac, total))
+            percent = int(round(frac * 100))
+            if not cancel.is_set() and percent != last_progress:
+                last_progress = percent
+                self.log_queue.put(("update_progress", frac))
 
         def download() -> None:
             try:
-                staged = download_update(info, on_progress=on_progress)
+                staged = download_update(info, on_progress=on_progress, cancel=cancel)
                 self.log_queue.put(("update_ready", staged, info))
+            except UpdateCancelled:
+                self.log_queue.put(("update_cancelled", None))
             except UpdateError as exc:
-                self.log_queue.put(("update_error", str(exc), True))
+                self.log_queue.put(("update_cancelled", None) if cancel.is_set() else ("update_error", str(exc), True))
             except Exception as exc:
                 deps.log_exception(exc, "Update download error")
-                self.log_queue.put(("update_error", "Beklenmeyen güncelleme indirme hatası.", True))
+                self.log_queue.put(("update_cancelled", None) if cancel.is_set()
+                                   else ("update_error", "Beklenmeyen güncelleme indirme hatası.", True))
 
         deps.threading.Thread(target=download, name="update-download", daemon=True).start()
 
+    def _cancel_update_download(self) -> None:
+        if self._update_cancel is not None:
+            self._update_cancel.set()
+            self._sync_update_chip()
+            self._clear_download_progress()
+
+    def _reset_update_download(self) -> None:
+        self._update_cancel = None
+        self._update_installing = False
+        self._clear_download_progress()
+        self._sync_update_chip()
+
+    def _sync_update_chip(self) -> None:
+        cancel = self._update_cancel
+        if cancel is not None:
+            key = "update_cancelling" if cancel.is_set() else "update_cancel_download"
+            self._update_chip.configure(text=t(key), state=tk.DISABLED if cancel.is_set() else tk.NORMAL)
+        elif self._update_installing:
+            self._update_chip.configure(text=t("installing_update"), state=tk.DISABLED)
+        elif self._update_info is not None:
+            self._update_chip.configure(state=tk.NORMAL)
+            self._show_update_chip(self._update_info.version)
+
     def _apply_downloaded_update(self, staged: Path, info: UpdateInfo) -> None:
+        if self._update_cancel is not None and self._update_cancel.is_set():
+            try:
+                staged.unlink(missing_ok=True)
+            except OSError as exc:
+                self._deps().log_exception(exc, "Cancelled update cleanup error")
+            self._reset_update_download()
+            return
+        self._update_cancel = None
+        self._sync_update_chip()
         try:
             launch_update_helper(staged, info)
         except UpdateError as exc:

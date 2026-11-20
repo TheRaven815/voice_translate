@@ -341,7 +341,7 @@ def write_playback(player, frames: np.ndarray, *, stop=None, memmove=None) -> in
     (test çiftleri) `play` kullanılır.
     """
     samples = np.asarray(frames, dtype=np.float32)
-    if samples.size == 0:
+    if samples.size == 0 or (stop is not None and stop()):
         return 0
     if getattr(player, "_render_buffer", None) is None or getattr(player, "_render_release", None) is None:
         player.play(samples)
@@ -382,29 +382,33 @@ class BoundedByteQueue:
     def __init__(self, max_bytes: int = int(RECEIVE_SAMPLE_RATE * 2 * 2.5)):
         self.max_bytes = max_bytes
         self.curr_bytes = 0
-        self._q: queue.Queue[bytes | None] = queue.Queue()
+        self._q: queue.Queue[tuple[int, bytes] | bytes | None] = queue.Queue()
         self._lock = threading.Lock()
 
-    def put_nowait(self, item: bytes | None) -> None:
+    @staticmethod
+    def _size(item: tuple[int, bytes] | bytes) -> int:
+        return len(item[1] if isinstance(item, tuple) else item)
+
+    def put_nowait(self, item: tuple[int, bytes] | bytes | None) -> None:
         with self._lock:
             if item is None:
                 self._q.put_nowait(None)
                 return
-            self.curr_bytes += len(item)
+            self.curr_bytes += self._size(item)
             while self.curr_bytes > self.max_bytes and not self._q.empty():
                 try:
                     dropped = self._q.get_nowait()
                     if dropped is not None:
-                        self.curr_bytes = max(0, self.curr_bytes - len(dropped))
+                        self.curr_bytes = max(0, self.curr_bytes - self._size(dropped))
                 except queue.Empty:
                     break
             self._q.put_nowait(item)
 
-    def get(self, timeout: float | None = None) -> bytes | None:
+    def get(self, timeout: float | None = None) -> tuple[int, bytes] | bytes | None:
         item = self._q.get(timeout=timeout)
         with self._lock:
             if item is not None:
-                self.curr_bytes = max(0, self.curr_bytes - len(item))
+                self.curr_bytes = max(0, self.curr_bytes - self._size(item))
         return item
 
 
@@ -457,6 +461,7 @@ class SystemAudioLoop:
         self.muted = bool(muted)
         self.vad_threshold = max(0.0, float(vad_threshold))
         self._paused = threading.Event()
+        self._play_generation = 0
         self.detected_src: str | None = None
         self._last_speech_time: float = 0.0
         self.last_latency_ms: float = 0.0
@@ -522,7 +527,9 @@ class SystemAudioLoop:
         ensure_discontinuity_suppressed()
 
     def pause(self) -> None:
-        self._paused.set()
+        if not self.is_paused:
+            self._paused.set()
+            self._play_generation += 1
 
     def resume(self) -> None:
         self._paused.clear()
@@ -543,7 +550,7 @@ class SystemAudioLoop:
 
     def is_playing_audio(self, hold_s: float = DUCK_HOLD_S) -> bool:
         """Çeviri sesi şu an duyulabilir biçimde çalıyor mu (kuyruk + tutma payı)."""
-        if self.muted or self.volume <= 0.0 or self.output_speaker is None:
+        if self.is_paused or self.muted or self.volume <= 0.0 or self.output_speaker is None:
             return False
         until = getattr(self, "_playback_until", 0.0)
         return until > 0.0 and time.monotonic() < until + max(0.0, float(hold_s))
@@ -1174,7 +1181,8 @@ class SystemAudioLoop:
                     if generation != self._session_generation or session is not self.session:
                         break
                     self._take_resume_handle(response)
-                    if data := response.data:
+                    play_generation = self._play_generation
+                    if (data := response.data) and not self.is_paused:
                         if self._waiting_response and self._last_speech_time > 0:
                             latency = (time.monotonic() - self._last_speech_time) * 1000.0
                             self.last_latency_ms = latency
@@ -1182,14 +1190,14 @@ class SystemAudioLoop:
                             self._emit(("latency", round(latency, 1)))
                         if self.audio_in_queue is not None:
                             try:
-                                self.audio_in_queue.put_nowait(data)
+                                self.audio_in_queue.put_nowait((play_generation, data))
                             except asyncio.QueueFull:
                                 try:
                                     self.audio_in_queue.get_nowait()
                                 except asyncio.QueueEmpty:
                                     pass
                                 try:
-                                    self.audio_in_queue.put_nowait(data)
+                                    self.audio_in_queue.put_nowait((play_generation, data))
                                 except asyncio.QueueFull:
                                     pass
                     content = getattr(response, "server_content", None)
@@ -1247,6 +1255,12 @@ class SystemAudioLoop:
                         break
                     # Bekleyen aygıt geldi (veya stop): döngü başı yeniden değerlendirir.
                     continue
+                while self.is_paused and not self._peek_pending_output():
+                    self._play_heartbeat = time.monotonic()
+                    if self._user_stop.is_set() or self._play_stop.wait(0.01):
+                        return
+                if self._peek_pending_output():
+                    continue
                 try:
                     done_reason = self._play_inner(speaker)
                 except Exception as e:
@@ -1279,7 +1293,7 @@ class SystemAudioLoop:
                     break
                 if self._peek_pending_output():
                     continue
-                if done_reason == "swap":
+                if done_reason in ("swap", "paused"):
                     continue
                 # Temiz kapanış (kuyruktaki None): test ve teardown davranışını koru.
                 break
@@ -1307,7 +1321,7 @@ class SystemAudioLoop:
                 return
 
     def _play_inner(self, speaker) -> str:
-        """Tek player ömrü; 'done' (None) ya da 'swap' ile döner.
+        """Tek player ömrü; duraklatma veya aygıt değişimi player'ı kapatır.
 
         Yastık Python'da tutulursa cihaz boşalır, paket arasında sessizlik
         basar ve sonraki örnek sıfırdan girince çıt çıkar. Preroll dolunca
@@ -1328,6 +1342,21 @@ class SystemAudioLoop:
         queued_until = 0.0
         empty_since: float | None = None
         leftover = bytearray()
+        generation = self._play_generation
+
+        def _paused() -> bool:
+            # Hızlı bir duraklat/devam çifti de eski WASAPI tamponunu kapatır.
+            return self.is_paused or self._play_generation != generation
+
+        def _halt() -> bool:
+            return (_paused() or self._play_stop.is_set() or self._user_stop.is_set()
+                    or self._peek_pending_output())
+
+        def _halt_reason() -> str:
+            return "paused" if _paused() else "swap"
+
+        if _halt():
+            return _halt_reason()
         with speaker.player(
             samplerate=RECEIVE_SAMPLE_RATE, channels=1, blocksize=device_block
         ) as sp:
@@ -1344,9 +1373,7 @@ class SystemAudioLoop:
                 pos = 0
                 total = int(audio_raw.size)
                 while pos < total:
-                    if self._play_stop.is_set() or self._user_stop.is_set():
-                        return False
-                    if self._peek_pending_output():
+                    if _halt():
                         return False
                     piece = audio_raw[pos:pos + split_n]
                     n = int(piece.size)
@@ -1359,13 +1386,6 @@ class SystemAudioLoop:
                         self._set_duck_active(True)
                     elif getattr(self, "_duck_active", False) and time.monotonic() >= self._playback_until + DUCK_HOLD_S:
                         self._set_duck_active(False)
-
-                    def _halt() -> bool:
-                        return (
-                            self._play_stop.is_set()
-                            or self._user_stop.is_set()
-                            or self._peek_pending_output()
-                        )
 
                     written = write_playback(sp, piece, stop=_halt)
                     self._play_heartbeat = time.monotonic()
@@ -1426,13 +1446,14 @@ class SystemAudioLoop:
                     hold_n = fade_n
                 return _commit_pending()
 
-            while not self._play_stop.is_set() and not self._user_stop.is_set():
-                if self._peek_pending_output():
-                    return "swap"
+            while not _halt():
                 try:
-                    timeout = 0.01 if started else 0.05
-                    pcm = self._play_q.get(timeout=timeout)
+                    # WASAPI'de ses kuyrukta kalmış olabilir; boş Python kuyruğunda
+                    # bile duraklatmayı kısa aralıklarla denetle.
+                    packet = self._play_q.get(timeout=0.01)
                 except queue.Empty:
+                    if _halt():
+                        return _halt_reason()
                     self._play_heartbeat = time.monotonic()
                     now = time.monotonic()
                     if getattr(self, "_duck_active", False) and now >= self._playback_until + DUCK_HOLD_S:
@@ -1451,10 +1472,10 @@ class SystemAudioLoop:
                             hold_n = preroll_n
                             leftover.clear()
                         elif not _end_phrase(fade_in=False):
-                            return "swap"
+                            return _halt_reason()
                     elif pending_n and not started and elapsed >= gap_end_s:
                         if not _end_phrase(fade_in=True):
-                            return "swap"
+                            return _halt_reason()
                     elif started and not pending_n and elapsed >= gap_end_s:
                         started = False
                         hold_n = preroll_n
@@ -1466,11 +1487,18 @@ class SystemAudioLoop:
                     continue
                 empty_since = None
                 self._play_heartbeat = time.monotonic()
-                if pcm is None:
+                if packet is None:
                     break
+                if _halt():
+                    return _halt_reason()
+                packet_generation, pcm = packet if isinstance(packet, tuple) else (0, packet)
+                if packet_generation != generation:
+                    continue
                 if not _queue_audio(pcm16_to_float(pcm, leftover)):
-                    return "swap"
-            if pending and not self._peek_pending_output():
+                    return _halt_reason()
+            if _halt():
+                return _halt_reason()
+            if pending:
                 _play_chunk(np.concatenate(pending))
                 pending.clear()
             return "done"
@@ -1553,6 +1581,8 @@ class SystemAudioLoop:
                         raise RuntimeError("Çıkış ses aygıtı beklenmedik şekilde durdu.")
                     break
                 bytestream = get_task.result()
+                if self.is_paused:
+                    continue
                 try:
                     self._play_q.put_nowait(bytestream)
                 except queue.Full:

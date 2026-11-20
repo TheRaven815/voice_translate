@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from pathlib import Path
+
+import pytest
 
 import updater
 
@@ -101,6 +104,26 @@ def test_download_update_reports_progress(tmp_path, monkeypatch):
     assert seen[-1] == (10, 10)
     assert staged.name == ".Ceviri.update-0-6-2.exe"
     assert staged.read_bytes() == data
+
+
+def test_cancelled_download_cleans_partial_and_keeps_current_executable(tmp_path, monkeypatch):
+    data = b"abcdefghij"
+    url = "https://github.com/TheRaven815/voice_translate/releases/download/v0.6.2/Ahenk.exe"
+    info = updater.UpdateInfo("0.6.2", url, len(data), hashlib.sha256(data).hexdigest())
+    target = tmp_path / "Ahenk.exe"
+    target.write_bytes(b"old")
+    cancel = threading.Event()
+    monkeypatch.setattr(updater, "_current_executable", lambda: target)
+    monkeypatch.setattr(updater, "_request", lambda *_a, **_k: Response(data, url=url))
+
+    def on_progress(got, _total):
+        if got:
+            cancel.set()
+
+    with pytest.raises(updater.UpdateCancelled):
+        updater.download_update(info, on_progress=on_progress, cancel=cancel)
+    assert list(tmp_path.iterdir()) == [target]
+    assert target.read_bytes() == b"old"
 
 
 def test_update_helper_replaces_executable_only_after_startup_handshake(tmp_path, monkeypatch):

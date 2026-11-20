@@ -154,6 +154,7 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
         self._update_info: UpdateInfo | None = None
         self._update_check_running = False
         self._update_installing = False
+        self._update_cancel: threading.Event | None = None
         self._download_fraction: float | None = None
         self._hotkeys: GlobalHotkeys | None = None
         self._hotkeys_suspended = False
@@ -296,7 +297,7 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
         self.rail.grid(row=0, column=0, sticky="nsw")
         self.rail.grid_propagate(False)
         self.rail.columnconfigure(0, weight=1)
-        self.rail.rowconfigure(8, weight=1)
+        self.rail.rowconfigure(1, weight=1)
 
         self._v_sep = tk.Frame(self, bg=C.line, width=1, bd=0, highlightthickness=0)
         self._v_sep.grid(row=0, column=1, sticky="ns")
@@ -327,7 +328,7 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
         self.bind("<Control-comma>", lambda _e: self._open_settings())
     def _build_rail(self, rail: tk.Frame):
         self._rail_head = tk.Frame(rail, bg=C.rail)
-        self._rail_head.grid(row=0, column=0, sticky="ew", padx=16, pady=(18, 14))
+        self._rail_head.grid(row=0, column=0, sticky="ew", padx=16, pady=(18, 8))
 
         self._rail_title = tk.Frame(self._rail_head, bg=C.rail)
         self._rail_title.pack(fill=tk.X)
@@ -339,20 +340,24 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
             self._rail_title, text=f"v{__version__}", font=self.font_ui, fg=C.dim, bg=C.rail
         )
         self.version_lbl.pack(side=tk.LEFT, padx=(8, 0), pady=(2, 0))
-        self._update_chip = tk.Label(
-            self._rail_head,
+        self._update_chip = tk.Button(
+            self._rail_title,
             text="",
             font=self.font_ui,
             fg=C.live,
             bg=C.rail,
+            activeforeground=C.text,
+            activebackground=C.hover,
+            disabledforeground=C.muted,
             cursor="hand2",
-            anchor="w",
-            justify=tk.LEFT,
-            wraplength=250,
+            command=self._on_update_chip,
+            relief="flat", bd=0, highlightthickness=0, padx=6, pady=0,
+            takefocus=1,
         )
-        self._update_chip.bind("<Button-1>", lambda _e: self._on_update_chip())
-        self._update_chip.bind("<Enter>", lambda _e: self._update_chip.configure(fg=C.accent))
-        self._update_chip.bind("<Leave>", lambda _e: self._update_chip.configure(fg=C.live))
+        # The brand determines the title row height, with or without the update button.
+        self._update_chip.bind("<Return>", lambda _e: self._update_chip.invoke())
+        self._update_chip.bind("<FocusIn>", lambda _e: self._update_chip.configure(bg=C.hover))
+        self._update_chip.bind("<FocusOut>", lambda _e: self._update_chip.configure(bg=C.rail))
 
         self._rail_actions = tk.Frame(self._rail_head, bg=C.rail)
         self._rail_actions.pack(fill=tk.X, pady=(10, 0))
@@ -388,9 +393,25 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
         self.meter.pack(side=tk.RIGHT, pady=2)
         self._meter_bar = self.meter.create_rectangle(0, 0, 0, 8, fill=C.live, outline="")
 
-        self._rail_sep(rail, 1)
+        # Only device/language settings scroll; session controls stay in the footer.
+        self._rail_canvas = canvas = tk.Canvas(rail, bg=C.rail, bd=0, highlightthickness=0)
+        canvas.grid(row=1, column=0, sticky="nsew")
+        self._rail_scroll = scroll = tk.Scrollbar(
+            canvas, command=canvas.yview, width=10, bg=C.hover, troughcolor=C.rail,
+            activebackground=C.dim, bd=0, highlightthickness=0, relief="flat",
+        )
+        canvas.configure(yscrollcommand=self._sync_rail_scroll)
+        self._rail_body = body = tk.Frame(canvas, bg=C.rail)
+        body.columnconfigure(0, weight=1)
+        body_id = canvas.create_window(0, 0, window=body, anchor="nw")
+        body.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox(body_id)))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(body_id, width=e.width))
+        self.bind("<MouseWheel>", self._on_rail_wheel, add="+")
+        self.bind("<FocusIn>", self._reveal_rail_focus, add="+")
 
-        self._devices_frame = tk.Frame(rail, bg=C.rail)
+        self._rail_sep(body, 1)
+
+        self._devices_frame = tk.Frame(body, bg=C.rail)
         self._devices_frame.grid(row=2, column=0, sticky="ew", padx=16, pady=(12, 0))
         self._devices_frame.columnconfigure(0, weight=1)
         self._device_lbl = tk.Label(
@@ -402,7 +423,7 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
         )
         self.refresh_btn.grid(row=0, column=1, sticky="e")
 
-        self._fields_frame = tk.Frame(rail, bg=C.rail)
+        self._fields_frame = tk.Frame(body, bg=C.rail)
         self._fields_frame.grid(row=3, column=0, sticky="ew", padx=16, pady=(8, 0))
         self._fields_frame.columnconfigure(0, weight=1)
 
@@ -434,16 +455,16 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
         )
         self.out_box.grid(row=4, column=0, sticky="ew", pady=(3, 0))
 
-        self._rail_sep(rail, 4)
+        self._rail_sep(body, 4)
 
-        self._lang_h = tk.Frame(rail, bg=C.rail)
+        self._lang_h = tk.Frame(body, bg=C.rail)
         self._lang_h.grid(row=5, column=0, sticky="ew", padx=16, pady=(12, 0))
         self._language_lbl = tk.Label(
             self._lang_h, text=t("language"), font=self.font_ui, fg=C.muted, bg=C.rail
         )
         self._language_lbl.pack(side=tk.LEFT)
 
-        self._langs_frame = tk.Frame(rail, bg=C.rail)
+        self._langs_frame = tk.Frame(body, bg=C.rail)
         self._langs_frame.grid(row=6, column=0, sticky="ew", padx=16, pady=(8, 0))
         self._langs_frame.columnconfigure(0, weight=1)
         self._langs_frame.columnconfigure(2, weight=1)
@@ -477,10 +498,12 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
         self.in_var.trace_add("write", lambda *_: self._on_input_selected())
         self.out_var.trace_add("write", lambda *_: self._on_output_selected())
 
-        self._rail_sep(rail, 7)
-
-        self._btns_frame = tk.Frame(rail, bg=C.rail)
-        self._btns_frame.grid(row=8, column=0, sticky="ews", padx=16, pady=(0, 16))
+        self._rail_footer = tk.Frame(rail, bg=C.rail)
+        self._rail_footer.grid(row=2, column=0, sticky="ew")
+        self._rail_footer.columnconfigure(0, weight=1)
+        self._rail_sep(self._rail_footer, 0)
+        self._btns_frame = tk.Frame(self._rail_footer, bg=C.rail)
+        self._btns_frame.grid(row=1, column=0, sticky="ew", padx=16, pady=(8, 16))
         self._btns_frame.columnconfigure(0, weight=1)
         self._btns_frame.columnconfigure(1, weight=1)
         self._btns_frame.columnconfigure(2, weight=1)
@@ -509,6 +532,31 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
         self.stop_btn._edge.grid(row=1, column=2, sticky="ew", padx=(3, 0), ipady=4)
         self._sync_action_buttons(running=False)
         self._refresh_key_notice()
+
+    def _sync_rail_scroll(self, first, last):
+        self._rail_scroll.set(first, last)
+        if float(first) <= 0.0 and float(last) >= 1.0:
+            self._rail_scroll.place_forget()
+        elif not self._rail_scroll.winfo_manager():
+            self._rail_scroll.place(relx=1, anchor="ne", relheight=1)
+
+    def _on_rail_wheel(self, event):
+        if str(event.widget).startswith(str(self._rail_canvas)):
+            steps = int(event.delta / 120)
+            if steps:
+                self._rail_canvas.yview_scroll(-steps, "units")
+            return "break"
+
+    def _reveal_rail_focus(self, event):
+        if not str(event.widget).startswith(f"{self._rail_body}."):
+            return
+        canvas = self._rail_canvas
+        top = event.widget.winfo_rooty() - canvas.winfo_rooty()
+        height = canvas.winfo_height()
+        bottom = top + event.widget.winfo_height()
+        if top < 0 or bottom > height:
+            offset = top if top < 0 else bottom - height
+            canvas.yview_moveto((canvas.canvasy(0) + offset) / self._rail_body.winfo_height())
 
     def _worker_alive(self) -> bool:
         try:
@@ -1785,6 +1833,10 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
     def _refresh_theme(self) -> None:
         self.configure(bg=C.bg)
         self.rail.configure(bg=C.rail)
+        self._rail_body.configure(bg=C.rail)
+        self._rail_canvas.configure(bg=C.rail)
+        self._rail_footer.configure(bg=C.rail)
+        self._rail_scroll.configure(bg=C.hover, troughcolor=C.rail, activebackground=C.dim)
         self._v_sep.configure(bg=C.line)
         self.main.configure(bg=C.bg)
 
@@ -1794,7 +1846,8 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
         self.brand.configure(fg=C.text, bg=C.rail)
         self.version_lbl.configure(fg=C.dim, bg=C.rail)
         if hasattr(self, "_update_chip"):
-            self._update_chip.configure(fg=C.live, bg=C.rail)
+            self._update_chip.configure(fg=C.live, bg=C.rail, activeforeground=C.text,
+                                        activebackground=C.hover, disabledforeground=C.muted)
         self.status.configure(fg=C.muted, bg=C.rail)
         self.timer_lbl.configure(fg=C.dim, bg=C.rail)
         self._dot.configure(bg=C.rail)
@@ -2254,8 +2307,11 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
                             self._handle_update_error(str(payload), manual=bool(msg[2]))
                         elif kind == "update_ready":
                             self._apply_downloaded_update(payload, msg[2])
+                        elif kind == "update_cancelled":
+                            self._reset_update_download()
                         elif kind == "update_progress":
-                            self._paint_download_progress(float(payload))
+                            if self._update_cancel is not None and not self._update_cancel.is_set():
+                                self._paint_download_progress(float(payload))
                         elif kind == "devices_scanned":
                             if self.winfo_exists():
                                 self._apply_devices(payload, msg[2], msg[3])
@@ -2533,6 +2589,9 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
                 self.about_update_status.configure(
                     text=t("update_auto_status") if can_self_update() else t("source_mode_status")
                 )
+            else:
+                self.about_update_status.configure(text=t("update_ready_status").format(version=self._update_info.version))
+        self._sync_update_chip()
         if self._history_win is not None and self._history_win.winfo_exists():
             self._history_win.title(t("history_title"))
             if getattr(self, "_history_close_btn", None) is not None and self._history_close_btn.winfo_exists():
@@ -2614,6 +2673,8 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
         self.destroy()
 
     def destroy(self):
+        if self._update_cancel is not None:
+            self._update_cancel.set()
         self._stop_activate_listener()
         try:
             if getattr(self, "_preview", None) is not None:
