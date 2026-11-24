@@ -52,7 +52,7 @@ System audio · Microphone · Single-app audio → **text + spoken translation**
 | 🎧 **3 input sources** | System audio (WASAPI loopback), microphone, or a single desktop app's audio (process-tree capture with friendly `FileDescription` names and 16×16 icons) |
 | 🔄 **Seamless hot-swap** | Switch input/output devices without killing the running translation session |
 | 📺 **Subtitle overlay** | Always-on-top, draggable, opacity (`20%–100%`) and font-size adjustable, optionally click-through live subtitle window |
-| ⌨️ **Global shortcuts & Push-to-Talk** | Mute/unmute audio, start/stop, and **pause/resume** (`Ctrl+P`) while in the background + Push-to-Talk mode |
+| ⌨️ **Global shortcuts & Push-to-Talk** | Mute/unmute audio, start/stop, and **pause/resume** (`Ctrl+Space`) while in the background + Push-to-Talk mode |
 | 🌗 **Dual theme + dual UI language** | Dark / light theme; Turkish / English interface |
 | 📝 **Export & search** | Save transcripts as **TXT**, **SRT**, **Bilingual SRT** (`.bilingual.srt`), **WebVTT** (`.vtt`), and **JSONL**; in-pane **`Ctrl+F` search** and smart auto-scroll lock |
 | 🔇 **Dynamic dubbing & echo guard** | Automatically attenuates the source app/endpoint while translation speaks (ducking) and injects equal-duration silence on shared speakers |
@@ -71,7 +71,7 @@ System audio · Microphone · Single-app audio → **text + spoken translation**
 - **Dynamic dubbing (Audio Ducking):** automatically mutes or ducks source audio only while translation speech plays
 - **Output:** speaker selection or **Hiçbiri** (None = text-only mode)
 - **Live VU meter:** an independent preview monitor feeds levels from the selected input even before the session starts
-- **Audio controls:** live translation volume (`0%–200%` / `--volume`), silence gate (`--vad`, e.g. `0.01`)
+- **Audio controls:** fixed 100% translation gain in the GUI; `--volume` and silence gate (`--vad`, e.g. `0.01`) in the CLI
 
 ### Translation experience
 

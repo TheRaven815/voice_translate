@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time
 import tkinter as tk
 import webbrowser
 
@@ -63,55 +64,6 @@ class SettingsDialogMixin:
         except OSError as exc:
             self._append(f"[uyarı] {exc}\n")
         self._sync_source_dub()
-
-    def _refresh_volume_label(self) -> None:
-        lbl = getattr(self, "_volume_pct_lbl", None)
-        if lbl is None:
-            return
-        try:
-            if lbl.winfo_exists():
-                pct = int(round(self._clamp_volume(getattr(self, "translation_volume", 1.0)) * 100))
-                lbl.configure(text=f"{pct}%")
-        except tk.TclError:
-            pass
-
-    def _on_volume_slider(self, value=None) -> None:
-        if not getattr(self, "_volume_ui", False):
-            return
-        if value is None and self._volume_var is not None:
-            value = self._volume_var.get()
-        try:
-            pct = max(0, min(200, int(round(float(value)))))
-        except (TypeError, ValueError):
-            pct = 100
-        self.translation_volume = pct / 100.0
-        self._refresh_volume_label()
-        if self.loop_obj is not None and hasattr(self.loop_obj, "set_volume"):
-            try:
-                self.loop_obj.set_volume(self.translation_volume)
-            except Exception:
-                pass
-        if hasattr(self, "_loop_kwargs"):
-            self._loop_kwargs["volume"] = self.translation_volume
-        timer = getattr(self, "_volume_timer", None)
-        if timer is not None:
-            try:
-                self.after_cancel(timer)
-            except tk.TclError:
-                pass
-        try:
-            self._volume_timer = self.after(120, self._commit_volume)
-        except tk.TclError:
-            self._commit_volume()
-
-    def _commit_volume(self) -> None:
-        self._volume_timer = None
-        vol = self._clamp_volume(getattr(self, "translation_volume", 1.0))
-        self.translation_volume = vol
-        try:
-            self._deps().save_preferences(translation_volume=vol)
-        except OSError:
-            pass
 
     def _refresh_overlay_alpha_label(self) -> None:
         lbl = getattr(self, "_overlay_alpha_pct_lbl", None)
@@ -176,7 +128,13 @@ class SettingsDialogMixin:
     def _on_save_history_toggle(self) -> None:
         if self._save_history_var is None:
             return
-        self.save_history = bool(self._save_history_var.get())
+        enabled = bool(self._save_history_var.get())
+        if not enabled and getattr(self, "save_history", False):
+            self._flush_history(time.time(), force=True)
+        self.save_history = enabled
+        self._history_cutoff = time.time()
+        self._history_heard.clear()
+        self._history_trans.clear()
         try:
             self._deps().save_preferences(save_history=self.save_history)
         except OSError as exc:
@@ -186,11 +144,18 @@ class SettingsDialogMixin:
         parent = self._settings if self._settings is not None and self._settings.winfo_exists() else self
         if not self._deps().messagebox.askyesno(t("clear_history"), t("history_clear_confirm"), parent=parent):
             return
+        self._history_cutoff = time.time()
+        self._history_heard.clear()
+        self._history_trans.clear()
+        # Bekleyen yazma, temizlenen dosyayı yeniden oluşturmamalı.
+        self._wait_history_writes()
         if clear_history():
             if self._history_status is not None and self._history_status.winfo_exists():
                 self._history_status.configure(text=t("history_cleared"), fg=C.live)
             if self._history_win is not None and self._history_win.winfo_exists():
                 self._populate_history_window()
+        elif self._history_status is not None and self._history_status.winfo_exists():
+            self._history_status.configure(text=t("history_clear_failed"), fg=C.warn)
 
     def _refresh_dub_gain_label(self) -> None:
         label = getattr(self, "_dub_bg_pct_lbl", None)
@@ -286,7 +251,7 @@ class SettingsDialogMixin:
         if self._hotkeys is None or not self._hotkeys_suspended:
             return
         self._hotkeys_suspended = False
-        error = self._register_global_hotkeys()
+        error = self._restore_global_hotkeys()
         if error and sys.platform == "win32":
             self._append(f"[uyarı] Genel kısayollar etkinleştirilemedi: {error}\n")
 
@@ -360,12 +325,13 @@ class SettingsDialogMixin:
         if len(non_empty) != len(set(non_empty)):
             self._set_shortcut_status(t("shortcut_duplicate"), C.warn)
             return False
-        previous = (self.mute_shortcut, self.start_stop_shortcut, getattr(self, "pause_shortcut", ""))
+        previous = (self.mute_shortcut, self.start_stop_shortcut, self.pause_shortcut)
         self.mute_shortcut, self.start_stop_shortcut, self.pause_shortcut = mute, start_stop, pause
         self._hotkeys_suspended = False
-        error = self._register_global_hotkeys()
+        error = self._restore_global_hotkeys() if (mute, start_stop, pause) == previous else self._register_global_hotkeys()
         if error:
             self.mute_shortcut, self.start_stop_shortcut, self.pause_shortcut = previous
+            self._restore_global_hotkeys()
             self._set_shortcut_status(error, C.warn)
             return False
         try:
@@ -376,7 +342,7 @@ class SettingsDialogMixin:
             )
         except OSError as exc:
             self.mute_shortcut, self.start_stop_shortcut, self.pause_shortcut = previous
-            self._register_global_hotkeys()
+            self._restore_global_hotkeys()
             self._set_shortcut_status(
                 t("shortcut_save_failed").format(error=exc), C.warn
             )
@@ -838,33 +804,6 @@ class SettingsDialogMixin:
         )
         self._settings_refs["audio_overlay_title"].pack(fill=tk.X)
 
-        vol_row = tk.Frame(tab_translation, bg=C.panel)
-        vol_row.pack(fill=tk.X, pady=(6, 0))
-        self._settings_refs["volume_lbl"] = tk.Label(
-            vol_row, text=t("translation_volume"), anchor="w",
-            font=self.font_ui, fg=C.muted, bg=C.panel,
-        )
-        self._settings_refs["volume_lbl"].pack(side=tk.LEFT)
-        self._volume_pct_lbl = tk.Label(
-            vol_row, text="", width=5, anchor="e",
-            font=self.font_ui, fg=C.text, bg=C.panel,
-        )
-        self._volume_pct_lbl.pack(side=tk.RIGHT)
-        vol_pct = max(0, min(200, int(round(self._clamp_volume(getattr(self, "translation_volume", 1.0)) * 100))))
-        self._volume_var = tk.IntVar(value=vol_pct)
-        self._volume_ui = False
-        self._volume_scale = LevelSlider(
-            vol_row,
-            variable=self._volume_var,
-            command=self._on_volume_slider,
-            from_=0,
-            to=200,
-            bg=C.panel,
-        )
-        self._volume_scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(10, 8))
-        self._refresh_volume_label()
-        self._volume_ui = True
-
         alpha_row = tk.Frame(tab_translation, bg=C.panel)
         alpha_row.pack(fill=tk.X, pady=(5, 0))
         self._settings_refs["opacity_lbl"] = tk.Label(
@@ -960,7 +899,12 @@ class SettingsDialogMixin:
             anchor="w",
         )
         self._settings_refs["history_title"].pack(fill=tk.X)
-        self._save_history_var = tk.BooleanVar(value=bool(getattr(self, "save_history", True)))
+        self._settings_refs["history_hint"] = tk.Label(
+            tab_translation, text=t("history_hint"), anchor="w", justify="left",
+            font=self.font_ui, fg=C.muted, bg=C.panel, wraplength=410,
+        )
+        self._settings_refs["history_hint"].pack(fill=tk.X, pady=(2, 0))
+        self._save_history_var = tk.BooleanVar(value=bool(getattr(self, "save_history", False)))
         self._save_history_toggle = CheckToggle(
             tab_translation,
             text=t("save_history_toggle"),
@@ -1116,11 +1060,11 @@ class SettingsDialogMixin:
             ("dub_level", t("dub_background_level")),
             ("shortcuts_title", t("shortcuts")),
             ("audio_overlay_title", t("audio_overlay_section")),
-            ("volume_lbl", t("translation_volume")),
             ("opacity_lbl", t("overlay_opacity")),
             ("glossary_title", t("glossary_section")),
             ("glossary_hint", t("glossary_hint")),
             ("history_title", t("history_section")),
+            ("history_hint", t("history_hint")),
         ):
             widget = refs.get(key)
             if widget is not None and widget.winfo_exists():
@@ -1193,7 +1137,7 @@ class SettingsDialogMixin:
             set_ui_lang(cfg.ui_lang)
             self.mute_shortcut = cfg.mute_shortcut
             self.start_stop_shortcut = cfg.start_stop_shortcut
-            self.pause_shortcut = getattr(cfg, "pause_shortcut", "") or ""
+            self.pause_shortcut = cfg.pause_shortcut
             self.push_to_talk = bool(getattr(cfg, "push_to_talk", False))
             self.always_on_top = cfg.always_on_top
             self.overlay_font_size = cfg.overlay_font_size
@@ -1205,15 +1149,12 @@ class SettingsDialogMixin:
                 getattr(cfg, "dub_background_gain", DUB_BACKGROUND)
             )
             self.dub_ducking = bool(getattr(cfg, "dub_ducking", True))
-            self.translation_volume = self._clamp_volume(getattr(cfg, "translation_volume", 1.0))
             self.glossary = str(getattr(cfg, "glossary", "") or "")
-            self.save_history = bool(getattr(cfg, "save_history", True))
+            self.save_history = bool(getattr(cfg, "save_history", False))
+            self._history_cutoff = time.time()
+            self._history_heard.clear()
+            self._history_trans.clear()
             self._input_application_path = cfg.input_application
-            if self.loop_obj is not None and hasattr(self.loop_obj, "set_volume"):
-                try:
-                    self.loop_obj.set_volume(self.translation_volume)
-                except Exception:
-                    pass
             try:
                 self.attributes("-topmost", self.always_on_top)
             except tk.TclError:
@@ -1240,11 +1181,6 @@ class SettingsDialogMixin:
                     int(round(self._clamp_bed_gain(self.dub_background_gain) * 100))
                 )
                 self._dub_gain_ui = True
-            if self._volume_var is not None:
-                self._volume_ui = False
-                self._volume_var.set(int(round(self.translation_volume * 100)))
-                self._volume_ui = True
-            self._refresh_volume_label()
             if self._overlay_alpha_var is not None:
                 self._overlay_alpha_ui = False
                 self._overlay_alpha_var.set(int(round(self.overlay_alpha * 100)))
@@ -1268,7 +1204,7 @@ class SettingsDialogMixin:
             except Exception as exc:
                 self._append(f"[uyarı] Aygıtlar yenilenemedi: {exc}\n")
             self._hotkeys_suspended = False
-            self._register_global_hotkeys()
+            self._restore_global_hotkeys()
             self._refresh_theme()
             self._retranslate_ui()
             self._retranslate_settings()
@@ -1292,7 +1228,6 @@ class SettingsDialogMixin:
         self._resume_global_hotkeys()
         for timer_attr, commit_fn in (
             ("_dub_gain_timer", self._commit_dub_gain),
-            ("_volume_timer", self._commit_volume),
             ("_overlay_alpha_timer", self._commit_overlay_alpha),
         ):
             timer = getattr(self, timer_attr, None)
@@ -1334,10 +1269,6 @@ class SettingsDialogMixin:
         self._dub_bg_gain_lbl = None
         self._dub_bg_pct_lbl = None
         self._dub_gain_ui = False
-        self._volume_var = None
-        self._volume_scale = None
-        self._volume_pct_lbl = None
-        self._volume_ui = False
         self._overlay_alpha_var = None
         self._overlay_alpha_scale = None
         self._overlay_alpha_pct_lbl = None

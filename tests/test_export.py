@@ -84,3 +84,18 @@ def test_export_vtt_single_and_bilingual_with_non_overlapping_cues():
     srt_single = export_srt(items, session_start=50.0)
     assert "Good morning" not in srt_single
     assert "Günaydın" in srt_single
+
+
+def test_subtitles_sort_and_separate_same_packet_cues():
+    items = [
+        TranscriptItem(104.0, "trans", "Son"),
+        TranscriptItem(101.0, "trans", "İlk\n\nAltyazı"),
+        TranscriptItem(101.0, "trans", "İkinci"),
+        TranscriptItem(104.01, "trans", "Yakın"),
+    ]
+    srt = export_srt(items, session_start=100.0)
+    blocks = srt.strip().split("\n\n")
+    assert blocks[0].splitlines() == ["1", "00:00:01,000 --> 00:00:02,460", "İlk", "Altyazı"]
+    assert blocks[1].splitlines() == ["2", "00:00:02,500 --> 00:00:03,960", "İkinci"]
+    assert blocks[2].splitlines() == ["3", "00:00:04,000 --> 00:00:04,001", "Son"]
+    assert "00:00:04.010 --> 00:00:07.010" in export_vtt(items, session_start=100.0)

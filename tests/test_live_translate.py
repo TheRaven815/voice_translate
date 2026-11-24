@@ -700,6 +700,28 @@ def test_receive_handles_both_audio_and_transcription():
     assert ("trans", "Merged audio-text") in emitted
     assert ("trans_end",) in emitted
 
+
+def test_turn_complete_flushes_both_transcripts_without_finished_flags():
+    emitted = []
+    loop_obj = SystemAudioLoop("en", "tr", None, "dummy-key", on_text=emitted.append)
+
+    class Session:
+        async def receive(self):
+            yield SimpleNamespace(data=None, text=None, server_content=SimpleNamespace(
+                input_transcription=SimpleNamespace(text="Hello"),
+                output_transcription=SimpleNamespace(text="Merhaba"),
+                turn_complete=True,
+            ))
+            yield SimpleNamespace(data=None, text=None, server_content=SimpleNamespace(turn_complete=True))
+            loop_obj._user_stop.set()
+
+    try:
+        loop_obj.session = Session()
+        asyncio.run(loop_obj.receive())
+        assert emitted == [("heard", "Hello"), ("trans", "Merhaba"), ("heard_end",), ("trans_end",)]
+    finally:
+        loop_obj.close()
+
 def test_audio_converter_sample_rate_resampling():
     from audio import AudioConverter
     conv48 = AudioConverter(48000, 16000)

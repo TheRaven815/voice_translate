@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 import tkinter as tk
 
 from devices import device_key, display_input_label
 from i18n import t
+from languages import display_name, lang_code_to_name, src_code_to_name
 from logger import load_recent_history
 from meta import APP_AUTHOR, APP_TITLE, __version__
 from updater import (
@@ -25,6 +27,8 @@ from .win32 import extract_exe_icon_png
 
 class DialogsMixin:
     """App sınıfı için yan diyaloglar (Uygulama Seçici, Geçmiş, Hakkında, Güncelleme)."""
+
+    HISTORY_LIMIT = 100
 
     def _drain_window_events(self) -> None:
         """Ebeveyn penceredeki bekleyen Unmap/Map olaylarını transient öncesinde boşaltır."""
@@ -587,6 +591,11 @@ class DialogsMixin:
 
         main = tk.Frame(pop, bg=C.panel, padx=18, pady=14)
         main.pack(fill=tk.BOTH, expand=True)
+        self._history_caption = tk.Label(
+            main, text=t("history_caption").format(limit=self.HISTORY_LIMIT),
+            font=self.font_ui, bg=C.panel, fg=C.muted, anchor="w",
+        )
+        self._history_caption.pack(fill=tk.X, pady=(0, 8))
 
         text_edge = tk.Frame(main, bg=C.line, bd=0, highlightthickness=0)
         self._history_find_bar = TranscriptSearchBar(
@@ -602,7 +611,6 @@ class DialogsMixin:
             label_text=t("find_placeholder"),
             close_tip=t("close"),
         )
-        text_edge.pack(fill=tk.BOTH, expand=True)
         txt = tk.Text(
             text_edge,
             wrap=tk.WORD,
@@ -633,7 +641,7 @@ class DialogsMixin:
         txt.configure(yscrollcommand=h_scroll.set)
         h_scroll.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 1), pady=1)
         txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(1, 0), pady=1)
-        txt.tag_configure("meta", foreground=C.dim, font=self.font_log)
+        txt.tag_configure("meta", foreground=C.muted, font=self.font_log)
         txt.tag_configure("heard", foreground=C.muted)
         txt.tag_configure("trans", foreground=C.text)
         TranscriptSearchBar.style_text_tags(txt)
@@ -641,7 +649,7 @@ class DialogsMixin:
         self._history_text = txt
 
         bottom = tk.Frame(main, bg=C.panel)
-        bottom.pack(fill=tk.X, pady=(10, 0))
+        bottom.pack(side=tk.BOTTOM, fill=tk.X, pady=(10, 0))
         close_wrap = tk.Frame(bottom, bg=C.line, bd=0, highlightthickness=0)
         close_wrap.pack(side=tk.RIGHT)
         self._history_close_btn = tk.Button(
@@ -661,6 +669,7 @@ class DialogsMixin:
             command=self._close_history,
         )
         self._history_close_btn.pack(padx=1, pady=1)
+        text_edge.pack(fill=tk.BOTH, expand=True)
 
         self._populate_history_window()
 
@@ -673,6 +682,7 @@ class DialogsMixin:
         x = max(0, min(self.winfo_rootx() + (self.winfo_width() - w) // 2, max(0, screen_w - w)))
         y = max(0, min(self.winfo_rooty() + (self.winfo_height() - h) // 2, max(0, screen_h - h - 48)))
         pop.geometry(f"{w}x{h}+{x}+{y}")
+        pop.minsize(min(380, w), min(220, h))
         pop.deiconify()
         pop.update_idletasks()
         try:
@@ -685,26 +695,36 @@ class DialogsMixin:
         txt = getattr(self, "_history_text", None)
         if txt is None or not txt.winfo_exists():
             return
+        if getattr(self, "save_history", False):
+            if not self._worker_alive():
+                self._flush_history(time.time(), force=True)
+            else:
+                self._flush_history(time.time())
+        self._wait_history_writes()
         txt.delete("1.0", tk.END)
-        records = load_recent_history(limit=100)
+        records = load_recent_history(limit=self.HISTORY_LIMIT)
         if not records:
             txt.insert(tk.END, t("history_empty"), ("meta",))
-            return
         for idx, rec in enumerate(records):
             if idx > 0:
                 txt.insert(tk.END, "\n")
             raw_ts = str(rec.get("timestamp", "")).replace("T", " ")
             if "." in raw_ts:
                 raw_ts = raw_ts.split(".", 1)[0]
-            src_c = rec.get("src", "auto")
-            dst_c = rec.get("dst", "")
-            txt.insert(tk.END, f"[{raw_ts}]  ({src_c} → {dst_c})\n", ("meta",))
-            heard_line = str(rec.get("heard", "")).strip()
-            trans_line = str(rec.get("trans", "")).strip()
+            src_c = str(rec.get("src") or "auto")
+            dst_c = str(rec.get("dst") or "")
+            src = display_name(src_code_to_name(src_c, default=src_c))
+            dst = display_name(lang_code_to_name(dst_c, default=dst_c))
+            langs = t("history_languages").format(source=src, target=dst)
+            txt.insert(tk.END, f"{raw_ts}  ·  {langs}\n", ("meta",))
+            heard_line = (rec.get("heard") or "").strip()
+            trans_line = (rec.get("trans") or "").strip()
             if heard_line:
-                txt.insert(tk.END, f"• {heard_line}\n", ("heard",))
+                txt.insert(tk.END, f"{t('heard')}: {heard_line}\n", ("heard",))
+            elif trans_line:
+                txt.insert(tk.END, f"{t('history_missing_heard')}\n", ("heard",))
             if trans_line:
-                txt.insert(tk.END, f"→ {trans_line}\n", ("trans",))
+                txt.insert(tk.END, f"{t('trans')}: {trans_line}\n", ("trans",))
         txt.see(tk.END)
         if self._history_find_bar is not None and self._history_find_bar.is_open:
             self._history_find_bar.refresh(scroll=False)
@@ -734,6 +754,7 @@ class DialogsMixin:
         self._history_text = None
         self._history_find_bar = None
         self._history_close_btn = None
+        self._history_caption = None
         if pop is None:
             return
         try:

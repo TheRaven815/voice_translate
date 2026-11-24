@@ -221,7 +221,7 @@ def test_reset_keeps_api_key_and_restores_defaults(tmp_path, monkeypatch):
     assert set(data) == {"api_key"}
 
 
-def test_translation_volume_glossary_and_ducking_persistence(tmp_path, monkeypatch):
+def test_glossary_and_ducking_persistence_ignores_legacy_volume(tmp_path, monkeypatch):
     _isolate(tmp_path, monkeypatch)
     raw_glossary = (
         "# yorum satırı\n"
@@ -239,41 +239,36 @@ def test_translation_volume_glossary_and_ducking_persistence(tmp_path, monkeypat
     ]
     assert config.parse_glossary("   \n# sadece yorum\n") is None
 
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"translation_volume": 0.5}), encoding="utf-8")
+    defaults = config.load()
+    assert not hasattr(defaults, "translation_volume")
+    assert defaults.save_history is False
     config.save_preferences(
-        translation_volume=1.65,
         glossary="Ahenk: Ahenk\nWASAPI: WASAPI",
         dub_ducking=False,
-        save_history=False,
+        save_history=True,
     )
     loaded = config.load()
-    assert loaded.translation_volume == pytest.approx(1.65)
+    assert "translation_volume" not in json.loads(path.read_text(encoding="utf-8"))
     assert loaded.glossary == "Ahenk: Ahenk\nWASAPI: WASAPI"
     assert loaded.dub_ducking is False
-    assert loaded.save_history is False
-
-    # Sınır ve NaN koruması
-    config.save_preferences(translation_volume=5.0)
-    assert config.load().translation_volume == pytest.approx(2.0)
-    (tmp_path / "config.json").write_text(
-        json.dumps({"translation_volume": float("nan")}), encoding="utf-8"
-    )
-    assert config.load().translation_volume == pytest.approx(1.0)
+    assert loaded.save_history is True
 
     config.save_api_key("sk-keep")
-    config.save_preferences(translation_volume=0.5, glossary="Test", dub_ducking=False)
+    config.save_preferences(glossary="Test", dub_ducking=False)
     config.reset()
     after_reset = config.load()
     assert after_reset.api_key == "sk-keep"
-    assert after_reset.translation_volume == pytest.approx(1.0)
     assert after_reset.glossary == ""
     assert after_reset.dub_ducking is True
-    assert after_reset.save_history is True
+    assert after_reset.save_history is False
 
 
 def test_r01_pause_shortcut_and_push_to_talk_persistence(tmp_path, monkeypatch):
     _isolate(tmp_path, monkeypatch)
     defaults = config.load()
-    assert defaults.pause_shortcut == ""
+    assert defaults.pause_shortcut == "Ctrl+Space"
     assert defaults.push_to_talk is False
 
     config.save_preferences(pause_shortcut="Ctrl+Shift+P", push_to_talk=True)
@@ -281,13 +276,16 @@ def test_r01_pause_shortcut_and_push_to_talk_persistence(tmp_path, monkeypatch):
     assert loaded.pause_shortcut == "Ctrl+Shift+P"
     assert loaded.push_to_talk is True
 
+    config.save_preferences(pause_shortcut="")
+    assert config.load().pause_shortcut == ""
+
     # Malformed values fall back safely
     (tmp_path / "config.json").write_text(
         json.dumps({"pause_shortcut": 12345, "push_to_talk": "not_bool"}),
         encoding="utf-8",
     )
     fallback = config.load()
-    assert fallback.pause_shortcut == ""
+    assert fallback.pause_shortcut == "Ctrl+Space"
     assert fallback.push_to_talk is False
 
     config.save_api_key("sk-ptt")
@@ -295,5 +293,5 @@ def test_r01_pause_shortcut_and_push_to_talk_persistence(tmp_path, monkeypatch):
     config.reset()
     reset_cfg = config.load()
     assert reset_cfg.api_key == "sk-ptt"
-    assert reset_cfg.pause_shortcut == ""
+    assert reset_cfg.pause_shortcut == "Ctrl+Space"
     assert reset_cfg.push_to_talk is False

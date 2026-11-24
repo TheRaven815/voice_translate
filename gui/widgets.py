@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import base64
+import functools
 import math
+import struct
 import time
 import tkinter as tk
 import tkinter.font as tkfont
+import zlib
 
 from .theme import C
 
@@ -24,6 +27,60 @@ def mix(a: str, b: str, t: float) -> str:
     g = round(ag + (bg - ag) * t)
     bl = round(ab + (bb - ab) * t)
     return f"#{r:02x}{g:02x}{bl:02x}"
+
+
+def _blend_rgb(base: tuple[int, int, int], color: tuple[int, int, int], alpha: float) -> tuple[int, int, int]:
+    alpha = max(0.0, min(1.0, alpha))
+    return (
+        round(base[0] + (color[0] - base[0]) * alpha),
+        round(base[1] + (color[1] - base[1]) * alpha),
+        round(base[2] + (color[2] - base[2]) * alpha),
+    )
+
+
+def _circle_coverage(x: float, y: float, cx: float, cy: float, radius: float) -> float:
+    return max(0.0, min(1.0, radius + 0.5 - math.hypot(x - cx, y - cy)))
+
+
+def _rounded_rect_coverage(
+    x: float, y: float, x1: float, y1: float, x2: float, y2: float, radius: float
+) -> float:
+    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+    qx = abs(x - cx) - (x2 - x1) / 2 + radius
+    qy = abs(y - cy) - (y2 - y1) / 2 + radius
+    distance = math.hypot(max(qx, 0.0), max(qy, 0.0)) + min(max(qx, qy), 0.0) - radius
+    return max(0.0, min(1.0, 0.5 - distance))
+
+
+def _segment_distance(x: float, y: float, x1: float, y1: float, x2: float, y2: float) -> float:
+    dx, dy = x2 - x1, y2 - y1
+    length_sq = dx * dx + dy * dy
+    t = 0.0 if length_sq == 0 else max(0.0, min(1.0, ((x - x1) * dx + (y - y1) * dy) / length_sq))
+    return math.hypot(x - (x1 + t * dx), y - (y1 + t * dy))
+
+
+def _capsule_coverage(
+    x: float, y: float, x1: float, y1: float, x2: float, y2: float, radius: float
+) -> float:
+    return max(0.0, min(1.0, radius + 0.5 - _segment_distance(x, y, x1, y1, x2, y2)))
+
+
+def _png_chunk(tag: bytes, payload: bytes) -> bytes:
+    crc = zlib.crc32(tag + payload) & 0xFFFFFFFF
+    return struct.pack(">I", len(payload)) + tag + payload + struct.pack(">I", crc)
+
+
+def _encode_rgb_png_b64(width: int, height: int, filtered_rows: bytes) -> str:
+    """8-bit opak RGB PNG verisini base64 dizgesi olarak kodlar."""
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    compressed = zlib.compress(filtered_rows, level=1)
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + _png_chunk(b"IHDR", ihdr)
+        + _png_chunk(b"IDAT", compressed)
+        + _png_chunk(b"IEND", b"")
+    )
+    return base64.b64encode(png).decode("ascii")
 
 _ICON_FAMILY: str | None = None
 _ICON_FAMILY_PROBED = False
@@ -415,34 +472,20 @@ class ThemeSwitch(tk.Canvas):
         super().configure(bg=self._bg)
         self._draw()
 
-    @staticmethod
-    def _blend(base: tuple[int, int, int], color: tuple[int, int, int], alpha: float) -> tuple[int, int, int]:
-        alpha = max(0.0, min(1.0, alpha))
-        return tuple(round(a + (b - a) * alpha) for a, b in zip(base, color))
+    def destroy(self):
+        if self._anim_after is not None:
+            try:
+                self.after_cancel(self._anim_after)
+            except tk.TclError:
+                pass
+            self._anim_after = None
+        self._image = None
+        super().destroy()
 
-    @staticmethod
-    def _circle_coverage(x: float, y: float, cx: float, cy: float, radius: float) -> float:
-        return max(0.0, min(1.0, radius + 0.5 - math.hypot(x - cx, y - cy)))
-
-    @staticmethod
-    def _rounded_rect_coverage(
-        x: float, y: float, x1: float, y1: float, x2: float, y2: float, radius: float
-    ) -> float:
-        cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-        qx = abs(x - cx) - (x2 - x1) / 2 + radius
-        qy = abs(y - cy) - (y2 - y1) / 2 + radius
-        distance = math.hypot(max(qx, 0.0), max(qy, 0.0)) + min(max(qx, qy), 0.0) - radius
-        return max(0.0, min(1.0, 0.5 - distance))
-
-    @staticmethod
-    def _capsule_coverage(
-        x: float, y: float, x1: float, y1: float, x2: float, y2: float, radius: float
-    ) -> float:
-        dx, dy = x2 - x1, y2 - y1
-        length_sq = dx * dx + dy * dy
-        t = 0.0 if length_sq == 0 else max(0.0, min(1.0, ((x - x1) * dx + (y - y1) * dy) / length_sq))
-        distance = math.hypot(x - (x1 + t * dx), y - (y1 + t * dy))
-        return max(0.0, min(1.0, radius + 0.5 - distance))
+    _blend = staticmethod(_blend_rgb)
+    _circle_coverage = staticmethod(_circle_coverage)
+    _rounded_rect_coverage = staticmethod(_rounded_rect_coverage)
+    _capsule_coverage = staticmethod(_capsule_coverage)
 
     def _draw(self, hover: bool = False) -> None:
         self.delete("all")
@@ -913,6 +956,155 @@ class Select(tk.Frame):
                 pass
 
 
+@functools.lru_cache(maxsize=64)
+def _render_check_toggle_png(
+    size: int, checked: bool, bg_hex: str, fill_hex: str, outline_hex: str, ink_hex: str
+) -> str:
+    bg_rgb = _hex_rgb(bg_hex)
+    fill_rgb = _hex_rgb(fill_hex)
+    outline_rgb = _hex_rgb(outline_hex)
+    ink_rgb = _hex_rgb(ink_hex)
+    cx = cy = size / 2.0
+    rows = bytearray()
+    for py in range(size):
+        rows.append(0)
+        y = py + 0.5
+        for px in range(size):
+            x = px + 0.5
+            outer = _rounded_rect_coverage(x, y, 2.0, 2.0, size - 2.0, size - 2.0, 3.0)
+            if checked:
+                color = _blend_rgb(bg_rgb, fill_rgb, outer)
+                d = min(
+                    _segment_distance(x, y, cx - 3.7, cy + 0.2, cx - 1.2, cy + 2.7),
+                    _segment_distance(x, y, cx - 1.2, cy + 2.7, cx + 3.7, cy - 2.7),
+                )
+                check = max(0.0, min(1.0, 0.92 + 0.5 - d))
+                color = _blend_rgb(color, ink_rgb, check * outer)
+            else:
+                inner = _rounded_rect_coverage(x, y, 3.25, 3.25, size - 3.25, size - 3.25, 1.75)
+                color = _blend_rgb(bg_rgb, outline_rgb, outer)
+                color = _blend_rgb(color, bg_rgb, inner)
+            rows.extend(color)
+    return _encode_rgb_png_b64(size, size, bytes(rows))
+
+
+def _merge_ranges(intervals: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    valid = sorted((a, b) for a, b in intervals if a < b)
+    if not valid:
+        return []
+    merged = [valid[0]]
+    for a, b in valid[1:]:
+        prev_a, prev_b = merged[-1]
+        if a <= prev_b:
+            merged[-1] = (prev_a, max(prev_b, b))
+        else:
+            merged.append((a, b))
+    return merged
+
+
+def _render_level_slider_png(
+    width: int,
+    height: int,
+    left: float,
+    right: float,
+    knob_x: float,
+    bg_hex: str,
+    track_hex: str,
+    fill_hex: str,
+    knob_fill_hex: str,
+    enabled: bool,
+    hover: bool,
+    light: bool,
+) -> str:
+    bg_rgb = _hex_rgb(bg_hex)
+    track_rgb = _hex_rgb(track_hex)
+    fill_rgb = _hex_rgb(fill_hex)
+    knob_fill_rgb = _hex_rgb(knob_fill_hex)
+    bg_px = bytes(bg_rgb)
+    track_px = bytes(track_rgb)
+    fill_px = bytes(fill_rgb)
+
+    cy = height / 2.0
+    track_r = 2.0
+    knob_r = (7.0 if hover else 6.5) if enabled else 6.0
+    inner_r = knob_r - 1.75
+    shadow_a = (0.12 if light else 0.24) if enabled else 0.08
+    has_fill = knob_x > left + 0.5
+
+    sdf_ranges = _merge_ranges([
+        (0, min(width, math.ceil(left + track_r + 1.0))),
+        (max(0, math.floor(right - track_r - 1.0)), width),
+        (max(0, math.floor(knob_x - knob_r - 2.0)), min(width, math.ceil(knob_x + knob_r + 2.0))),
+    ])
+
+    y_top = cy - knob_r - 2.0
+    y_bot = cy + knob_r + 2.5
+    full_bg_row = b"\x00" + bg_px * width
+    rows = bytearray()
+
+    for py in range(height):
+        y = py + 0.5
+        if y < y_top or y > y_bot:
+            rows.extend(full_bg_row)
+            continue
+
+        rows.append(0)
+        on_straight_track = abs(y - cy) <= track_r - 0.5
+        row_track_cov = max(0.0, min(1.0, track_r + 0.5 - abs(y - cy)))
+        cursor = 0
+
+        for seg_start, seg_end in sdf_ranges:
+            if cursor < seg_start:
+                span_len = seg_start - cursor
+                if on_straight_track:
+                    px_bytes = fill_px if (has_fill and (cursor + 0.5) < knob_x) else track_px
+                    rows.extend(px_bytes * span_len)
+                elif row_track_cov > 0.0:
+                    c = _blend_rgb(bg_rgb, track_rgb, row_track_cov)
+                    if has_fill and (cursor + 0.5) < knob_x:
+                        c = _blend_rgb(c, fill_rgb, row_track_cov)
+                    rows.extend(bytes(c) * span_len)
+                else:
+                    rows.extend(bg_px * span_len)
+
+            for px in range(seg_start, seg_end):
+                x = px + 0.5
+                color = bg_rgb
+                track_cov = _capsule_coverage(x, y, left, cy, right, cy, track_r)
+                if track_cov > 0.0:
+                    color = _blend_rgb(color, track_rgb, track_cov)
+                if has_fill:
+                    fill_cov = _capsule_coverage(x, y, left, cy, knob_x, cy, track_r)
+                    if fill_cov > 0.0:
+                        color = _blend_rgb(color, fill_rgb, fill_cov)
+                shadow_cov = _circle_coverage(x, y, knob_x, cy + 0.8, knob_r + 0.4)
+                if shadow_cov > 0.0:
+                    color = _blend_rgb(color, (0, 0, 0), shadow_cov * shadow_a)
+                knob_cov = _circle_coverage(x, y, knob_x, cy, knob_r)
+                if knob_cov > 0.0:
+                    color = _blend_rgb(color, fill_rgb, knob_cov)
+                inner_cov = _circle_coverage(x, y, knob_x, cy, inner_r)
+                if inner_cov > 0.0:
+                    color = _blend_rgb(color, knob_fill_rgb, inner_cov)
+                rows.extend(color)
+            cursor = seg_end
+
+        if cursor < width:
+            span_len = width - cursor
+            if on_straight_track:
+                px_bytes = fill_px if (has_fill and (cursor + 0.5) < knob_x) else track_px
+                rows.extend(px_bytes * span_len)
+            elif row_track_cov > 0.0:
+                c = _blend_rgb(bg_rgb, track_rgb, row_track_cov)
+                if has_fill and (cursor + 0.5) < knob_x:
+                    c = _blend_rgb(c, fill_rgb, row_track_cov)
+                rows.extend(bytes(c) * span_len)
+            else:
+                rows.extend(bg_px * span_len)
+
+    return _encode_rgb_png_b64(width, height, bytes(rows))
+
+
 class CheckToggle(tk.Frame):
     """Kutu her zaman görünür.
 
@@ -930,6 +1122,8 @@ class CheckToggle(tk.Frame):
         self._fg = fg
         self._bg = bg
         self._hover = False
+        self._image: tk.PhotoImage | None = None
+        self._render_key: tuple | None = None
         self._box = tk.Canvas(
             self,
             width=self.BOX + 4,
@@ -957,6 +1151,8 @@ class CheckToggle(tk.Frame):
             self._var.trace_remove("write", self._trace)
         except (tk.TclError, ValueError):
             pass
+        self._image = None
+        self._render_key = None
         super().destroy()
 
     def invoke(self):
@@ -992,7 +1188,8 @@ class CheckToggle(tk.Frame):
             self._fg = fg
         if bg is not None:
             self._bg = bg
-            self._fg = C.text
+            if fg is None:
+                self._fg = C.text
             super().configure(bg=bg)
             self._box.configure(bg=bg)
             self._label.configure(bg=bg)
@@ -1051,24 +1248,21 @@ class CheckToggle(tk.Frame):
 
     def _draw(self) -> None:
         box = self._box
-        box.delete("all")
         box.configure(bg=self._bg)
         self._label.configure(fg=self._fg, bg=self._bg)
-        x1, y1, x2, y2 = 1.5, 1.5, self.BOX + 1.5, self.BOX + 1.5
-        if self._checked():
-            fill = C.accent
-            box.create_rectangle(x1, y1, x2, y2, outline=fill, fill=fill, width=1)
-            ink = C.fill_fg
-            box.create_line(
-                4.2, 8.0, 6.7, 10.7, fill=ink, width=1.8, capstyle=tk.ROUND, joinstyle=tk.ROUND,
-            )
-            box.create_line(
-                6.7, 10.7, 11.6, 4.8, fill=ink, width=1.8, capstyle=tk.ROUND, joinstyle=tk.ROUND,
-            )
-            return
-        box.create_rectangle(
-            x1, y1, x2, y2, outline=self._outline_color(), fill=self._bg, width=1.4,
-        )
+        checked = self._checked()
+        fill = mix(C.accent, C.fill_hover, 0.14) if (checked and self._hover) else C.accent
+        outline = self._outline_color()
+        ink = C.fill_fg
+        size = self.BOX + 4
+        key = (size, checked, self._bg, fill, outline, ink)
+        if key != self._render_key or self._image is None:
+            data = _render_check_toggle_png(size, checked, self._bg, fill, outline, ink)
+            image = tk.PhotoImage(master=box, data=data)
+            self._image = image
+            self._render_key = key
+            box.delete("all")
+            box.create_image(0, 0, image=image, anchor=tk.NW)
 
 
 class LevelSlider(tk.Canvas):
@@ -1084,6 +1278,8 @@ class LevelSlider(tk.Canvas):
         self._to = int(to)
         self._state = tk.NORMAL
         self._hover = False
+        self._image: tk.PhotoImage | None = None
+        self._render_key: tuple | None = None
         super().__init__(
             master,
             width=160,
@@ -1110,6 +1306,8 @@ class LevelSlider(tk.Canvas):
             self._var.trace_remove("write", self._trace)
         except (tk.TclError, ValueError):
             pass
+        self._image = None
+        self._render_key = None
         super().destroy()
 
     def track_color(self) -> str:
@@ -1157,8 +1355,8 @@ class LevelSlider(tk.Canvas):
                 width = int(float(super().cget("width")))
             except (tk.TclError, TypeError, ValueError):
                 width = 160
-        pad = 9.0
-        return width, pad, max(pad + 1.0, width - pad)
+        pad = 10.0
+        return int(width), pad, max(pad + 1.0, float(width) - pad)
 
     def _x_for(self, value: int) -> float:
         _width, left, right = self._span()
@@ -1238,27 +1436,26 @@ class LevelSlider(tk.Canvas):
             pass
 
     def _draw(self) -> None:
-        self.delete("all")
         width, left, right = self._span()
         if width <= 1 or right <= left:
             return
-        cy = self.H / 2
-        knob_x = self._x_for(self._value())
+        knob_x = round(self._x_for(self._value()), 2)
         track = self._track_color()
         fill = self._fill_color()
-        self.create_line(left, cy, right, cy, fill=track, width=4, capstyle=tk.ROUND)
-        if knob_x > left + 0.6:
-            self.create_line(left, cy, knob_x, cy, fill=fill, width=4, capstyle=tk.ROUND)
-        radius = 6.5
-        self.create_oval(
-            knob_x - radius,
-            cy - radius,
-            knob_x + radius,
-            cy + radius,
-            fill=self._knob_fill(),
-            outline=fill,
-            width=1.6,
+        knob_fill = self._knob_fill()
+        enabled = self._enabled()
+        light = C.current == "light"
+        key = (width, self.H, left, right, knob_x, self._bg, track, fill, knob_fill, enabled, self._hover, light)
+        if key == self._render_key and self._image is not None:
+            return
+        data = _render_level_slider_png(
+            width, self.H, left, right, knob_x, self._bg, track, fill, knob_fill, enabled, self._hover, light
         )
+        image = tk.PhotoImage(master=self, data=data)
+        self._image = image
+        self._render_key = key
+        self.delete("all")
+        self.create_image(0, 0, image=image, anchor=tk.NW)
 
 
 class TranscriptSearchBar(tk.Frame):

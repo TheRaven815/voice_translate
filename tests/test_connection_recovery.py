@@ -167,6 +167,7 @@ def test_goaway_renewal_reconnects_without_a_network_error_log(monkeypatch):
 def test_successful_reconnect_does_not_notify(monkeypatch):
     messages, made, _ = run_worker(monkeypatch, [ConnectionError("network"), None])
     assert len(made) == 2
+    assert messages[-2][0] == "transcript_boundary"
     assert not any(isinstance(msg, tuple) and msg[0] == "connection_failed" for msg in messages)
 
 

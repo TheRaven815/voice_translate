@@ -102,6 +102,9 @@ def _decrypt_key(stored: str) -> str:
     except Exception:
         return stored
 
+DEFAULT_PAUSE_SHORTCUT = "Ctrl+Space"
+
+
 @dataclass
 class Settings:
     api_key: str = ""
@@ -118,17 +121,16 @@ class Settings:
     overlay_alpha: float = 0.92
     overlay_click_through: bool = False
     ui_lang: str = "tr"
-    save_history: bool = True
+    save_history: bool = False
     mute_shortcut: str = "Ctrl+Shift+M"
     start_stop_shortcut: str = "Ctrl+Shift+Space"
-    pause_shortcut: str = ""
+    pause_shortcut: str = DEFAULT_PAUSE_SHORTCUT
     push_to_talk: bool = False
     dub_mute_source: bool = False
     dub_background: bool = False
     # 1/6 ≈ −15.6 dB: duyulan orijinalin katı. source_mute.DUB_BACKGROUND ile aynı.
     dub_background_gain: float = 1.0 / 6.0
     dub_ducking: bool = True
-    translation_volume: float = 1.0
     glossary: str = ""
 
 
@@ -280,15 +282,14 @@ def load() -> Settings:
     dub_background_gain = _clamp_unit(raw.get("dub_background_gain"), default=1.0 / 6.0)
     raw_ducking = raw.get("dub_ducking", True)
     dub_ducking = bool(raw_ducking) if isinstance(raw_ducking, (bool, int)) else True
-    translation_volume = _safe_float(raw.get("translation_volume"), default=1.0, min_val=0.0, max_val=2.0)
     raw_glossary = raw.get("glossary")
     glossary = str(raw_glossary) if isinstance(raw_glossary, str) else ""
     overlay_font_size = _safe_int(raw.get("overlay_font_size"), default=13, min_val=8, max_val=72)
     overlay_alpha = _safe_float(raw.get("overlay_alpha"), default=0.92, min_val=0.1, max_val=1.0)
-    raw_save_hist = raw.get("save_history", True)
-    save_history = bool(raw_save_hist) if isinstance(raw_save_hist, (bool, int)) else True
+    raw_save_hist = raw.get("save_history", False)
+    save_history = bool(raw_save_hist) if isinstance(raw_save_hist, (bool, int)) else False
     raw_pause_sc = raw.get("pause_shortcut")
-    pause_shortcut = str(raw_pause_sc) if isinstance(raw_pause_sc, str) else ""
+    pause_shortcut = raw_pause_sc if isinstance(raw_pause_sc, str) else DEFAULT_PAUSE_SHORTCUT
     raw_ptt = raw.get("push_to_talk", False)
     push_to_talk = bool(raw_ptt) if isinstance(raw_ptt, (bool, int)) else False
 
@@ -316,7 +317,6 @@ def load() -> Settings:
         dub_background=dub_background,
         dub_background_gain=dub_background_gain,
         dub_ducking=dub_ducking,
-        translation_volume=translation_volume,
         glossary=glossary,
     )
 def save(settings: Settings) -> Path:
@@ -344,7 +344,7 @@ def save(settings: Settings) -> Path:
     raw["dub_background"] = settings.dub_background
     raw["dub_background_gain"] = settings.dub_background_gain
     raw["dub_ducking"] = settings.dub_ducking
-    raw["translation_volume"] = settings.translation_volume
+    raw.pop("translation_volume", None)
     raw["glossary"] = settings.glossary
     return _write_raw(raw)
 
@@ -389,7 +389,6 @@ def save_preferences(
     dub_background: bool | None = None,
     dub_background_gain: float | None = None,
     dub_ducking: bool | None = None,
-    translation_volume: float | None = None,
     glossary: str | None = None,
 ) -> Path:
     raw = _read_raw()
@@ -437,8 +436,7 @@ def save_preferences(
         raw["dub_background_gain"] = max(0.0, min(1.0, float(dub_background_gain)))
     if dub_ducking is not None:
         raw["dub_ducking"] = bool(dub_ducking)
-    if translation_volume is not None:
-        raw["translation_volume"] = max(0.0, min(2.0, float(translation_volume)))
+    raw.pop("translation_volume", None)
     if glossary is not None:
         raw["glossary"] = str(glossary)
     return _write_raw(raw)

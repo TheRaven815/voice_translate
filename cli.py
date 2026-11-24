@@ -42,12 +42,10 @@ def main(argv: list[str] | None = None) -> int:
         cfg = load_config()
         default_src = source_code(cfg.src_lang) or "auto"
         default_dst = dest_code(cfg.dst_lang, default="tr")
-        default_vol = getattr(cfg, "translation_volume", 1.0)
         default_glossary = getattr(cfg, "glossary", "")
     except Exception:
         default_src = "auto"
         default_dst = "tr"
-        default_vol = 1.0
         default_glossary = ""
 
     parser = argparse.ArgumentParser(description=f"{APP_TITLE} - PC sistem sesini veya mikrofonu canlı çevir")
@@ -64,7 +62,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="satır satır JSON akışı üret (betikleme için)")
     parser.add_argument("--log", default=None, metavar="FILE", help="tüm çıktıyı belirtilen log dosyasına kaydet")
     parser.add_argument("--vad", type=float, default=0.0, help="sessizlik kapısı RMS eşiği (örn: 0.01)")
-    parser.add_argument("--volume", type=float, default=default_vol, help="çeviri ses seviyesi (0.0 - 2.0)")
+    parser.add_argument("--volume", type=float, default=1.0, help="çeviri ses seviyesi (0.0 - 2.0)")
     parser.add_argument("--glossary", default=None, help="özel sözlük terimleri (satır/noktalı virgül ayrılmış veya @dosya.txt)")
     parser.add_argument("--prompt", default=None, help="ek çeviri talimatı (system instruction)")
     parser.add_argument("--api-key", default=None, help="Gemini API anahtarı")

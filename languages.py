@@ -112,6 +112,16 @@ def display_source_names() -> list[str]:
 def display_language_names() -> list[str]:
     return [display_name(name) for name in LANGS]
 
+def _lookup_lang_name(code: str) -> str | None:
+    norm = code.lower()
+    found = CODE_TO_NAME.get(norm)
+    if found is not None:
+        return found
+    if "-" in norm:
+        return CODE_TO_NAME.get(norm.split("-", 1)[0])
+    return None
+
+
 def lang_code_to_name(code: str, default: str = "Türkçe") -> str:
     if not code:
         return default
@@ -119,7 +129,8 @@ def lang_code_to_name(code: str, default: str = "Türkçe") -> str:
         return code
     if code == "Çince":
         return "Çince (Basitleştirilmiş)"
-    return CODE_TO_NAME.get(code.lower(), default)
+    return _lookup_lang_name(code) or default
+
 
 def src_code_to_name(code: str, default: str = AUTO_SRC) -> str:
     if not code or code.lower() in ("auto", "none"):
@@ -128,4 +139,4 @@ def src_code_to_name(code: str, default: str = AUTO_SRC) -> str:
         return code
     if code == "Çince":
         return "Çince (Basitleştirilmiş)"
-    return CODE_TO_NAME.get(code.lower(), default)
+    return _lookup_lang_name(code) or default

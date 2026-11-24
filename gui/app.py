@@ -5,18 +5,21 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import sys
 import tempfile
 import threading
 import time
 import tkinter as tk
 import tkinter.font as tkfont
+from collections import deque
 from pathlib import Path
 from tkinter import messagebox
 
 from applications import application_inputs, format_application_name
 from process_audio import process_audio_supported
 from config import (
+    DEFAULT_PAUSE_SHORTCUT,
     load as load_config,
     parse_glossary,
     reset as reset_config,
@@ -102,6 +105,12 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
     PANE_TRIM_BATCH = 200
     MAX_TRANSCRIPT_ITEMS = 5000
     TRANSCRIPT_SPILL_BATCH = 1000
+    TRANSCRIPT_IDLE_S = 2.0
+    TRANSCRIPT_SEGMENT_S = 6.0
+    TRANSCRIPT_SEGMENT_CHARS = 160
+    HISTORY_PAIR_WAIT_S = 3.0
+    _TRANSCRIPT_EVENTS = frozenset({"heard", "trans", "heard_end", "trans_end", "transcript_boundary"})
+    _SENTENCE_END = re.compile(r"[.!?…。！？]+[\"'”’»)]*(?=\s)|[。！？]+|\n+")
 
     @staticmethod
     def _deps():
@@ -162,7 +171,7 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
         self.translation_muted = False
         self.mute_shortcut = getattr(self._cfg, "mute_shortcut", "Ctrl+Shift+M")
         self.start_stop_shortcut = getattr(self._cfg, "start_stop_shortcut", "Ctrl+Shift+Space")
-        self.pause_shortcut = getattr(self._cfg, "pause_shortcut", "") or ""
+        self.pause_shortcut = self._cfg.pause_shortcut
         self.push_to_talk = bool(getattr(self._cfg, "push_to_talk", False))
         self._mute_shortcut_var: tk.StringVar | None = None
         self._start_stop_shortcut_var: tk.StringVar | None = None
@@ -197,11 +206,8 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
             getattr(self._cfg, "dub_background_gain", DUB_BACKGROUND)
         )
         self.dub_ducking = bool(getattr(self._cfg, "dub_ducking", True))
-        self.translation_volume = self._clamp_volume(
-            getattr(self._cfg, "translation_volume", 1.0)
-        )
         self.glossary = str(getattr(self._cfg, "glossary", "") or "")
-        self.save_history = bool(getattr(self._cfg, "save_history", True))
+        self.save_history = bool(getattr(self._cfg, "save_history", False))
         self._source_dub = SourceDub()
         self._dub_logged: tuple | None = None
         self._dub_was_active = False
@@ -218,11 +224,6 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
         self._dub_bg_pct_lbl: tk.Label | None = None
         self._dub_gain_timer: str | None = None
         self._dub_gain_ui = False
-        self._volume_var: tk.IntVar | None = None
-        self._volume_scale: LevelSlider | None = None
-        self._volume_pct_lbl: tk.Label | None = None
-        self._volume_timer: str | None = None
-        self._volume_ui = False
         self._overlay_alpha_var: tk.IntVar | None = None
         self._overlay_alpha_scale: LevelSlider | None = None
         self._overlay_alpha_pct_lbl: tk.Label | None = None
@@ -238,6 +239,7 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
         self._history_win: tk.Toplevel | None = None
         self._history_text: tk.Text | None = None
         self._history_find_bar: TranscriptSearchBar | None = None
+        self._history_caption: tk.Label | None = None
         self._find_bar: TranscriptSearchBar | None = None
         self._jump_pills: dict[tk.Text, tk.Button] = {}
         self._settings_active_tab = "general"
@@ -253,9 +255,13 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
         self._curr_trans_buf = ""
         self._curr_heard_start: float | None = None
         self._curr_trans_start: float | None = None
-        self._last_heard_completed = ""
+        self._transcript_last: dict[str, float] = {}
+        self._history_heard: deque[TranscriptItem] = deque(maxlen=20)
+        self._history_trans: deque[tuple[TranscriptItem, str, str]] = deque()
+        self._history_cutoff = float("-inf")
+        self._detected_source_code: str | None = None
         self._history_write_q: queue.Queue = queue.Queue()
-        self._history_writer_started = False
+        self._history_writer: threading.Thread | None = None
         # Başlatmadan önce girişten VU besleyen bağımsız önizleme izleyicisi.
         # Oturum çalışırken durdurulur; yakalama/çeviri hattına dokunmaz.
         self._preview = _InputPreviewMonitor()
@@ -276,7 +282,7 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
             lambda action: self.log_queue.put(("hotkey", action)),
             push_to_talk=self.push_to_talk,
         )
-        hotkey_error = self._register_global_hotkeys()
+        hotkey_error = self._restore_global_hotkeys()
         if hotkey_error and sys.platform == "win32":
             self._append(f"[uyarı] Genel kısayollar etkinleştirilemedi: {hotkey_error}\n")
         self.refresh_devices(async_scan=True)
@@ -1206,17 +1212,11 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
             pass
         self.log.see(tk.END)
 
-    def _enqueue_history_write(self, heard: str, trans: str, *, src: str, dst: str) -> None:
+    def _enqueue_history_write(self, heard: str, trans: str, *, src: str, dst: str, timestamp: float) -> None:
         """Konuşma geçmişini arka planda diske yazar; UI thread'ini bloklamaz."""
-        if not (heard.strip() or trans.strip()):
-            return
-        q = getattr(self, "_history_write_q", None)
-        if q is None:
-            append_history(heard, trans, src=src, dst=dst)
-            return
-        q.put((heard, trans, src, dst))
-        if not getattr(self, "_history_writer_started", False):
-            self._history_writer_started = True
+        q = self._history_write_q
+        q.put((heard, trans, src, dst, timestamp))
+        if self._history_writer is None or not self._history_writer.is_alive():
 
             def _writer():
                 while True:
@@ -1224,15 +1224,57 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
                     try:
                         if item is None:
                             break
-                        h_txt, t_txt, s_code, d_code = item
+                        h_txt, t_txt, s_code, d_code, ts = item
                         try:
-                            append_history(h_txt, t_txt, src=s_code, dst=d_code)
-                        except Exception:
-                            pass
+                            append_history(h_txt, t_txt, src=s_code, dst=d_code, timestamp=ts)
+                        except Exception as exc:
+                            log_exception(exc, "History write error")
                     finally:
                         q.task_done()
 
-            threading.Thread(target=_writer, name="ahenk-history", daemon=True).start()
+            self._history_writer = threading.Thread(target=_writer, name="ahenk-history", daemon=True)
+            self._history_writer.start()
+
+    def _wait_history_writes(self) -> None:
+        writer = getattr(self, "_history_writer", None)
+        if writer is not None and writer.is_alive():
+            self._history_write_q.join()
+
+    def _flush_history(self, now: float, *, force: bool = False) -> None:
+        while self._history_trans:
+            item, src, dst = self._history_trans[0]
+            start = item.timestamp
+            while self._history_heard and (
+                self._history_heard[0].timestamp + self._history_heard[0].duration_s < start - 15.0
+            ):
+                self._history_heard.popleft()
+            heard = self._history_heard[0] if self._history_heard else None
+            if heard is not None and heard.timestamp <= start + item.duration_s + self.HISTORY_PAIR_WAIT_S:
+                if len(self._history_trans) >= 2:
+                    next_start = self._history_trans[1][0].timestamp
+                    if heard.timestamp >= next_start - 1.0 and abs(heard.timestamp - next_start) < abs(
+                        heard.timestamp - start
+                    ):
+                        heard = None
+                if heard is not None:
+                    self._history_heard.popleft()
+            else:
+                if not force and now < start + item.duration_s + self.HISTORY_PAIR_WAIT_S:
+                    break
+                heard = None
+            if heard is not None and force and len(self._history_trans) == 1:
+                heard_parts = [heard.text.strip()]
+                while self._history_heard and (
+                    self._history_heard[0].timestamp <= start + item.duration_s + self.HISTORY_PAIR_WAIT_S
+                ):
+                    extra = self._history_heard.popleft().text.strip()
+                    if extra:
+                        heard_parts.append(extra)
+                heard_text = " ".join(part for part in heard_parts if part)
+            else:
+                heard_text = heard.text if heard else ""
+            self._history_trans.popleft()
+            self._enqueue_history_write(heard_text, item.text, src=src, dst=dst, timestamp=start)
 
     def _toggle_start_stop(self):
         if self.worker is not None and self.worker.is_alive():
@@ -1251,6 +1293,16 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
         if getattr(self, "pause_shortcut", "").strip():
             shortcuts["pause"] = self.pause_shortcut
         return self._hotkeys.replace(shortcuts)
+
+    def _restore_global_hotkeys(self) -> str | None:
+        error = self._register_global_hotkeys()
+        if error and sys.platform == "win32" and self._hotkeys is not None and self.pause_shortcut == DEFAULT_PAUSE_SHORTCUT:
+            # Ctrl+Space başka bir uygulamada kayıtlıysa diğer iki kısayol çalışsın.
+            fallback_error = self._hotkeys.replace({"mute": self.mute_shortcut, "start_stop": self.start_stop_shortcut})
+            if not fallback_error:
+                self._append(f"[uyarı] {t('pause_shortcut_unavailable').format(shortcut=self.pause_shortcut)}\n")
+                return None
+        return error
 
     def _handle_hotkey(self, action: str) -> None:
         if action == "mute":
@@ -1430,16 +1482,6 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
         return max(0.0, min(1.0, gain))
 
     @staticmethod
-    def _clamp_volume(value) -> float:
-        try:
-            vol = float(value)
-        except (TypeError, ValueError):
-            return 1.0
-        if vol != vol:
-            return 1.0
-        return max(0.0, min(2.0, vol))
-
-    @staticmethod
     def _clamp_overlay_alpha(value) -> float:
         try:
             alpha = float(value)
@@ -1521,6 +1563,103 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
                     + "\n"
                 )
 
+    def _queue_loop_message(self, msg) -> None:
+        # Arayüz kuyruğu boşalırken değil, parça geldiğinde zaman damgası koy.
+        if isinstance(msg, tuple) and msg and msg[0] in self._TRANSCRIPT_EVENTS:
+            self.log_queue.put((msg[0], msg[1] if len(msg) > 1 else "", time.time()))
+        else:
+            self.log_queue.put(msg)
+
+    def _handle_transcript_message(self, msg) -> bool:
+        if not isinstance(msg, tuple) or not msg:
+            return False
+        kind = msg[0]
+        if kind not in self._TRANSCRIPT_EVENTS:
+            return False
+        timestamp = msg[2] if len(msg) > 2 else time.time()
+        if kind == "transcript_boundary":
+            self._finish_transcripts(timestamp)
+            self._detected_source_code = None
+        elif kind.endswith("_end"):
+            self._finish_transcript(kind.removesuffix("_end"), timestamp)
+        else:
+            self._append_live_transcript(kind, msg[1], timestamp)
+        return True
+
+    def _pending_transcript_item(self, stream: str, now: float) -> TranscriptItem | None:
+        text = getattr(self, f"_curr_{stream}_buf").strip()
+        if not text:
+            return None
+        start = getattr(self, f"_curr_{stream}_start")
+        if start is None:
+            start = now
+        end = self._transcript_last.get(stream, start)
+        return TranscriptItem(start, stream, text, max(1.2, end - start))
+
+    def _finish_transcript(self, stream: str, now: float, *, flush: bool = True) -> None:
+        item = self._pending_transcript_item(stream, now)
+        setattr(self, f"_curr_{stream}_buf", "")
+        setattr(self, f"_curr_{stream}_start", None)
+        self._transcript_last.pop(stream, None)
+        if item is None:
+            return
+        self._append_transcript_item(item)
+        self._write_pane(getattr(self, stream), "\n")
+        if not self.save_history or item.timestamp < self._history_cutoff:
+            return
+        if stream == "heard":
+            self._history_heard.append(item)
+        else:
+            loop_kwargs = getattr(self, "_loop_kwargs", {})
+            src = loop_kwargs.get("src") or self._detected_source_code or source_code(canonical_name(self.src_var.get())) or "auto"
+            dst = loop_kwargs.get("dst") or LANGS.get(canonical_name(self.dst_var.get()), self.dst_var.get())
+            self._history_trans.append((item, src, dst))
+        if flush:
+            self._flush_history(now)
+
+    def _append_live_transcript(self, stream: str, text: str, timestamp: float) -> None:
+        buf_attr, start_attr = f"_curr_{stream}_buf", f"_curr_{stream}_start"
+        last = self._transcript_last.get(stream)
+        start = getattr(self, start_attr)
+        if (last is not None and timestamp - last >= self.TRANSCRIPT_IDLE_S) or (
+            start is not None and timestamp - start >= self.TRANSCRIPT_SEGMENT_S
+        ):
+            self._finish_transcript(stream, timestamp)
+        while text:
+            buf = getattr(self, buf_attr)
+            if not buf:
+                text = text.lstrip()
+                if not text:
+                    break
+                setattr(self, start_attr, timestamp)
+            combined = buf + text
+            boundary = self._SENTENCE_END.search(combined, len(buf.rstrip(".!?…\"'”’»)。！？")))
+            cut = boundary.end() if boundary else len(combined)
+            if cut > self.TRANSCRIPT_SEGMENT_CHARS:
+                # Uzunluk sınırında mümkünse kelimeyi bölme.
+                space = combined.rfind(" ", len(buf), self.TRANSCRIPT_SEGMENT_CHARS + 1)
+                cut = space if space > 0 else self.TRANSCRIPT_SEGMENT_CHARS
+            take = max(0, cut - len(buf))
+            if take:
+                setattr(self, buf_attr, combined[:cut])
+                self._transcript_last[stream] = timestamp
+                self._write_pane(getattr(self, stream), text[:take].rstrip("\r\n"))
+            if boundary or cut < len(combined):
+                self._finish_transcript(stream, timestamp)
+            text = text[take:]
+
+    def _finish_idle_transcripts(self, now: float) -> None:
+        for stream in ("heard", "trans"):
+            last = self._transcript_last.get(stream)
+            if last is not None and now - last >= self.TRANSCRIPT_IDLE_S:
+                self._finish_transcript(stream, now)
+
+    def _finish_transcripts(self, now: float) -> None:
+        self._finish_transcript("heard", now, flush=False)
+        self._finish_transcript("trans", now, flush=False)
+        self._flush_history(now, force=True)
+        self._history_heard.clear()
+
     def _load_spilled_transcript_items(self) -> list[TranscriptItem]:
         spill_path = getattr(self, "_transcript_spill_path", None)
         if spill_path is None or not spill_path.is_file():
@@ -1554,7 +1693,7 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
             self.detected_lbl.configure(text="")
             self._curr_heard_buf = ""
             self._curr_heard_start = None
-            self._last_heard_completed = ""
+            self._history_heard.clear()
             self.transcript_items = [it for it in self.transcript_items if it.stream != "heard"]
         elif widget is self.trans:
             target_stream = "trans"
@@ -1564,6 +1703,8 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
                 self._overlay_text = ""
                 self.overlay_label.configure(text="...")
             self.transcript_items = [it for it in self.transcript_items if it.stream != "trans"]
+        if target_stream is not None:
+            self._transcript_last.pop(target_stream, None)
         spill_path = getattr(self, "_transcript_spill_path", None)
         if target_stream is not None and spill_path is not None and spill_path.is_file():
             kept = [
@@ -1664,10 +1805,7 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
                     getattr(self, "dub_background_gain", DUB_BACKGROUND)
                 ),
                 dub_ducking=getattr(self, "dub_ducking", True),
-                translation_volume=self._clamp_volume(
-                    getattr(self, "translation_volume", 1.0)
-                ),
-                save_history=getattr(self, "save_history", True),
+                save_history=getattr(self, "save_history", False),
                 push_to_talk=getattr(self, "push_to_talk", False),
             )
         except OSError:
@@ -1686,40 +1824,17 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
     def _get_export_items(self) -> list[TranscriptItem]:
         items = self._load_spilled_transcript_items() + list(getattr(self, "transcript_items", []))
         now = time.time()
-        heard_buf = getattr(self, "_curr_heard_buf", "").strip()
-        trans_buf = getattr(self, "_curr_trans_buf", "").strip()
-        if heard_buf:
-            h_start = getattr(self, "_curr_heard_start", None) or now
-            items.append(
-                TranscriptItem(
-                    timestamp=h_start,
-                    stream="heard",
-                    text=heard_buf,
-                    duration_s=max(1.5, now - h_start),
-                )
-            )
-        if trans_buf:
-            t_start = getattr(self, "_curr_trans_start", None) or (now + 0.5)
-            items.append(
-                TranscriptItem(
-                    timestamp=t_start,
-                    stream="trans",
-                    text=trans_buf,
-                    duration_s=max(1.5, max(now, t_start) - t_start),
-                )
-            )
+        for stream in ("heard", "trans"):
+            item = self._pending_transcript_item(stream, now)
+            if item is not None:
+                items.append(item)
         if not items:
-            heard_text = self.heard.get("1.0", "end-1c").strip()
-            trans_text = self.trans.get("1.0", "end-1c").strip()
-            if heard_text:
-                for line in heard_text.splitlines():
-                    if line.strip():
-                        items.append(TranscriptItem(timestamp=now, stream="heard", text=line.strip()))
-            if trans_text:
-                for line in trans_text.splitlines():
-                    if line.strip():
-                        items.append(TranscriptItem(timestamp=now + 1.0, stream="trans", text=line.strip()))
-        return items
+            base = self._timeline_start_time or self.session_start_time or now
+            for stream in ("heard", "trans"):
+                lines = getattr(self, stream).get("1.0", "end-1c").splitlines()
+                for idx, line in enumerate(line.strip() for line in lines if line.strip()):
+                    items.append(TranscriptItem(base + 3.0 * idx, stream, line))
+        return sorted(items, key=lambda item: item.timestamp)
 
     def _export_transcripts(self) -> None:
         from tkinter import filedialog
@@ -1994,12 +2109,10 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
                 self._shortcut_status.configure(fg=C.muted)
             self._style_dub_scale()
             self._sync_dub_gain_controls()
-            for scale in (self._volume_scale, self._overlay_alpha_scale):
-                if scale is not None and scale.winfo_exists():
-                    scale.configure(bg=C.panel)
-            for pct_lbl in (self._volume_pct_lbl, self._overlay_alpha_pct_lbl):
-                if pct_lbl is not None and pct_lbl.winfo_exists():
-                    pct_lbl.configure(fg=C.text, bg=C.panel)
+            if self._overlay_alpha_scale is not None and self._overlay_alpha_scale.winfo_exists():
+                self._overlay_alpha_scale.configure(bg=C.panel)
+            if self._overlay_alpha_pct_lbl is not None and self._overlay_alpha_pct_lbl.winfo_exists():
+                self._overlay_alpha_pct_lbl.configure(fg=C.text, bg=C.panel)
             for chk in (
                 self._dub_toggle,
                 self._dub_bg_toggle,
@@ -2091,6 +2204,8 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
             dark_titlebar(self._history_win, dark=(C.current != "light"))
             for child in self._history_win.winfo_children():
                 self._retint_frame(child, bg=C.panel)
+            if self._history_caption is not None:
+                self._history_caption.configure(fg=C.muted)
             if self._history_find_bar is not None and self._history_find_bar.winfo_exists():
                 self._history_find_bar.update_theme()
             if self._history_text is not None and self._history_text.winfo_exists():
@@ -2101,7 +2216,7 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
                     selectbackground=C.select,
                     selectforeground=C.text,
                 )
-                self._history_text.tag_configure("meta", foreground=C.dim)
+                self._history_text.tag_configure("meta", foreground=C.muted)
                 self._history_text.tag_configure("heard", foreground=C.muted)
                 self._history_text.tag_configure("trans", foreground=C.text)
                 TranscriptSearchBar.style_text_tags(self._history_text)
@@ -2154,32 +2269,7 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
                         sid = msg[1] if isinstance(msg, tuple) and len(msg) > 1 else None
                         if sid is not None and sid != self._session_id:
                             continue
-                        if getattr(self, "_curr_heard_buf", "").strip():
-                            now_ts = time.time()
-                            h_start = getattr(self, "_curr_heard_start", None) or now_ts
-                            self._append_transcript_item(
-                                TranscriptItem(
-                                    timestamp=h_start,
-                                    stream="heard",
-                                    text=self._curr_heard_buf.strip(),
-                                    duration_s=max(1.5, now_ts - h_start),
-                                )
-                            )
-                            self._curr_heard_buf = ""
-                            self._curr_heard_start = None
-                        if getattr(self, "_curr_trans_buf", "").strip():
-                            now_ts = time.time()
-                            t_start = getattr(self, "_curr_trans_start", None) or now_ts
-                            self._append_transcript_item(
-                                TranscriptItem(
-                                    timestamp=t_start,
-                                    stream="trans",
-                                    text=self._curr_trans_buf.strip(),
-                                    duration_s=max(1.5, now_ts - t_start),
-                                )
-                            )
-                            self._curr_trans_buf = ""
-                            self._curr_trans_start = None
+                        self._finish_transcripts(time.time())
                         if getattr(self, "_pending_restart", False):
                             was_paused = bool(getattr(self, "_paused", False))
                             self._set_running(False)
@@ -2208,69 +2298,12 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
                             if self.status.cget("text") not in ("Hata", "Error"):
                                 self._set_status("Durdu", C.dim)
                         continue
+                    if self._handle_transcript_message(msg):
+                        continue
                     if isinstance(msg, tuple):
                         kind = msg[0]
                         payload = msg[1] if len(msg) > 1 else ""
-                        if kind == "heard":
-                            if not self._curr_heard_buf:
-                                self._curr_heard_start = time.time()
-                            self._curr_heard_buf += payload
-                            self._write_pane(self.heard, payload)
-                        elif kind == "trans":
-                            if not self._curr_trans_buf:
-                                self._curr_trans_start = time.time()
-                            self._curr_trans_buf += payload
-                            self._write_pane(self.trans, payload)
-                        elif kind == "heard_end":
-                            if self._curr_heard_buf.strip():
-                                now_ts = time.time()
-                                h_start = self._curr_heard_start or now_ts
-                                text_heard = self._curr_heard_buf.strip()
-                                self._last_heard_completed = text_heard
-                                self._append_transcript_item(
-                                    TranscriptItem(
-                                        timestamp=h_start,
-                                        stream="heard",
-                                        text=text_heard,
-                                        duration_s=max(1.2, now_ts - h_start),
-                                    )
-                                )
-                                self._curr_heard_buf = ""
-                                self._curr_heard_start = None
-                            self._write_pane(self.heard, "\n")
-                        elif kind == "trans_end":
-                            if self._curr_trans_buf.strip():
-                                now_ts = time.time()
-                                t_start = self._curr_trans_start or now_ts
-                                text_trans = self._curr_trans_buf.strip()
-                                self._append_transcript_item(
-                                    TranscriptItem(
-                                        timestamp=t_start,
-                                        stream="trans",
-                                        text=text_trans,
-                                        duration_s=max(1.5, now_ts - t_start),
-                                    )
-                                )
-                                if getattr(self, "save_history", getattr(self._cfg, "save_history", True)):
-                                    paired_heard = (
-                                        self._curr_heard_buf.strip()
-                                        or getattr(self, "_last_heard_completed", "").strip()
-                                    )
-                                    self._last_heard_completed = ""
-                                    src_c = source_code(canonical_name(self.src_var.get())) or "auto"
-                                    dst_c = LANGS.get(canonical_name(self.dst_var.get()), self.dst_var.get())
-                                    self._enqueue_history_write(
-                                        paired_heard,
-                                        text_trans,
-                                        src=src_c,
-                                        dst=dst_c,
-                                    )
-                                else:
-                                    self._last_heard_completed = ""
-                                self._curr_trans_buf = ""
-                                self._curr_trans_start = None
-                            self._write_pane(self.trans, "\n")
-                        elif kind == "playback_active":
+                        if kind == "playback_active":
                             if getattr(self, "dub_ducking", True):
                                 self._sync_source_dub(quiet_log=True)
                         elif kind == "log":
@@ -2290,6 +2323,7 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
                             if payload == self._session_id and not self._stopping.is_set():
                                 self._notify_connection_failure()
                         elif kind == "detected_src":
+                            self._detected_source_code = payload
                             detected_name = display_name(
                                 lang_code_to_name(payload, default=payload)
                             )
@@ -2325,7 +2359,9 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
                 except Exception as e:
                     self._append(f"[hata] Arayüz kuyruk hatası: {e}\n")
         except queue.Empty:
-            pass
+            now_ts = time.time()
+            self._finish_idle_transcripts(now_ts)
+            self._flush_history(now_ts)
         finally:
             downloading = self._download_fraction is not None
             if downloading:
@@ -2414,6 +2450,7 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
         except Exception:
             pass
         self._stopping.clear()
+        self._detected_source_code = None
         self.session_start_time = time.time()
         current_session_id = self._session_id
         self._loop_kwargs = {
@@ -2422,10 +2459,10 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
             "source_mic": source,
             "api_key": api_key,
             "output_speaker": speaker,
-            "on_text": self.log_queue.put,
+            "on_text": self._queue_loop_message,
             "console_input": False,
             "muted": self.translation_muted,
-            "volume": self._clamp_volume(getattr(self, "translation_volume", 1.0)),
+            "volume": 1.0,
             "glossary": parse_glossary(getattr(self, "glossary", "")),
         }
         self.loop_obj = SystemAudioLoop(**self._loop_kwargs)
@@ -2470,6 +2507,7 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
 
         def _rebuild() -> None:
             if hasattr(self, "_loop_kwargs") and not self._stopping.is_set():
+                self.log_queue.put(("transcript_boundary", "", time.time()))
                 new_loop = clone_loop_for_retry(
                     self.loop_obj,
                     self._loop_kwargs,
@@ -2594,6 +2632,8 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
         self._sync_update_chip()
         if self._history_win is not None and self._history_win.winfo_exists():
             self._history_win.title(t("history_title"))
+            if self._history_caption is not None:
+                self._history_caption.configure(text=t("history_caption").format(limit=self.HISTORY_LIMIT))
             if getattr(self, "_history_close_btn", None) is not None and self._history_close_btn.winfo_exists():
                 self._history_close_btn.configure(text=t("close"))
             if self._history_find_bar is not None and self._history_find_bar.winfo_exists():
@@ -2670,6 +2710,16 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
             except tk.TclError:
                 pass
             self.worker.join(timeout=1.0)
+        try:
+            while True:
+                msg = self.log_queue.get_nowait()
+                if isinstance(msg, tuple) and len(msg) > 1 and msg[0] == "detected_src":
+                    self._detected_source_code = msg[1]
+                else:
+                    self._handle_transcript_message(msg)
+        except queue.Empty:
+            pass
+        self._finish_transcripts(time.time())
         self.destroy()
 
     def destroy(self):
@@ -2685,7 +2735,7 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
             self._close_history()
         except Exception:
             pass
-        for timer_attr in ("_dub_gain_timer", "_volume_timer", "_overlay_alpha_timer"):
+        for timer_attr in ("_dub_gain_timer", "_overlay_alpha_timer"):
             timer = getattr(self, timer_attr, None)
             if timer is not None:
                 try:
@@ -2693,12 +2743,15 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
                 except Exception:
                     pass
                 setattr(self, timer_attr, None)
-        if getattr(self, "_history_writer_started", False):
-            self._history_writer_started = False
+        if getattr(self, "save_history", False):
             try:
-                self._history_write_q.put(None)
+                self._flush_history(time.time(), force=True)
             except Exception:
                 pass
+        if self._history_writer is not None:
+            self._history_write_q.put(None)
+            self._history_writer.join(timeout=2.0)
+            self._history_writer = None
         self._overlay_font_cache = None
         notifier = self.__dict__.get("_connection_notifier")
         if notifier is not None:
@@ -2728,7 +2781,6 @@ class App(OverlayMixin, SettingsDialogMixin, DialogsMixin, SingleInstanceMixin, 
             "_dub_bg_var",
             "_dub_ducking_var",
             "_dub_bg_gain_var",
-            "_volume_var",
             "_overlay_alpha_var",
             "_save_history_var",
             "_mute_shortcut_var",

@@ -16,7 +16,9 @@ from meta import APP_AUTHOR, APP_TITLE, __version__
 
 @pytest.fixture(autouse=True)
 def hide_test_windows(tmp_path, monkeypatch):
+    monkeypatch.setenv("AHENK_CONFIG", str(tmp_path / "config.json"))
     monkeypatch.setenv("VOICE_TRANSLATE_CONFIG", str(tmp_path / "config.json"))
+    monkeypatch.setattr("logger.config_dir", lambda: tmp_path)
     monkeypatch.setattr("config.load_dotenv", lambda: None)
     tk_init = tk.Tk.__init__
     app_init = App.__init__
@@ -1268,6 +1270,46 @@ def test_export_includes_pending_buffer_and_flushes_on_stop(tmp_path, monkeypatc
     finally:
         app.destroy()
 
+
+def test_continuous_stream_exports_separate_timed_subtitles(tmp_path, monkeypatch):
+    app = App()
+    try:
+        app.save_history = False
+        app._timeline_start_time = 100.0
+        # Arayüz tek seferde boşaltsa da worker'ın zaman damgaları korunur.
+        app.log_queue.put(("trans", "İlk", 101.0))
+        app.log_queue.put(("trans", " cümle. İkinci cümle!", 102.3))
+        app.log_queue.put(("trans", "Noktasız son bölüm", 109.0))
+        app._pump_log()
+        for suffix in ("srt", "bilingual.srt", "vtt"):
+            path = tmp_path / f"akış.{suffix}"
+            monkeypatch.setattr("tkinter.filedialog.asksaveasfilename", lambda **kw: str(path))
+            app._export_transcripts()
+            content = path.read_text(encoding="utf-8").replace(",", ".")
+            assert "00:00:01.000 --> 00:00:02.300\nİlk cümle." in content
+            assert "00:00:02.300 --> 00:00:03.500\nİkinci cümle!" in content
+            assert "00:00:09.000 --> 00:00:10.200\nNoktasız son bölüm" in content
+    finally:
+        app.destroy()
+
+
+def test_continuous_stream_breaks_long_unpunctuated_speech():
+    app = App()
+    try:
+        app.save_history = False
+        for i in range(8):
+            app.log_queue.put(("trans", " Kelime", 101.0 + i))
+        app.log_queue.put(("trans", " sözcük" * 50, 108.2))
+        app._pump_log()
+        items = app._get_export_items()
+        assert items[0].timestamp == 101.0
+        assert items[0].duration_s == 5.0
+        assert items[1].timestamp == 107.0
+        assert all(len(item.text) <= app.TRANSCRIPT_SEGMENT_CHARS for item in items)
+        assert " ".join(item.text for item in items).split() == ["Kelime"] * 8 + ["sözcük"] * 50
+    finally:
+        app.destroy()
+
 def test_theme_toggle_updates_body_tag_and_overlay_contrast():
     """H07: Tema değiştiğinde trans/heard 'body' tagi ve overlay okunabilir kontrasta güncellenmeli."""
     app = App()
@@ -2078,7 +2120,28 @@ def test_shortcut_capture_suspends_hotkeys_and_records_shifted_digit(monkeypatch
         assert "Ctrl+Shift+1" in app._shortcut_status.cget("text")
         app._resume_global_hotkeys()
         assert app._hotkeys_suspended is False
-        assert calls[-1] == {"mute": app.mute_shortcut, "start_stop": app.start_stop_shortcut}
+        assert calls[-1] == {"mute": app.mute_shortcut, "start_stop": app.start_stop_shortcut, "pause": "Ctrl+Space"}
+    finally:
+        app.destroy()
+
+
+def test_busy_default_pause_shortcut_keeps_other_hotkeys(monkeypatch):
+    import hotkeys
+
+    app = App()
+    try:
+        monkeypatch.setattr(hotkeys.sys, "platform", "win32")
+        calls = []
+
+        def replace(shortcuts):
+            calls.append(shortcuts)
+            return "Already registered" if "pause" in shortcuts else None
+
+        monkeypatch.setattr(app._hotkeys, "replace", replace)
+        assert app._restore_global_hotkeys() is None
+        assert calls[0]["pause"] == "Ctrl+Space"
+        assert calls[1] == {"mute": app.mute_shortcut, "start_stop": app.start_stop_shortcut}
+        assert "Ctrl+P" in app.log.get("1.0", "end")
     finally:
         app.destroy()
 
@@ -2124,7 +2187,7 @@ def test_reset_settings_restores_defaults_and_keeps_api_key(monkeypatch):
         app.destroy()
 
 
-def test_settings_tabs_volume_opacity_glossary_and_overlay_wheel(monkeypatch):
+def test_settings_tabs_fixed_volume_opacity_glossary_and_overlay_wheel(monkeypatch):
     from types import SimpleNamespace
 
     captured_kwargs = {}
@@ -2132,10 +2195,6 @@ def test_settings_tabs_volume_opacity_glossary_and_overlay_wheel(monkeypatch):
     class DummyLoop:
         def __init__(self, **kwargs):
             captured_kwargs.update(kwargs)
-            self.volumes = []
-
-        def set_volume(self, val):
-            self.volumes.append(val)
 
         def request_stop(self):
             pass
@@ -2144,25 +2203,15 @@ def test_settings_tabs_volume_opacity_glossary_and_overlay_wheel(monkeypatch):
     try:
         app._open_settings()
         assert set(app._settings_tab_btns) == {"general", "translation"}
+        assert app._pause_shortcut_var.get() == "Ctrl+Space"
         app._switch_settings_tab("translation")
         app.update()
         assert app._settings_active_tab == "translation"
         assert app._settings_tab_frames["translation"].winfo_manager() == "pack"
         assert app._settings_tab_frames["general"].winfo_manager() == ""
 
-        live_loop = DummyLoop()
-        app.loop_obj = live_loop
-        app._volume_var.set(145)
-        app._on_volume_slider("145")
-        if app._volume_timer is not None:
-            app.after_cancel(app._volume_timer)
-            app._volume_timer = None
-        app._commit_volume()
-        assert app.translation_volume == pytest.approx(1.45)
-        assert app._volume_pct_lbl.cget("text") == "145%"
-        assert live_loop.volumes[-1] == pytest.approx(1.45)
-        assert config.load().translation_volume == pytest.approx(1.45)
-        app.loop_obj = None
+        assert "volume_lbl" not in app._settings_refs
+        assert "bu cihazda" in app._settings_refs["history_hint"].cget("text")
 
         app.toggle_overlay()
         app._overlay_alpha_var.set(65)
@@ -2196,7 +2245,7 @@ def test_settings_tabs_volume_opacity_glossary_and_overlay_wheel(monkeypatch):
         monkeypatch.setattr("gui.app.SystemAudioLoop", lambda **kw: DummyLoop(**kw))
         monkeypatch.setattr("gui.app.threading.Thread", lambda **kw: SimpleNamespace(start=lambda: None, is_alive=lambda: False))
         app.start()
-        assert captured_kwargs["volume"] == pytest.approx(1.45)
+        assert captured_kwargs["volume"] == pytest.approx(1.0)
         assert captured_kwargs["glossary"] == ["Ahenk: Ahenk", "CUDA: CUDA"]
     finally:
         app.destroy()
@@ -2210,44 +2259,92 @@ def test_history_pairing_viewer_toggle_and_clear(tmp_path, monkeypatch):
 
     app = App()
     try:
-        # Ardışık 2 cümle: her heard_end kendi trans_end'i ile doğru eşleşmeli
+        # Varsayılan olarak geçmiş kaydı kapalı gelmeli ve diske yazmamalı
+        assert app.save_history is False
+        app.log_queue.put(("heard", "Should not save"))
+        app.log_queue.put(("heard_end",))
+        app.log_queue.put(("trans", "Kaydedilmemeli"))
+        app.log_queue.put(("__stopped__", app._session_id))
+        app._pump_log()
+        app._wait_history_writes()
+        assert logger.load_recent_history(limit=10) == []
+
+        # Ayarlardan konuşma geçmişi kaydını aç
+        app._open_settings()
+        app._switch_settings_tab("translation")
+        assert app._save_history_var.get() is False
+        app._save_history_toggle.invoke()
+        assert app.save_history is True
+        assert config.load().save_history is True
+
+        # Ardışık cümleler: heard+trans, trans-önce+bölgesel dil kodu, trans-yalnız, çoklu heard
         app.log_queue.put(("heard", "First English sentence"))
         app.log_queue.put(("heard_end",))
         app.log_queue.put(("trans", "İlk Türkçe cümle"))
         app.log_queue.put(("trans_end",))
 
-        app.log_queue.put(("heard", "Second English sentence"))
-        app.log_queue.put(("heard_end",))
+        app.log_queue.put(("detected_src", "en-US"))
         app.log_queue.put(("trans", "İkinci Türkçe cümle"))
         app.log_queue.put(("trans_end",))
+        # Çeviri önce gelirse kaynak metni bekle.
         app._pump_log()
-        app._history_write_q.join()
+        app.log_queue.put(("heard", "Second English sentence"))
+        app.log_queue.put(("heard_end",))
+        app.log_queue.put(("trans", "Kaynak metni olmayan kayıt"))
+        app.log_queue.put(("__stopped__", app._session_id))
+        app._pump_log()
+
+        # Çok parçalı duyulan metin tek çeviri ile kapatıldığında birleşmeli
+        app.log_queue.put(("heard", "Part one."))
+        app.log_queue.put(("heard_end",))
+        app.log_queue.put(("heard", "Part two."))
+        app.log_queue.put(("heard_end",))
+        app.log_queue.put(("trans", "Birleşik çeviri"))
+        app.log_queue.put(("__stopped__", app._session_id))
+        app._pump_log()
+
+        # Manuel _history_write_q.join() olmadan _open_history bekleyen kayıtları boşaltıp göstermeli
+        app._open_history()
+        app.update()
 
         records = logger.load_recent_history(limit=10)
-        assert len(records) == 2
+        assert len(records) == 4
         assert records[0]["heard"] == "First English sentence"
         assert records[0]["trans"] == "İlk Türkçe cümle"
         assert records[1]["heard"] == "Second English sentence"
         assert records[1]["trans"] == "İkinci Türkçe cümle"
+        assert records[1]["src"] == "en-US"
+        assert records[2]["heard"] == ""
+        assert records[2]["trans"] == "Kaynak metni olmayan kayıt"
+        assert records[3]["heard"] == "Part one. Part two."
+        assert records[3]["trans"] == "Birleşik çeviri"
 
-        app._open_settings()
-        app._switch_settings_tab("translation")
-        app._open_history()
-        app.update()
         shown = app._history_text.get("1.0", "end")
-        assert "First English sentence" in shown
-        assert "İkinci Türkçe cümle" in shown
+        assert "Duyulan: First English sentence" in shown
+        assert "Çeviri: İkinci Türkçe cümle" in shown
+        assert "İngilizce → Türkçe" in shown
+        assert "Bu kayıt için kaynak metin yok." in shown
+        assert "Duyulan: Part one. Part two." in shown
+        assert app._history_close_btn.winfo_viewable()
 
-        # Kaydı kapatınca yeni cümleler yazılmamalı
+        # Eşleşmeyi bekleyen çeviri varken kaydı kapatmak bekleyen kaydı düşürmemeli
+        app.log_queue.put(("trans", "Kapatmadan önce bekleyen"))
+        app.log_queue.put(("trans_end",))
+        app._pump_log()
         app._save_history_toggle.invoke()
         assert app.save_history is False
+        assert config.load().save_history is False
+        app._wait_history_writes()
+        assert len(logger.load_recent_history(limit=10)) == 5
+
+        # Kayıt kapalıyken yeni cümleler yazılmamalı
         app.log_queue.put(("heard", "Ignored sentence"))
         app.log_queue.put(("heard_end",))
         app.log_queue.put(("trans", "Kaydedilmeyecek çeviri"))
         app.log_queue.put(("trans_end",))
         app._pump_log()
-        app._history_write_q.join()
-        assert len(logger.load_recent_history(limit=10)) == 2
+        app._wait_history_writes()
+        assert len(logger.load_recent_history(limit=10)) == 5
 
         # Geçmişi temizle hem dosyayı siler hem açık pencereyi yeniler
         app._clear_history_action()
@@ -2790,3 +2887,115 @@ def test_r11_bounded_transcript_panes_log_and_spillover_export(monkeypatch):
         app.destroy()
         if spill_path is not None:
             assert not spill_path.exists()
+
+
+def test_check_toggle_antialiased_and_centered_rendering():
+    from gui.theme import C
+    from gui.widgets import CheckToggle, _hex_rgb
+
+    root = tk.Tk()
+    root.withdraw()
+    previous = C.current
+    try:
+        for theme in ("dark", "light"):
+            C.apply_theme(theme)
+            var = tk.BooleanVar(master=root, value=False)
+            toggle = CheckToggle(
+                root, "Test", var, lambda: None, font=("Segoe UI", 9), bg=C.panel, fg=C.text,
+            )
+            try:
+                assert toggle._image is not None
+                w, h = toggle._image.width(), toggle._image.height()
+                assert (w, h) == (18, 18)
+
+                bg_rgb = _hex_rgb(C.panel)
+                outline_rgb = _hex_rgb(toggle.indicator_outline())
+                unchecked_pixels = {toggle._image.get(x, y) for y in range(h) for x in range(w)}
+                # Kenar yumuşatma ara renkleri içermeli
+                assert len(unchecked_pixels - {bg_rgb, outline_rgb}) > 0
+
+                var.set(True)
+                assert toggle._image is not None
+                fill_rgb = _hex_rgb(C.accent)
+                ink_rgb = _hex_rgb(C.fill_fg)
+                checked_pixels = {toggle._image.get(x, y) for y in range(h) for x in range(w)}
+                assert len(checked_pixels - {bg_rgb, fill_rgb, ink_rgb}) > 0
+
+                def _sq_dist(a: tuple[int, int, int], b: tuple[int, int, int]) -> int:
+                    return sum((x - y) ** 2 for x, y in zip(a, b))
+
+                ink_coords = [
+                    (x, y)
+                    for y in range(h)
+                    for x in range(w)
+                    if _sq_dist(toggle._image.get(x, y), ink_rgb)
+                    < _sq_dist(toggle._image.get(x, y), fill_rgb)
+                ]
+                assert ink_coords
+                xs = [x for x, _y in ink_coords]
+                ys = [y for _x, y in ink_coords]
+                left_margin = min(xs)
+                right_margin = (w - 1) - max(xs)
+                top_margin = min(ys)
+                bottom_margin = (h - 1) - max(ys)
+                assert abs(left_margin - right_margin) <= 1
+                assert abs(top_margin - bottom_margin) <= 1
+            finally:
+                toggle.destroy()
+                assert toggle._image is None
+    finally:
+        C.apply_theme(previous)
+        root.destroy()
+
+
+def test_level_slider_antialiased_rendering_and_updates():
+    from gui.theme import C
+    from gui.widgets import LevelSlider, _hex_rgb
+
+    root = tk.Tk()
+    root.withdraw()
+    previous = C.current
+    try:
+        for theme in ("dark", "light"):
+            C.apply_theme(theme)
+            var = tk.IntVar(master=root, value=57)
+            slider = LevelSlider(root, var, lambda _v: None, from_=0, to=100, bg=C.panel)
+            try:
+                assert slider._image is not None
+                first_img = slider._image
+                w, h = first_img.width(), first_img.height()
+                assert w >= 160 and h == LevelSlider.H
+
+                pure = {
+                    _hex_rgb(C.panel),
+                    _hex_rgb(slider.track_color()),
+                    _hex_rgb(slider._fill_color()),
+                    _hex_rgb(slider._knob_fill()),
+                }
+                pixels = {first_img.get(x, y) for y in range(h) for x in range(w)}
+                assert len(pixels - pure) > 10
+
+                # Değer ve hover/devre dışı değişimlerinde görsel güncellenmeli
+                var.set(0)
+                assert slider._image is not first_img
+                img_zero = slider._image
+                var.set(100)
+                assert slider._image is not img_zero
+                slider._set_hover(True)
+                img_hover = slider._image
+                slider.configure(state=tk.DISABLED)
+                assert slider._image is not img_hover
+
+                # Genişlik değişiminde yeniden çizilmeli
+                slider.configure(state=tk.NORMAL)
+                slider._on_configure(type("E", (), {"width": 240})())
+                # Event tek başına winfo_width'i değiştirmediğinden pack/update veya doğrudan configure ile doğrula
+                slider.configure(width=240)
+                slider._draw()
+                assert slider._image.width() == 240
+            finally:
+                slider.destroy()
+                assert slider._image is None
+    finally:
+        C.apply_theme(previous)
+        root.destroy()

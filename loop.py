@@ -1033,6 +1033,10 @@ class SystemAudioLoop:
             if delta:
                 self._emit((stream, delta))
         if getattr(tr, "finished", False):
+            self._finish_tr(stream)
+
+    def _finish_tr(self, stream: str) -> None:
+        if self._bufs[stream]:
             self._bufs[stream] = ""
             self._emit((f"{stream}_end",))
 
@@ -1208,11 +1212,11 @@ class SystemAudioLoop:
                             self._handle_tr("trans", out_tr)
                         else:
                             text = response.text or ""
-                            turn_done = bool(getattr(content, "turn_complete", False))
-                            if text or (turn_done and self._bufs["trans"]):
-                                self._handle_tr(
-                                    "trans", SimpleNamespace(text=text, finished=turn_done)
-                                )
+                            if text:
+                                self._handle_tr("trans", SimpleNamespace(text=text))
+                        if getattr(content, "turn_complete", False):
+                            self._finish_tr("heard")
+                            self._finish_tr("trans")
                     go_away = getattr(response, "go_away", None)
                     if go_away is not None:
                         # Eski soket çevirmeye devam eder; yeni soket arkada açılır.

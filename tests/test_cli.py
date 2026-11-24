@@ -54,6 +54,7 @@ def test_cli_runs_loop_with_args(monkeypatch):
         assert kwargs["output_speaker"] == fake_speaker
         assert kwargs["model"] == "custom-model"
         assert kwargs["console_input"] is True
+        assert kwargs["volume"] == 1.0
         mock_run.assert_called_once()
 
 def test_cli_uses_default_languages_from_config(monkeypatch):
@@ -81,7 +82,7 @@ def test_cli_text_only_flag(monkeypatch):
     monkeypatch.setattr(
         sys,
         "argv",
-        ["cli.py", "--src", "auto", "--dst", "tr", "--api-key", "test_key", "--text-only", "--mic"],
+        ["cli.py", "--src", "auto", "--dst", "tr", "--api-key", "test_key", "--text-only", "--mic", "--volume", "0.6"],
     )
     fake_source = MagicMock(name="FakeMic")
     fake_source.name = "FakeMic"
@@ -94,6 +95,7 @@ def test_cli_text_only_flag(monkeypatch):
         cli.main()
         mock_loop_cls.assert_called_once()
         assert mock_loop_cls.call_args.kwargs["output_speaker"] is None
+        assert mock_loop_cls.call_args.kwargs["volume"] == 0.6
 
 
 def test_cli_speaker_none_falls_back_to_text_only(monkeypatch, capsys):

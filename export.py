@@ -98,10 +98,11 @@ def _build_subtitle_cues(
     *,
     bilingual: bool = False,
 ) -> list[tuple[float, float, str]]:
-    trans_items = [it for it in items if it.stream == "trans" and it.text.strip()]
-    heard_items = [it for it in items if it.stream == "heard" and it.text.strip()]
+    ordered = sorted((it for it in items if it.text.strip()), key=lambda it: it.timestamp)
+    trans_items = [it for it in ordered if it.stream == "trans"]
+    heard_items = [it for it in ordered if it.stream == "heard"]
     has_trans = bool(trans_items)
-    cues_source = trans_items if has_trans else [it for it in items if it.text.strip()]
+    cues_source = trans_items if has_trans else ordered
     if not cues_source:
         return []
     paired_heard = (
@@ -110,19 +111,37 @@ def _build_subtitle_cues(
         else [None] * len(cues_source)
     )
     start_base = session_start if session_start is not None else cues_source[0].timestamp
+    starts = [max(0, round((it.timestamp - start_base) * 1000)) for it in cues_source]
+    # Bir pakette birden fazla cümle gelebilir. Eşit zaman damgalarını
+    # sonraki gerçek zaman damgasına kadar, yoksa sırayla göster.
+    i = 0
+    while i < len(starts):
+        j = i + 1
+        while j < len(starts) and starts[j] == starts[i]:
+            j += 1
+        interval = max(1200, round(cues_source[i].duration_s * 1000))
+        if j < len(starts):
+            interval = min(interval, (starts[j] - starts[i]) // (j - i))
+        for k in range(i + 1, j):
+            starts[k] = starts[i] + (k - i) * interval
+        i = j
+    for i in range(1, len(starts)):
+        starts[i] = max(starts[i], starts[i - 1] + 1)
+
     cues: list[tuple[float, float, str]] = []
     for i, it in enumerate(cues_source):
-        rel_start = max(0.0, it.timestamp - start_base)
-        rel_end = rel_start + max(1.2, it.duration_s)
+        rel_start = starts[i]
+        rel_end = rel_start + max(1200, round(it.duration_s * 1000))
         if i + 1 < len(cues_source):
-            next_start = max(0.0, cues_source[i + 1].timestamp - start_base)
-            if next_start > rel_start and rel_end > next_start:
-                rel_end = max(rel_start + 0.2, next_start - 0.04)
-        body = it.text.strip()
+            next_start = starts[i + 1]
+            if rel_end > next_start:
+                rel_end = max(rel_start + 1, next_start - 40)
+        body = "\n".join(line.strip() for line in it.text.splitlines() if line.strip())
         heard_text = paired_heard[i]
         if heard_text and heard_text != body:
-            body = f"{heard_text}\n{body}"
-        cues.append((rel_start, rel_end, body))
+            heard_lines = "\n".join(line.strip() for line in heard_text.splitlines() if line.strip())
+            body = f"{heard_lines}\n{body}"
+        cues.append((rel_start / 1000, rel_end / 1000, body))
     return cues
 
 

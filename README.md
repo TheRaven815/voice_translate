@@ -52,7 +52,7 @@ Sistem sesi · Mikrofon · Tek uygulama sesi → **metin + sesli çeviri**
 | 🎧 **3 giriş kaynağı** | Sistem sesi (WASAPI loopback), mikrofon veya tek bir masaüstü uygulamasının sesi (işlem ağacı yakalama; dost uygulama adları ve 16×16 simgelerle) |
 | 🔄 **Kesintisiz hot-swap** | Çalışan çeviri oturumunu öldürmeden giriş/çıkış aygıtını değiştirme |
 | 📺 **Altyazı overlay'i** | Her zaman üstte, sürüklenebilir, opaklığı (`20%–100%`) ve yazı boyutu ayarlanabilen, tıklama-geçirgen yapılabilen canlı altyazı penceresi |
-| ⌨️ **Genel kısayollar & Bas-Konuş** | Arka planda sesi susturma, oturumu başlatma/durdurma ve **duraklat/devam et** (`Ctrl+P`) + bas-konuş modu |
+| ⌨️ **Genel kısayollar & Bas-Konuş** | Arka planda sesi susturma, oturumu başlatma/durdurma ve **duraklat/devam et** (`Ctrl+Space`) + bas-konuş modu |
 | 🌗 **Çift tema + çift arayüz dili** | Koyu / açık tema; Türkçe / İngilizce arayüz |
 | 📝 **Dışa aktarma ve arama** | Transkriptleri **TXT**, **SRT**, **İki Dilli SRT** (`.bilingual.srt`), **WebVTT** (`.vtt`) ve **JSONL** kaydetme; panel içi **`Ctrl+F` arama** ve akıllı kaydırma kilidi |
 | 🔇 **Dinamik dublaj ve yankı koruması** | Çeviri konuşurken kaynak uygulamayı/ucu dinamik kısma (ducking) ve aynı hoparlörde eş süreli sessizlik enjeksiyonu |
@@ -71,7 +71,7 @@ Sistem sesi · Mikrofon · Tek uygulama sesi → **metin + sesli çeviri**
 - **Dinamik dublaj (Audio Ducking):** çeviri konuşurken kaynak sesi otomatik susturma veya arka plan düzeyine çekme
 - **Çıkış:** hoparlör seçimi veya **Hiçbiri** (yalnızca metin modu)
 - **Canlı VU metre:** oturum kapalıyken bile seçili girişi gösteren bağımsız önizleme izleyicisi
-- **Ses kontrolleri:** anlık çeviri sesi (`0%–200%` / `--volume`), sessizlik kapısı (`--vad`, örn. `0.01`)
+- **Ses kontrolleri:** arayüzde çeviri kazancı %100; CLI'da `--volume` ve sessizlik kapısı (`--vad`, örn. `0.01`)
 
 ### Çeviri deneyimi
 
