@@ -1,5 +1,23 @@
 # Sürüm Notları / Changelog
 
+## v0.7.8 — 2026-11-25
+
+### Türkçe
+
+- Kenar yumuşatmalı SDF `CheckToggle` ve `LevelSlider` çizimi eklendi; tik hizalaması ve kaydırıcı topuzu pürüzsüzleştirildi.
+- Konuşma geçmişi kaydı varsayılan olarak kapatıldı (`save_history=False`); iş parçacığı güvenli dosya kilitleme, atomik devir, geliştirilmiş eşleştirme ve otomatik boşaltma eklendi.
+- Bölgesel BCP-47 dil kodları (`en-US`, `tr-TR` vb.) geçmiş görüntüleyici ve canlı başlıkta ana dil adına çözümlendi.
+- Oturum denetimleri dar/kaydırılan yan panelde sabit tutuldu ve duraklatmada dublaj kapatıldı.
+- Canlı transkript bölümleme, altyazı zaman aralığı hesaplama ve `Ctrl+Space` varsayılan duraklatma kısayolu iyileştirildi; arayüz çeviri kazancı %100 olarak sabitlendi.
+
+### English
+
+- Added SDF anti-aliased rendering for `CheckToggle` and `LevelSlider` with centered checkmarks and smooth slider tracks/knobs.
+- Disabled conversation history recording by default (`save_history=False`) and hardened persistence with thread-safe locking, atomic rotation, improved pairing, and automatic flushing.
+- Resolved regional BCP-47 language codes (`en-US`, `tr-TR`, etc.) to display language names in the live header and history viewer.
+- Kept session controls pinned in the sidebar and stopped dubbing immediately on pause.
+- Improved live transcript segmentation, subtitle cue timestamp spacing, default `Ctrl+Space` pause shortcut, and fixed 100% GUI translation gain.
+
 ## v0.7.7 — 2026-11-18
 
 ### Türkçe
